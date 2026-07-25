@@ -144,6 +144,12 @@ close_app_windows() {
     " 2>/dev/null || true
 }
 
+# Get the title of a (non-Chrome) app's frontmost window, best-effort
+get_app_frontmost_window_title() {
+    local app="$1"
+    osascript -e "tell application \"System Events\" to tell process \"$app\" to get name of window 1" 2>/dev/null
+}
+
 # Get all Chrome window IDs and tab titles as "window_id|tab_title" per line
 get_chrome_window_tabs() {
     osascript <<'APPLESCRIPT'
@@ -166,8 +172,11 @@ close_app_selectively() {
     local -a protected_patterns=("$@")
 
     if [[ "$app" != "Google Chrome" ]]; then
-        # Non-Chrome fallback: close all windows (best-effort)
-        close_app_windows "$app" 3
+        # Non-Chrome: we can't selectively close individual windows, only
+        # detect whether ANY window matches a protected pattern (see caller).
+        # Being routed here means a match was found, so leave the app alone
+        # entirely rather than closing everything and defeating the protection.
+        echo "  $app has a protected window — leaving it alone"
         return
     fi
 
@@ -216,7 +225,28 @@ close_app_selectively() {
     return 0
 }
 
+# Self-heal the Safari web app registry: regenerate if missing or >24h stale.
+# Keeps bundle-ID matching correct on fresh machines and after new web apps
+# are added, without depending on deploy.sh timing.
+refresh_registry_if_stale() {
+    local scanner="${SCRIPT_DIR}/safari-web-apps-scan"
+    [[ -x "$scanner" ]] || return 0
+
+    local stale=false
+    if [[ ! -f "$REGISTRY_FILE" ]]; then
+        stale=true
+    else
+        local age=$(( $(date +%s) - $(stat -f %m "$REGISTRY_FILE" 2>/dev/null || echo 0) ))
+        (( age > 86400 )) && stale=true
+    fi
+
+    [[ "$stale" == true ]] && "$scanner" >/dev/null 2>&1
+    return 0
+}
+
 main() {
+    refresh_registry_if_stale
+
     # Load Safari web app registry for bundle ID fallback matching
     typeset -A registry  # registry[lowercase_name] = bundle_id
     if [[ -f "$REGISTRY_FILE" ]]; then
@@ -309,6 +339,18 @@ main() {
                         fi
                     done
                 done <<< "$_chrome_tabs_cache"
+            else
+                # Other apps: active window title only (best-effort)
+                local _title
+                _title=$(get_app_frontmost_window_title "$app")
+                if [[ -n "$_title" ]]; then
+                    for pattern in "${protected_patterns[@]}"; do
+                        if [[ "${(L)_title}" == *"${(L)pattern}"* ]]; then
+                            has_protected=true
+                            break
+                        fi
+                    done
+                fi
             fi
             if $has_protected; then
                 apps_selective_close+=("$app")
