@@ -32,6 +32,7 @@ import re
 import subprocess
 import sys
 import time
+import http.client
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -51,32 +52,57 @@ SCHEMA_CACHE_MAX_AGE_SECONDS = 7 * 24 * 3600  # refresh weekly
 SCHEMA_FETCH_TIMEOUT = 5
 
 
+# The schema fetch is advisory -- it only ever produces warnings -- so any
+# failure must degrade to the cache (or to no schema at all) rather than abort
+# the commit. IncompleteRead, which a truncated/sandboxed network stack raises
+# readily, is an HTTPException and a ValueError but NOT an OSError, so it used
+# to escape this handler and crash the hook mid-commit.
+SCHEMA_FETCH_ERRORS = (
+    urllib.error.URLError,
+    http.client.HTTPException,
+    TimeoutError,
+    OSError,
+    ValueError,  # covers json.JSONDecodeError and UnicodeDecodeError
+)
+
+
+def _read_cached_schema() -> dict | None:
+    """Return the on-disk schema, or None if it is absent, unreadable, or corrupt."""
+    try:
+        return json.loads(SCHEMA_CACHE.read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def _load_schema() -> dict | None:
     """Return the cached schema, fetching if missing or stale.
     Falls back to (possibly stale) cache if fetch fails. Returns None on full miss."""
-    fresh_cache = (
-        SCHEMA_CACHE.is_file()
-        and time.time() - SCHEMA_CACHE.stat().st_mtime < SCHEMA_CACHE_MAX_AGE_SECONDS
-    )
+    try:
+        fresh_cache = (
+            time.time() - SCHEMA_CACHE.stat().st_mtime < SCHEMA_CACHE_MAX_AGE_SECONDS
+        )
+    except OSError:
+        fresh_cache = False
     if fresh_cache:
-        try:
-            return json.loads(SCHEMA_CACHE.read_text())
-        except json.JSONDecodeError:
-            pass  # corrupted cache, refetch
+        cached = _read_cached_schema()
+        if cached is not None:
+            return cached
+        # else: corrupted cache, fall through and refetch
 
     try:
         with urllib.request.urlopen(SCHEMA_URL, timeout=SCHEMA_FETCH_TIMEOUT) as resp:
             data = resp.read().decode()
+        schema = json.loads(data)
+    except SCHEMA_FETCH_ERRORS:
+        return _read_cached_schema()
+
+    try:
         SCHEMA_CACHE.parent.mkdir(parents=True, exist_ok=True)
         SCHEMA_CACHE.write_text(data)
-        return json.loads(data)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
-        if SCHEMA_CACHE.is_file():
-            try:
-                return json.loads(SCHEMA_CACHE.read_text())
-            except json.JSONDecodeError:
-                return None
-        return None
+    except OSError:
+        pass  # the cache is an optimisation; don't discard a schema we just fetched
+
+    return schema
 
 
 def _validate_against_schema(data: dict, schema: dict) -> list[str]:
