@@ -1,6 +1,7 @@
 #!/bin/bash
-# Setup periodic hide-idle-apps polling (hide apps in [hide-idle] section after
-# they've been not-frontmost for N minutes). macOS only. Runs every 60s.
+# Setup periodic hide-idle-apps polling (hide all running apps not in the
+# [hide-idle-exclude] section after they've been not-frontmost for N
+# minutes). macOS only. Runs every 60s.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

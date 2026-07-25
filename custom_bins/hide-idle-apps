@@ -1,7 +1,8 @@
 #!/usr/bin/env zsh
-# hide-idle-apps - Hide (Cmd+H equivalent) apps in config's [hide-idle] section
-# after they've spent N minutes not frontmost. Scheduled as a polling job
-# (see scripts/cleanup/setup_hide_idle_apps.sh).
+# hide-idle-apps - Hide (Cmd+H equivalent) every running app after it's spent
+# N minutes not frontmost, EXCEPT apps in config's [hide-idle-exclude] section
+# (opt-out: hide-by-default, exclude-list-to-stay-visible). Scheduled as a
+# polling job (see scripts/cleanup/setup_hide_idle_apps.sh).
 #
 # State: ~/.cache/hide-idle-apps/state - tab-separated "app<TAB>last_frontmost_epoch",
 # rewritten atomically each run. On first sight of an app, its timer starts now
@@ -35,13 +36,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Parse apps from the [hide-idle] section in config (same format as clear-mac-apps)
-get_hide_idle_apps() {
+# Parse apps from the [hide-idle-exclude] section in config (same format as clear-mac-apps)
+get_hide_idle_exclude() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
         echo "Error: Config file not found: $CONFIG_FILE" >&2
         exit 1
     fi
-    awk -v section="[hide-idle]" '
+    awk -v section="[hide-idle-exclude]" '
         /^\[.*\]$/ { in_section = ($0 == section); next }
         in_section && !/^#/ && !/^[[:space:]]*$/ {
             sub(/#.*/, "")
@@ -50,6 +51,11 @@ get_hide_idle_apps() {
         }
     ' "$CONFIG_FILE"
 }
+
+# OS chrome that isn't a "program" in the hide-idle sense - hardcoded, not
+# user-configurable via [hide-idle-exclude]. Toggling visibility on these is
+# either meaningless or risky (Finder/Dock underpin the desktop shell).
+HARDCODED_EXCLUDE=(Finder Dock SystemUIServer loginwindow WindowServer)
 
 # Snapshot frontmost app name + all running process names in one osascript call
 get_snapshot() {
@@ -72,15 +78,13 @@ hide_app() {
 }
 
 main() {
-    typeset -A hide_idle_set
+    typeset -A exclude_set
+    for app in "${HARDCODED_EXCLUDE[@]}"; do
+        exclude_set[${(L)app}]="$app"
+    done
     while IFS= read -r app; do
-        [[ -n "$app" ]] && hide_idle_set[${(L)app}]="$app"
-    done < <(get_hide_idle_apps)
-
-    if (( ${#hide_idle_set} == 0 )); then
-        echo "No apps configured in [hide-idle] section."
-        return 0
-    fi
+        [[ -n "$app" ]] && exclude_set[${(L)app}]="$app"
+    done < <(get_hide_idle_exclude)
 
     local snapshot front_app
     snapshot=$(get_snapshot)
@@ -92,6 +96,11 @@ main() {
         local name="${line#RUN:}"
         running_set[${(L)name}]="$name"
     done <<< "$snapshot"
+
+    if (( ${#running_set} == 0 )); then
+        echo "No running apps detected."
+        return 0
+    fi
 
     # Load previous state: app_lower -> last_frontmost_epoch
     typeset -A last_active
@@ -108,9 +117,9 @@ main() {
 
     local -a would_hide=()
     local new_state=""
-    for app_lower in "${(k)hide_idle_set[@]}"; do
-        local app="${hide_idle_set[$app_lower]}"
-        (( ${+running_set[$app_lower]} )) || continue  # not running, skip (nothing to track/hide)
+    for app_lower in "${(k)running_set[@]}"; do
+        (( ${+exclude_set[$app_lower]} )) && continue  # excluded, never track/hide
+        local app="${running_set[$app_lower]}"
 
         if [[ "$app_lower" == "$front_app_lower" ]]; then
             last_active[$app_lower]="$now"
