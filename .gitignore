@@ -38,6 +38,8 @@ claude/plans.archive/
 claude/channels/
 claude/history.jsonl
 claude/history.jsonl.archive.*
+claude/.config.json.tmp.*
+claude/loop.md
 # (claude/skills/anthropic-style-workspace/ is ignored via claude/skills/.gitignore deny-list)
 
 # Codex runtime state (local operational artifacts)
