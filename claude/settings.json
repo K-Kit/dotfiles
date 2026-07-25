@@ -484,6 +484,27 @@
         ]
       },
       {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/hooks/codex_plan_write_reminder.mjs\"",
+            "if": "Write(*/plans/*.md)",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/hooks/codex_code_review_reminder.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -545,6 +566,12 @@
             "command": "$HOME/.claude/hooks/nudge_experiment_jobs.sh",
             "if": "Bash(*python*)",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "node \"$HOME/.claude/hooks/codex_git_add_reminder.mjs\"",
+            "if": "Bash(git add *)",
+            "timeout": 5
           }
         ]
       },

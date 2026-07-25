@@ -101,6 +101,7 @@ eggs/
 lib/
 lib64/
 !lib/plotting/
+!claude/hooks/lib/
 parts/
 sdist/
 var/
