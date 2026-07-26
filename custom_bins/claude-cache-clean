@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# claude-cache-clean — Remove stale plugin cache versions.
+# claude-cache-clean — Remove stale plugin cache versions and abandoned clones.
 #
 # The plugin cache at ~/.claude/plugins/cache/ accumulates old versions.
 # This script identifies and removes non-current versions, keeping only the
 # versions referenced in installed_plugins.json.
+#
+# It also reaps abandoned temp_git_* directories. Plugin install/update clones
+# a marketplace into cache/temp_git_<epoch_ms>_<rand>/, copies the files out,
+# and leaves the bare .git behind. These were invisible to the version walk
+# below: they sit at marketplace depth and hold only a dotfile, so the "*/"
+# globs never match anything inside them. 37 had accumulated (50MB, 26% of
+# the cache) over 9 days before this pass was added on 2026-07-26.
 #
 # Usage:
 #   claude-cache-clean           # Dry run — show what would be removed
@@ -52,6 +59,36 @@ kept_count=0
 echo -e "${YELLOW}Scanning plugin cache...${NC}"
 echo ""
 
+# Reap abandoned temp_git_* clones. All three guards must hold: the name
+# matches, nothing but .git is inside, and it is older than the age floor —
+# so a clone still in flight is never touched.
+TEMP_MIN_AGE_MIN="${CLAUDE_CACHE_TEMP_AGE_MIN:-60}"
+temp_count=0
+temp_size=0
+temp_skipped=0
+
+while IFS= read -r temp_dir; do
+    [[ -n "$temp_dir" ]] || continue
+
+    extra=$(find "$temp_dir" -mindepth 1 -maxdepth 1 ! -name '.git' -print -quit 2>/dev/null)
+    if [[ -n "$extra" ]]; then
+        echo -e "  ${YELLOW}SKIP${NC} $(basename "$temp_dir") — holds more than .git"
+        temp_skipped=$((temp_skipped + 1))
+        continue
+    fi
+
+    size=$(du -sk "$temp_dir" 2>/dev/null | cut -f1)
+    temp_size=$((temp_size + size))
+    temp_count=$((temp_count + 1))
+
+    if $DRY_RUN; then
+        echo -e "  ${RED}ABANDONED${NC} $(basename "$temp_dir") (${size}KB)"
+    else
+        echo -e "  ${RED}REMOVING${NC} $(basename "$temp_dir") (${size}KB)"
+        rm -rf "$temp_dir"
+    fi
+done < <(find "$CACHE_DIR" -maxdepth 1 -type d -name 'temp_git_*' -mmin "+${TEMP_MIN_AGE_MIN}" 2>/dev/null | sort)
+
 # Walk marketplace dirs
 for marketplace_dir in "$CACHE_DIR"/*/; do
     [[ -d "$marketplace_dir" ]] || continue
@@ -86,8 +123,12 @@ done
 echo ""
 echo -e "${GREEN}Current versions: ${kept_count}${NC}"
 echo -e "${RED}Stale versions: ${stale_count}${NC} (~$((stale_size / 1024))MB)"
+echo -e "${RED}Abandoned clones: ${temp_count}${NC} (~$((temp_size / 1024))MB)"
+if [[ $temp_skipped -gt 0 ]]; then
+    echo -e "${YELLOW}Skipped (not empty): ${temp_skipped}${NC}"
+fi
 
-if $DRY_RUN && [[ $stale_count -gt 0 ]]; then
+if $DRY_RUN && [[ $((stale_count + temp_count)) -gt 0 ]]; then
     echo ""
-    echo -e "${YELLOW}Run 'claude-cache-clean --apply' to remove stale versions${NC}"
+    echo -e "${YELLOW}Run 'claude-cache-clean --apply' to remove them${NC}"
 fi
