@@ -16,11 +16,11 @@ You have been woken by the hourly `tmux-resume` nudge, not by a human. Something
 
 ## Why this exists
 
-The hourly nudge in `config/tmux-resume-patterns.conf` sends a bare `continue`. `continue` has no exit branch, so sessions resume hourly forever and accumulate: 101 of 157 jobs on this machine were hourly `continue` nudges, and 56 sessions sat blocked on a human decision that was never surfaced. Fixing the inflow means the nudge must be able to *end* a session.
+The hourly nudge in `config/tmux-resume-patterns.conf` used to send a bare `continue`. `continue` has no exit branch, so sessions resume hourly forever and accumulate: 101 of 157 jobs on this machine were hourly `continue` nudges, and 56 sessions sat blocked on a human decision that was never surfaced. Fixing the inflow means the nudge must be able to *end* a session — so the nudge now types `/wrap-up` instead.
 
-**Status: the config still sends `continue`.** Repointing it is blocked on capturing the exact wording of a real rate-limit prompt, so this skill is currently reachable only by typing `/wrap-up` yourself. That is deliberate — the alternative was guessing a match pattern, and a wrong guess ships a nudge that silently never fires.
+**Status: the nudge is wired, the keystrokes are not yet confirmed.** Detection anchors on rate-limit wordings captured from real prompts, but the *action* — `1 Enter`, then `/wrap-up`, then two `Enter`s — has never been fired at a live prompt, because a sandboxed session cannot open a tmux socket. Both guesses are marked as such in the pattern file and are settled by one `tmux-resume --dry-run` against a real rate-limited pane.
 
-That gate is enforced by `disable-model-invocation: true` in the frontmatter, not by this paragraph. Omitting it makes a skill model-invoked (see `claude/skills/writing-great-skills/SKILL.md` § Invocation), which would let a matching dotfiles prompt fire an autonomous commit-and-push path before the nudge itself has ever been verified against a real rate-limit prompt. Discovery during the trial is via `claude/skills/catalog/SKILL.md`. Drop the flag only when the nudge is wired up and trusted.
+**`disable-model-invocation: true` stays on regardless.** It makes this skill reachable only by someone typing `/wrap-up` — and the nudge sending those keystrokes *is* that invocation, so wiring the nudge is not a reason to drop the flag. Omitting it would instead make the skill model-invoked (see `claude/skills/writing-great-skills/SKILL.md` § Invocation), letting any matching dotfiles prompt fire an autonomous commit-and-push path with no nudge involved at all. That is a different and much wider trigger surface than the one being trialled here. Discovery during the trial is via `claude/skills/catalog/SKILL.md`.
 
 ## Step 0: Scope guard (required first)
 
@@ -30,7 +30,9 @@ This skill is being trialled on `dotfiles` only. Before anything else:
 basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")"
 ```
 
-**If that basename is not `dotfiles`**, stop immediately. Print one line — `wrap-up: out of trial scope (<repo>), no action taken` — and end your turn without touching the working tree. Do not fall back to `continue`. Do not do the work "just this once."
+**If that basename is not `dotfiles`**, do none of the steps below. Print one line — `wrap-up: out of trial scope (<repo>), resuming prior task` — and then **carry on with whatever the session was already doing**, exactly as a bare `continue` would have. Do not do the wrap-up work "just this once."
+
+That fall-back is deliberate and load-bearing. The nudge in `config/tmux-resume-patterns.conf` no longer sends `continue` — it sends `/wrap-up` — so this branch is what every rate-limited pane *outside* dotfiles now lands on. Stopping dead here would strand those panes mid-work with no PR, no blocker stated, and no rename; and because a resumed pane stops displaying a rate-limit banner, no row would match on the next hourly scan to retry. That is strictly worse than the `continue` it replaced, and it is the same shape as the detect-only regression this PR already had to fix once. A trial scoped to `dotfiles` must not change behaviour outside `dotfiles`.
 
 Use `--git-common-dir`, not `--show-toplevel`. In a linked worktree (`cw`, `claude --worktree`) `--show-toplevel` returns the *worktree* path, whose basename is the worktree's name — `agent-sprawl-spec`, not `dotfiles` — so a `show-toplevel` test excludes every branch worktree, which is where most sessions actually live. `--git-common-dir` resolves to the owning repo's `.git` in both a worktree and the root checkout, so its parent's basename is the repo name either way. Worktrees are in scope: they are the intended home for a wrap-up commit, since Step 2 forbids committing on `main`.
 
@@ -120,7 +122,7 @@ Keep `<topic>` to two or three words. If `tmux rename-window` fails (no tmux, de
 |---|---|
 | "I'll just keep going, I'm close" | That is what `continue` did 101 times. Classify and terminate. |
 | "I'll pick the sensible option and note it" | Step 3 exists precisely to stop this. Surface it. |
-| "This repo isn't dotfiles but the work is obviously fine" | Step 0 is a hard stop. The trial scope is the point. |
+| "This repo isn't dotfiles but the work is obviously fine" | Step 0 is a hard stop *on the wrap-up steps*. The trial scope is the point. Announce out-of-scope, resume the prior task, and do none of the steps below it. |
 | "I'll commit everything to be safe" | Stage the paths you touched, by name. `git add -u` commits other people's work; `git add -A` also stages sandbox char-device masks. |
 | "I'm on `main` but the change is small" | Step 2's precondition is a hard stop. Unattended commits onto `main` are exactly what the draft-PR flow exists to prevent. |
 | "I'll just switch the checkout to a branch first" | Only in a linked worktree. In the root checkout that moves HEAD for every other pane and cron job pointed at it. |
