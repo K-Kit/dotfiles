@@ -1,19 +1,25 @@
-// window-exposure - report which apps currently have a visible (unoccluded) window.
+// window-exposure - report which apps currently have a sufficiently visible window.
 //
 // Reads the on-screen window list front-to-back and, for each layer-0 window,
-// decides whether some window IN FRONT of it fully contains it. This is
-// Chromium's conservative occlusion fallback (web_contents_occlusion_checker_mac.mm):
-// a window counts as occluded only when a SINGLE higher window covers its whole
-// frame. Two windows that jointly cover a third are not detected — deliberately,
-// because exact rectangle-union geometry is unreliable under transparency and
-// rounded corners, and erring towards "visible" is the safe direction here.
+// computes what fraction of its frame is NOT covered by the opaque windows in
+// front of it. A window counts as exposed when that fraction is at least
+// --min-visible (default 40%).
+//
+// Coverage is the UNION of the occluding rectangles, computed exactly by
+// coordinate compression: the candidate's and occluders' edges induce a small
+// grid, and each cell is covered if its centre falls inside any occluder.
+// Because it is a union, several windows that jointly cover a candidate are
+// detected — unlike a single-window containment test, which misses that case.
+// Full containment by one window is kept as a fast path for the common case.
 //
 // Output: one "<pid>\t<0|1>" line per PID that owns at least one candidate window,
 // 1 = at least one window exposed. Apps with no candidate window are simply absent
 // from the output — that is "unknown", not "not exposed", and the caller must never
-// treat absence as grounds to hide.
+// treat absence as grounds to hide. --verbose adds a third column with the best
+// visible fraction for that PID, for diagnostics only.
 //
-// Exit codes: 0 ok · 1 no usable window list (caller: hide nothing) · 2 screen locked.
+// Exit codes: 0 ok · 1 no usable window list (caller: hide nothing) · 2 screen locked
+// · 64 bad usage.
 //
 // Uses only required window-list keys (bounds, layer, alpha, owner PID), which are
 // populated without Screen Recording permission. Owner name and window title are
@@ -50,6 +56,64 @@ func fail(_ message: String, _ code: Int32) -> Never {
     exit(code)
 }
 
+// Fraction of `candidate` left visible once every rect in `occluders` is painted
+// over it. Exact for axis-aligned rectangles; 1.0 when nothing overlaps.
+func visibleFraction(of candidate: CGRect, under occluders: [CGRect]) -> Double {
+    let total = candidate.width * candidate.height
+    guard total > 0 else { return 0 }
+    if occluders.isEmpty { return 1 }
+
+    // Clamp every edge into the candidate, so the grid only spans the candidate.
+    func clamp(_ v: Double, _ lo: Double, _ hi: Double) -> Double { min(max(v, lo), hi) }
+    var xs: Set<Double> = [candidate.minX, candidate.maxX]
+    var ys: Set<Double> = [candidate.minY, candidate.maxY]
+    for o in occluders {
+        xs.insert(clamp(o.minX, candidate.minX, candidate.maxX))
+        xs.insert(clamp(o.maxX, candidate.minX, candidate.maxX))
+        ys.insert(clamp(o.minY, candidate.minY, candidate.maxY))
+        ys.insert(clamp(o.maxY, candidate.minY, candidate.maxY))
+    }
+    let xg = xs.sorted()
+    let yg = ys.sorted()
+
+    var covered: Double = 0
+    for i in 0..<(xg.count - 1) {
+        let width = xg[i + 1] - xg[i]
+        if width <= 0 { continue }
+        let cx = (xg[i] + xg[i + 1]) / 2
+        for j in 0..<(yg.count - 1) {
+            let height = yg[j + 1] - yg[j]
+            if height <= 0 { continue }
+            let centre = CGPoint(x: cx, y: (yg[j] + yg[j + 1]) / 2)
+            for o in occluders where o.contains(centre) {
+                covered += width * height
+                break
+            }
+        }
+    }
+    return clamp((total - covered) / total, 0, 1)
+}
+
+var minVisible: Double = 0.40
+var verbose = false
+var argv = Array(CommandLine.arguments.dropFirst())
+var argIndex = 0
+while argIndex < argv.count {
+    switch argv[argIndex] {
+    case "--min-visible":
+        argIndex += 1
+        guard argIndex < argv.count, let percent = Double(argv[argIndex]),
+              percent >= 0, percent <= 100
+        else { fail("--min-visible needs a percentage between 0 and 100", 64) }
+        minVisible = percent / 100
+    case "--verbose":
+        verbose = true
+    default:
+        fail("unknown argument: \(argv[argIndex])", 64)
+    }
+    argIndex += 1
+}
+
 // A locked screen says nothing about what the user can see.
 if let session = CGSessionCopyCurrentDictionary() as? [String: Any],
    let locked = session["CGSSessionScreenIsLocked"] as? Int, locked == 1 {
@@ -76,27 +140,36 @@ for info in raw {
     windows.append(Win(pid: pid, alpha: alpha, rect: rect))
 }
 
-var exposedByPID: [pid_t: Bool] = [:]
+// Best visible fraction seen for each PID. A window of the same app never counts
+// as an occluder: an app covering itself is still that app on screen.
+var bestFractionByPID: [pid_t: Double] = [:]
 for (i, candidate) in windows.enumerated() where candidate.area >= minCandidateArea {
-    var occluded = false
+    var occluders: [CGRect] = []
+    var fullyContained = false
     for j in 0..<i {
         let front = windows[j]
-        if front.alpha >= opaqueAlpha, front.pid != candidate.pid, front.covers(candidate) {
-            occluded = true
+        guard front.alpha >= opaqueAlpha, front.pid != candidate.pid else { continue }
+        if front.covers(candidate) {
+            fullyContained = true
             break
         }
+        if front.rect.intersects(candidate.rect) { occluders.append(front.rect) }
     }
-    exposedByPID[candidate.pid] = (exposedByPID[candidate.pid] ?? false) || !occluded
+    let fraction = fullyContained ? 0 : visibleFraction(of: candidate.rect, under: occluders)
+    bestFractionByPID[candidate.pid] = max(bestFractionByPID[candidate.pid] ?? 0, fraction)
 }
 
 // No candidate windows at all on a non-empty list means we are looking at something
 // other than an ordinary desktop (Mission Control, a Space transition). Unknown, not empty.
-if exposedByPID.isEmpty {
+if bestFractionByPID.isEmpty {
     fail("no layer-0 candidate windows", 1)
 }
 
 var out = ""
-for pid in exposedByPID.keys.sorted() {
-    out += "\(pid)\t\(exposedByPID[pid]! ? 1 : 0)\n"
+for pid in bestFractionByPID.keys.sorted() {
+    let fraction = bestFractionByPID[pid]!
+    out += "\(pid)\t\(fraction >= minVisible ? 1 : 0)"
+    if verbose { out += String(format: "\t%.3f", fraction) }
+    out += "\n"
 }
 FileHandle.standardOutput.write(Data(out.utf8))

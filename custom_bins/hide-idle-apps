@@ -4,10 +4,11 @@
 # (opt-out: hide-by-default). Scheduled as a polling job (see
 # scripts/cleanup/setup_hide_idle_apps.sh).
 #
-# The tracked signal is EXPOSURE, not focus: an app with any visible window on
-# screen is never hidden, however long since it was last focused. Focus is
-# exclusive (one app at a time), so a 60s poll misses most short visits; exposure
-# is shared and continuous, so one poll observes every visible app at once.
+# The tracked signal is EXPOSURE, not focus: an app with a window at least
+# HIDE_IDLE_MIN_VISIBLE_PERCENT visible is never hidden, however long since it was
+# last focused, and neither is whatever is frontmost. Focus is exclusive (one app
+# at a time), so a 60s poll misses most short visits; exposure is shared and
+# continuous, so one poll observes every visible app at once.
 #
 # Exposure comes from tools/window-exposure (CGWindowList, keyed by owner PID).
 # An app absent from that list - another Space, fullscreen, minimised - is
@@ -34,11 +35,14 @@ STATE_VERSION="#v2"
 # Environment wins over config file, which wins over these defaults.
 env_idle="${HIDE_IDLE_MINUTES:-}"
 env_poll="${HIDE_IDLE_POLL_SECONDS:-}"
+env_minvis="${HIDE_IDLE_MIN_VISIBLE_PERCENT:-}"
 HIDE_IDLE_MINUTES=15
 HIDE_IDLE_POLL_SECONDS=60
+HIDE_IDLE_MIN_VISIBLE_PERCENT=40
 [[ -f "$TUNABLES_CONF" ]] && source "$TUNABLES_CONF"
 [[ -n "$env_idle" ]] && HIDE_IDLE_MINUTES="$env_idle"
 [[ -n "$env_poll" ]] && HIDE_IDLE_POLL_SECONDS="$env_poll"
+[[ -n "$env_minvis" ]] && HIDE_IDLE_MIN_VISIBLE_PERCENT="$env_minvis"
 
 # An app must be observed covered on this many consecutive valid polls before it
 # is eligible to hide - one bad snapshot should never be enough.
@@ -62,6 +66,9 @@ while [[ $# -gt 0 ]]; do
             echo "Tunables (config/hide-idle.conf, overridable by environment):"
             echo "  HIDE_IDLE_MINUTES       minutes covered before hiding (default: 15)"
             echo "  HIDE_IDLE_POLL_SECONDS  poll interval, used for gap detection (default: 60)"
+            echo "  HIDE_IDLE_MIN_VISIBLE_PERCENT"
+            echo "                          percent of a window that must be visible for the app"
+            echo "                          to count as on screen (default: 40)"
             exit 0
             ;;
         *)
@@ -191,7 +198,7 @@ main() {
     if [[ -z "$invalid" ]]; then
         if ! ensure_helper; then
             invalid="window-exposure helper unavailable (swiftc missing or compile failed)"
-        elif ! exposure=$("$HELPER_BIN" 2>/dev/null); then
+        elif ! exposure=$("$HELPER_BIN" --min-visible "$HIDE_IDLE_MIN_VISIBLE_PERCENT" 2>/dev/null); then
             invalid="no usable window list (screen locked, Mission Control, or a Space transition)"
         fi
     fi
@@ -205,8 +212,9 @@ main() {
         return 0
     fi
 
-    # pid -> 1 exposed / 0 fully covered. A PID absent from this map owns no
-    # window on the current Space: unknown, and never grounds to hide.
+    # pid -> 1 if some window of it is at least HIDE_IDLE_MIN_VISIBLE_PERCENT
+    # visible, 0 if every window is more covered than that. A PID absent from this
+    # map owns no window on the current Space: unknown, and never grounds to hide.
     typeset -A exposed
     local pid
     while IFS=$'\t' read -r pid val; do
@@ -248,7 +256,7 @@ main() {
 
         is_exposed=true
         if [[ "$pid" != "$front_pid" ]] && [[ "${exposed[$pid]:-unknown}" == "0" ]]; then
-            is_exposed=false  # has windows here, and every one of them is covered
+            is_exposed=false  # has windows here, and every one is under the visible threshold
         fi
 
         if $is_exposed; then
@@ -285,7 +293,7 @@ main() {
     fi
 
     if $DRY_RUN; then
-        echo "=== DRY RUN (threshold: ${HIDE_IDLE_MINUTES}m covered, frontmost pid: ${front_pid:-none}) ==="
+        echo "=== DRY RUN (threshold: ${HIDE_IDLE_MINUTES}m under ${HIDE_IDLE_MIN_VISIBLE_PERCENT}% visible, frontmost pid: ${front_pid:-none}) ==="
         if (( ${#would_hide} > 0 )); then
             echo "Would HIDE:"
             for app in "${would_hide[@]}"; do
