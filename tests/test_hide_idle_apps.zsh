@@ -88,8 +88,9 @@ export STUB_HELPER_OUT=$'101\t1\t1.000\n102\t0\t0.352\n103\t0\t0.000\n104\t1\t0.
 export STUB_HELPER_ARGS_LOG="$WORK/helper-args.log"
 export STUB_HIDE_LOG="$WORK/hide-attempts.log"
 
-run() {  # run <helper_rc> [args...]; sets OUT / ERR / RC
-    : > "$STUB_HELPER_ARGS_LOG"
+run() {  # run <helper_rc> [args...]; sets OUT / ERR / RC / ARGS
+    : > "$STUB_HELPER_ARGS_LOG"   # both logs are per-run, so no run can inherit
+    : > "$STUB_HIDE_LOG"          # what an earlier one recorded
     STUB_HELPER_RC="$1"; shift
     export STUB_HELPER_RC
     OUT=$(HOME="$FAKEHOME" PATH="$ROOT/bin:$PATH" \
@@ -149,7 +150,6 @@ check_not "stderr stays quiet"             "$ERR" "hide-idle-apps:"
 # --- 4. only the covered, still-visible app is hidden ----------------------
 print -r -- "4. real run hides only the covered, still-visible app"
 rm -rf "$FAKEHOME/.cache"; seed_state 60
-: > "$STUB_HIDE_LOG"
 run 0
 HIDES=$(cat "$STUB_HIDE_LOG")
 check     "covered app is hidden"          "$OUT"   "Hid: Telegram"
@@ -164,7 +164,6 @@ check_not "scheduled run skips --verbose"  "$ARGS" "--verbose"
 # --- 5. skipped polls (sleep) hide nothing ---------------------------------
 print -r -- "5. a gap over 3x the poll interval hides nothing"
 rm -rf "$FAKEHOME/.cache"; seed_state 1000
-: > "$STUB_HIDE_LOG"
 run 0
 check_not "no hide attempted after a gap"  "$(cat "$STUB_HIDE_LOG")" "unix id"
 check_not "nothing reported hidden"        "$OUT" "Hid:"
