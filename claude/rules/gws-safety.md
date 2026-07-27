@@ -1,6 +1,6 @@
 # GWS & Email Safety
 
-Proactive guidance for Gmail/Drive/Calendar/Tasks via `gws` CLI or MCP. PreToolUse hooks (`block_gws_delete.sh`, `block_email_send.sh`) enforce the hard limits below only once `wire_harness_hooks.py --apply` has run — until then this file is the sole guard, so follow it proactively.
+Proactive guidance for Gmail/Drive/Calendar/Tasks via `gws` CLI or MCP. PreToolUse hooks (`block_gws_delete.sh`, `block_email_send.sh`) match the Bash `gws` path only; MCP tool calls are guarded by this file alone until `wire_harness_hooks.py --apply` wires the deletion matchers, and by this file alone for drafting even after. Follow it proactively regardless — never rely on a hook to catch you.
 
 ## Never Delete, Only Trash
 

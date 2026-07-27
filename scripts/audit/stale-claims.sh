@@ -15,6 +15,18 @@ DOT_DIR="$(cd "$SCRIPT_DIR/.." && cd .. && pwd)"
 REPORT_DIR="${STALE_CLAIMS_REPORT_DIR:-$HOME/.local/share/stale-claims}"
 REPORT_FILE="$REPORT_DIR/report-$(date +%Y%m%d).txt"
 
+# Under cron/launchd we inherit the scheduler's minimal PATH, not the interactive
+# one. That silently picks the wrong binary — system fzf 0.44 instead of the
+# deployed 0.71 — or finds none at all, so the audit reports DRIFT/SKIP for a
+# claim that is actually fine. A weekly false alarm is how an audit gets ignored.
+for _d in "$HOME/.local/bin" "$HOME/.local/share/mise/shims" "$HOME/.cargo/bin" \
+          /opt/homebrew/bin /usr/local/bin; do
+    [[ -d "$_d" ]] || continue
+    case ":$PATH:" in *":$_d:"*) ;; *) PATH="$_d:$PATH" ;; esac
+done
+unset _d
+export PATH
+
 # Fail loudly rather than run to a green exit that wrote nothing. Under weekly
 # cron an unwritable report dir (sandbox, read-only $HOME) would otherwise look
 # identical to a clean audit.
@@ -40,18 +52,57 @@ drift() {
 
 log "=== Stale Claims Audit $(date) ==="
 
+# Resolve a symlink chain. BSD readlink has no -f, so on stock macOS the bare
+# `readlink -f` this used to call fails and every Claude-binary check logs SKIP.
+resolve_link() {
+    if command -v realpath >/dev/null 2>&1; then
+        realpath "$1" 2>/dev/null
+    elif readlink -f / >/dev/null 2>&1; then
+        readlink -f "$1" 2>/dev/null
+    else
+        python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null
+    fi
+}
+
 # Resolve the installed Claude Code binary. `command -v claude` is a shell alias in
 # this setup and resolves to the dotfiles directory, so go to the versions dir.
 claude_binary() {
     local launcher="$HOME/.local/bin/claude" real
     [[ -x "$launcher" ]] || return 1
-    real="$(readlink -f "$launcher")"
-    [[ -f "$real" ]] || return 1
+    real="$(resolve_link "$launcher")"
+    [[ -n "$real" && -f "$real" ]] || return 1
     printf '%s' "$real"
 }
 
+# Compare dotted versions without GNU `sort -V`, which BSD/macOS sort lacks —
+# there it exits non-zero and a perfectly current fzf gets reported as below the
+# floor. Returns 0 when $1 >= $2.
+ver_ge() {
+    local IFS=. i x y
+    # shellcheck disable=SC2206  # deliberate word-split on IFS=.
+    local a=($1) b=($2)
+    for ((i = 0; i < ${#b[@]}; i++)); do
+        x="${a[i]:-0}"; x="${x//[!0-9]/}"
+        y="${b[i]:-0}"; y="${y//[!0-9]/}"
+        ((10#${x:-0} > 10#${y:-0})) && return 0
+        ((10#${x:-0} < 10#${y:-0})) && return 1
+    done
+    return 0
+}
+
 # Count literal occurrences of a pattern in a (large, binary) file.
-count_in() { rg -aoc "$1" "$2" 2>/dev/null || echo 0; }
+# rg exits 1 for "no match" and >=2 for a real error (missing binary, unreadable
+# file). Collapsing both to 0 made a broken audit indistinguishable from a clean
+# one — the caller would report OK/DRIFT having measured nothing. Fail instead.
+count_in() {
+    local out rc
+    out="$(rg -aoc "$1" "$2" 2>/dev/null)"; rc=$?
+    case "$rc" in
+        0) printf '%s' "$out" ;;
+        1) printf '0' ;;
+        *) return 1 ;;
+    esac
+}
 
 # --- claude/CLAUDE.md: "Tasks — per-project not yet supported (as of 2026-07-27)"
 check_tasks_directory() {
@@ -60,7 +111,10 @@ check_tasks_directory() {
         skip "$loc" "Claude Code binary not found"
         return
     fi
-    n="$(count_in 'tasksDirectory' "$bin")"
+    if ! n="$(count_in 'tasksDirectory' "$bin")"; then
+        skip "$loc" "ripgrep could not scan $(basename "$bin")"
+        return
+    fi
     if [[ "$n" -gt 0 ]]; then
         drift "$loc" "tasksDirectory now appears in the binary ($n hits) — the claim is obsolete"
     else
@@ -75,7 +129,10 @@ check_read_threshold() {
         skip "$loc" "Claude Code binary not found"
         return
     fi
-    n="$(count_in 'READ_THRESHOLD' "$bin")"
+    if ! n="$(count_in 'READ_THRESHOLD' "$bin")"; then
+        skip "$loc" "ripgrep could not scan $(basename "$bin")"
+        return
+    fi
     if [[ "$n" -gt 0 ]]; then
         drift "$loc" "a READ_THRESHOLD env var now exists ($n hits) — the bar may be configurable again"
     else
@@ -90,7 +147,10 @@ check_fable_model() {
         skip "$loc" "Claude Code binary not found"
         return
     fi
-    n="$(count_in 'claude-fable-5' "$bin")"
+    if ! n="$(count_in 'claude-fable-5' "$bin")"; then
+        skip "$loc" "ripgrep could not scan $(basename "$bin")"
+        return
+    fi
     if [[ "$n" -gt 0 ]]; then
         ok "$loc" "claude-fable-5 present ($n hits)"
     else
@@ -105,7 +165,10 @@ check_uv_malware() {
         skip "$loc" "uv not installed"
         return
     fi
-    n="$(count_in 'UV_MALWARE_CHECK' "$uv")"
+    if ! n="$(count_in 'UV_MALWARE_CHECK' "$uv")"; then
+        skip "$loc" "ripgrep could not scan $(basename "$uv")"
+        return
+    fi
     if [[ "$n" -eq 0 ]]; then
         drift "$loc" "UV_MALWARE_CHECK absent from $(uv --version) — the guard may have been renamed or removed"
         return
@@ -163,7 +226,11 @@ check_fzf_version() {
         return
     fi
     ver="$(fzf --version 2>/dev/null | awk '{print $1}')"
-    if printf '0.54\n%s\n' "$ver" | sort -V -C; then
+    if [[ -z "$ver" ]]; then
+        skip "$loc" "could not read \`fzf --version\`"
+        return
+    fi
+    if ver_ge "$ver" 0.54; then
         ok "$loc" "installed fzf $ver meets the floor"
     else
         drift "$loc" "installed fzf $ver is below 0.54 — the documented binding will not work here"
