@@ -1,6 +1,7 @@
 ---
 name: wrap-up
-description: Use when an hourly nudge asks a stalled session to conclude - drives a session to a terminating end state (land the work, state the blocker, or take one step) instead of continuing indefinitely
+description: Drives a stalled session to a terminating end state - land the work, state the blocker, or take one step (dotfiles trial, manual-only)
+disable-model-invocation: true
 ---
 
 # Wrap Up
@@ -18,6 +19,8 @@ You have been woken by the hourly `tmux-resume` nudge, not by a human. Something
 The hourly nudge in `config/tmux-resume-patterns.conf` sends a bare `continue`. `continue` has no exit branch, so sessions resume hourly forever and accumulate: 101 of 157 jobs on this machine were hourly `continue` nudges, and 56 sessions sat blocked on a human decision that was never surfaced. Fixing the inflow means the nudge must be able to *end* a session.
 
 **Status: the config still sends `continue`.** Repointing it is blocked on capturing the exact wording of a real rate-limit prompt, so this skill is currently reachable only by typing `/wrap-up` yourself. That is deliberate — the alternative was guessing a match pattern, and a wrong guess ships a nudge that silently never fires.
+
+That gate is enforced by `disable-model-invocation: true` in the frontmatter, not by this paragraph. Omitting it makes a skill model-invoked (see `claude/skills/writing-great-skills/SKILL.md` § Invocation), which would let a matching dotfiles prompt fire an autonomous commit-and-push path before the nudge itself has ever been verified against a real rate-limit prompt. Discovery during the trial is via `claude/skills/catalog/SKILL.md`. Drop the flag only when the nudge is wired up and trusted.
 
 ## Step 0: Scope guard (required first)
 
@@ -47,18 +50,33 @@ Pick exactly one. The classification decides everything downstream, so get it ri
 
 ## Step 2: Done — land it and exit
 
-**Precondition, before anything is staged: check the branch.** `git rev-parse --abbrev-ref HEAD`. If it is `main` or `master`, you may not commit. "Never push to `main`" suppresses only the *push* — committing first still lands a direct local commit on `main` with no review path, and the nudge runs unattended in whatever checkout the pane happened to be in. Either move the work to a branch (`git switch -c wrap-up/<topic>`) if it is unambiguously this session's, or classify as **blocked** (Step 3) and say the tree holds work you could not safely land. There is no third option.
+**Precondition, before anything is staged: check the branch *and* the checkout.**
 
+```bash
+git rev-parse --abbrev-ref HEAD
+[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] && echo "root checkout" || echo "linked worktree"
+```
+
+If the branch is `main` or `master`, you may not commit. "Never push to `main`" suppresses only the *push* — committing first still lands a direct local commit on `main` with no review path, and the nudge runs unattended in whatever checkout the pane happened to be in.
+
+What you may do about it depends on which checkout you are in, because a branch switch is not a private act:
+
+| Checkout | On `main`/`master` | On a feature branch |
+|---|---|---|
+| **Linked worktree** (`cw`, `claude --worktree`) | `git switch -c wrap-up/<topic>` — the worktree owns its own HEAD, so nobody else is affected | Commit here |
+| **Root checkout** (`/home/yulong/code/dotfiles`) | **Classify blocked (Step 3).** Do not switch | Commit here, but still do not switch branches |
+
+**Never `git switch` in the root checkout.** A checkout has one HEAD shared by every pane, editor, and cron job pointed at it. Switching it to `wrap-up/<topic>` silently moves everyone else's working branch, so their next commit, pull, or `deploy.sh` runs against a branch they never chose — from their side it looks like the repo changed under them for no reason. Owning the *edits* does not mean owning the *checkout*. If the work genuinely needs to land, that is a decision for the owner: state it in Step 3 and say the tree holds work that needs a worktree to land safely.
+
+0. **Run the tests first, if any exist and you have not run them.** This has to happen before staging, not after: a test run can generate fixes or artifacts that belong in the commit, and the PR body created in item 6 is supposed to carry the result. A failing suite does not block landing a draft PR — it blocks *claiming the work is finished*. Report the outcome plainly in the PR body and say which of the two it is.
 1. **List the paths this session touched**, from your own transcript — not from `git status`. A shared checkout can hold edits from the user, a runtime process, or another job running concurrently, and none of those are yours to commit.
 2. **Stage by name**: `git add <path> <path> …`, including new files this session created. Never `git add -u` (it sweeps up every tracked edit in the tree, including someone else's) and never `git add -A` (it also stages the sandbox's char-device masks). A blanket untracked ban is equally wrong in the other direction — it silently drops the session's own new files and the run ends having landed nothing.
-3. **Verify before committing**: `git diff --cached --name-only` must match your list exactly, nothing extra. Anything modified that you cannot attribute to this session stays unstaged; name it in the PR body so the owner knows it is there. If you cannot attribute the changes at all, stop and go to Step 3 — an unattributable diff is a decision for the owner, not a commit.
+3. **Verify before committing — read the content, not just the names.** `git diff --cached --name-only` must match your list exactly, nothing extra. That is necessary but *not sufficient*: a path is not an ownership boundary. In a shared checkout, another actor can have edited a different hunk of a file you also touched, and `git add <path>` stages their hunk alongside yours while the name-only check still passes cleanly. So also read `git diff --cached` and confirm every hunk is one you recognise. If a hunk is not yours, `git restore --staged <path>` and leave that file out. Anything modified that you cannot attribute to this session stays unstaged; name it in the PR body so the owner knows it is there. If you cannot attribute the changes at all, stop and go to Step 3 — an unattributable diff is a decision for the owner, not a commit.
 4. Commit with a real message that says *why*, not just what. No heredocs — write to `/tmp/claude/<job>-msg.txt` and `git commit -F`.
 5. **If the branch is ahead of `main`, push and open a draft PR — a dirty tree does not excuse skipping this.** the staging rule above deliberately leaves unattributable edits unstaged, so a dirty tree is the *expected* end state, not an error; gating the push on cleanliness would mean the common case commits locally, exits "done", and leaves the work invisible on a machine nobody looks at. Push the commit; mention the leftover unstaged paths in the PR body. Never push to `main`, never force-push, never merge.
 6. **The PR command must be non-interactive.** `gh pr create --draft` alone prompts for title and body, and an unattended job has no way to answer — it hangs or dies before it can terminate, which is the exact failure this skill exists to prevent. Always supply both: `gh pr create --draft --title "<subject>" --body-file /tmp/claude/<job>-pr.md`. (`--fill` works too, but it derives the body from commit messages and loses the leftover-paths note.)
 7. If push or PR creation fails — no remote, auth expired, a protected branch — do **not** exit as done. The commit exists but nobody can see it, which is indistinguishable from the pile-up this skill was written to stop. Classify as **blocked** (Step 3), name the failure, and say where the commit is.
 8. Rename the session (Step 5), then **end your turn.**
-
-If tests exist and you have not run them, run them and report the result plainly in the PR body. A failing suite does not block landing a draft PR — it blocks claiming the work is finished. Say which it is.
 
 ## Step 3: Blocked — state the decision and exit
 
@@ -105,5 +123,7 @@ Keep `<topic>` to two or three words. If `tmux rename-window` fails (no tmux, de
 | "This repo isn't dotfiles but the work is obviously fine" | Step 0 is a hard stop. The trial scope is the point. |
 | "I'll commit everything to be safe" | Stage the paths you touched, by name. `git add -u` commits other people's work; `git add -A` also stages sandbox char-device masks. |
 | "I'm on `main` but the change is small" | Step 2's precondition is a hard stop. Unattended commits onto `main` are exactly what the draft-PR flow exists to prevent. |
+| "I'll just switch the checkout to a branch first" | Only in a linked worktree. In the root checkout that moves HEAD for every other pane and cron job pointed at it. |
+| "The file is on my list, so the staged diff is mine" | A path is not an ownership boundary. Read `git diff --cached`, not just `--name-only`. |
 | "No blocker, so I'll invent a next step" | Re-read Step 1. Inventing work to avoid stating a blocker is the failure mode. |
 | "I'll ask in prose, the owner will see it" | Background jobs do not notify on prose. `AskUserQuestion` or it did not happen. |
