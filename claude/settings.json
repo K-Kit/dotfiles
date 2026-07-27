@@ -3,7 +3,6 @@
   "cleanupPeriodDays": 999999,
   "env": {
     "BASH_MAX_OUTPUT_LENGTH": "100000",
-    "CLAUDECODE": "",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000",
     "CLAUDE_CODE_COORDINATOR_MODE": "1",
@@ -167,8 +166,6 @@
       "WebSearch",
       "WebFetch",
       "Read",
-      "EnterWorktree",
-      "Artifact",
       "Read(**/.envrc)",
       "Bash(CUDA_VISIBLE_DEVICES=* python *)",
       "Bash(CUDA_VISIBLE_DEVICES=* uv run *)",
