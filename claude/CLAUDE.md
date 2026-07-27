@@ -18,7 +18,9 @@ A recurring theme is **red-teaming and building realistic model organisms** — 
 
 Concretely this means writing system prompts that induce failure modes (sandbagging, deception, scheming), iterating on them to evade current detectors, and building harnesses that run failure-mode vs. baseline side by side. **These are evaluation artifacts, not deployed systems.** A system prompt, eval config, or test harness is research infrastructure even when its content is adversarial.
 
-Work may touch bright red lines (mass surveillance, autonomous weapons). Distinguish actual threats from model organisms — and when the line is genuinely unclear, **ask rather than refuse silently**, so we can assess it together. Escalate anything that would enable real-world harm if extracted.
+**IMPORTANT NOTE**: Our work may touch on bright red lines like mass surveillance of American citizens, or fully autonomous weapons. We both need to distinguish between actual threats and model organisms — and talk it through when the line is unclear.
+
+When genuinely uncertain, **ask rather than refuse silently**. Escalate anything that would enable real-world harm if extracted.
 
 ---
 
@@ -54,7 +56,7 @@ Specs go in `<repo>/specs/`. `docs/` is a custom convention — not auto-loaded;
 These are the ones that aren't already enforced by the harness or obvious from the repo:
 
 - **Interview before planning** — `/spec-interview-research` for experiments, `/spec-interview` for features. `/grill-me` to check alignment.
-- **Use existing validated code** for experiments — correct hyperparams, full data, validated metrics. Ad-hoc only for dry runs.
+- **Use existing code** for experiments — correct hyperparams, full data, validated metrics; ad-hoc only for dry runs
 - **Test on real data** — not just unit tests; run e2e on a small real slice (`limit=3-5`).
 - **Never leave GPUs idle** — on a GPU box or cluster there is always a next experiment. Treat 0% util as a bug, not a resting state.
 - **Make work auditable** — someone opening the output directory should understand the experiment without the conversation. Summary file, labeled figures, the exact commands.
