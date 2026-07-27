@@ -1759,6 +1759,13 @@ parse_args() {
                 NON_INTERACTIVE=true
                 export NON_INTERACTIVE
                 ;;
+            --allow-worktree-deploy)
+                # Opt out of deploy.sh's worktree guard. Not a component, so it
+                # needs its own case — the --* catch-all below would both mangle
+                # it into a DEPLOY_* variable and collide with --only.
+                ALLOW_WORKTREE_DEPLOY=true
+                export ALLOW_WORKTREE_DEPLOY
+                ;;
             --no-*)
                 if [[ "$_only_mode" == true ]]; then
                     echo "Error: --only cannot be mixed with profile or component flags" >&2
