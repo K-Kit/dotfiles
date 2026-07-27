@@ -45,10 +45,14 @@ Pick exactly one. The classification decides everything downstream, so get it ri
 
 ## Step 2: Done — land it and exit
 
-1. Verify the tree: `git status --porcelain`. Never stage untracked files; use `git add -u` only, and only after confirming the index is otherwise clean (`git diff --cached --name-only`).
-2. Commit with a real message that says *why*, not just what. No heredocs — write to `/tmp/claude/<job>-msg.txt` and `git commit -F`.
-3. If the branch is ahead of `main` and the tree is clean, push and open a **draft** PR (`gh pr create --draft`). Never push to `main`, never force-push, never merge.
-4. Rename the session (Step 5), then **end your turn.**
+**Precondition, before anything is staged: check the branch.** `git rev-parse --abbrev-ref HEAD`. If it is `main` or `master`, you may not commit. "Never push to `main`" suppresses only the *push* — committing first still lands a direct local commit on `main` with no review path, and the nudge runs unattended in whatever checkout the pane happened to be in. Either move the work to a branch (`git switch -c wrap-up/<topic>`) if it is unambiguously this session's, or classify as **blocked** (Step 3) and say the tree holds work you could not safely land. There is no third option.
+
+1. **List the paths this session touched**, from your own transcript — not from `git status`. A shared checkout can hold edits from the user, a runtime process, or another job running concurrently, and none of those are yours to commit.
+2. **Stage by name**: `git add <path> <path> …`, including new files this session created. Never `git add -u` (it sweeps up every tracked edit in the tree, including someone else's) and never `git add -A` (it also stages the sandbox's char-device masks). A blanket untracked ban is equally wrong in the other direction — it silently drops the session's own new files and the run ends having landed nothing.
+3. **Verify before committing**: `git diff --cached --name-only` must match your list exactly, nothing extra. Anything modified that you cannot attribute to this session stays unstaged; name it in the PR body so the owner knows it is there. If you cannot attribute the changes at all, stop and go to Step 3 — an unattributable diff is a decision for the owner, not a commit.
+4. Commit with a real message that says *why*, not just what. No heredocs — write to `/tmp/claude/<job>-msg.txt` and `git commit -F`.
+5. If the branch is ahead of `main` and the tree is clean, push and open a **draft** PR (`gh pr create --draft`). Never push to `main`, never force-push, never merge.
+6. Rename the session (Step 5), then **end your turn.**
 
 If tests exist and you have not run them, run them and report the result plainly in the PR body. A failing suite does not block landing a draft PR — it blocks claiming the work is finished. Say which it is.
 
@@ -93,6 +97,7 @@ Keep `<topic>` to two or three words. If `tmux rename-window` fails (no tmux, de
 | "I'll just keep going, I'm close" | That is what `continue` did 101 times. Classify and terminate. |
 | "I'll pick the sensible option and note it" | Step 3 exists precisely to stop this. Surface it. |
 | "This repo isn't dotfiles but the work is obviously fine" | Step 0 is a hard stop. The trial scope is the point. |
-| "I'll commit everything to be safe" | Untracked files never get staged. `git add -u`, index verified clean first. |
+| "I'll commit everything to be safe" | Stage the paths you touched, by name. `git add -u` commits other people's work; `git add -A` also stages sandbox char-device masks. |
+| "I'm on `main` but the change is small" | Step 2's precondition is a hard stop. Unattended commits onto `main` are exactly what the draft-PR flow exists to prevent. |
 | "No blocker, so I'll invent a next step" | Re-read Step 1. Inventing work to avoid stating a blocker is the failure mode. |
 | "I'll ask in prose, the owner will see it" | Background jobs do not notify on prose. `AskUserQuestion` or it did not happen. |
