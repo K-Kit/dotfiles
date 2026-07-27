@@ -24,10 +24,12 @@ The hourly nudge in `config/tmux-resume-patterns.conf` sends a bare `continue`. 
 This skill is being trialled on `dotfiles` only. Before anything else:
 
 ```bash
-git rev-parse --show-toplevel 2>/dev/null
+basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")"
 ```
 
-**If the repo root's basename is not `dotfiles`** (including any worktree under `dotfiles/.claude/worktrees/`), stop immediately. Print one line — `wrap-up: out of trial scope (<repo>), no action taken` — and end your turn without touching the working tree. Do not fall back to `continue`. Do not do the work "just this once."
+**If that basename is not `dotfiles`**, stop immediately. Print one line — `wrap-up: out of trial scope (<repo>), no action taken` — and end your turn without touching the working tree. Do not fall back to `continue`. Do not do the work "just this once."
+
+Use `--git-common-dir`, not `--show-toplevel`. In a linked worktree (`cw`, `claude --worktree`) `--show-toplevel` returns the *worktree* path, whose basename is the worktree's name — `agent-sprawl-spec`, not `dotfiles` — so a `show-toplevel` test excludes every branch worktree, which is where most sessions actually live. `--git-common-dir` resolves to the owning repo's `.git` in both a worktree and the root checkout, so its parent's basename is the repo name either way. Worktrees are in scope: they are the intended home for a wrap-up commit, since Step 2 forbids committing on `main`.
 
 This guard exists because the nudge fires against every pane the scheduler can see, and the pattern file has no per-repo field. The skill is the only place scoping can live right now.
 
@@ -51,8 +53,10 @@ Pick exactly one. The classification decides everything downstream, so get it ri
 2. **Stage by name**: `git add <path> <path> …`, including new files this session created. Never `git add -u` (it sweeps up every tracked edit in the tree, including someone else's) and never `git add -A` (it also stages the sandbox's char-device masks). A blanket untracked ban is equally wrong in the other direction — it silently drops the session's own new files and the run ends having landed nothing.
 3. **Verify before committing**: `git diff --cached --name-only` must match your list exactly, nothing extra. Anything modified that you cannot attribute to this session stays unstaged; name it in the PR body so the owner knows it is there. If you cannot attribute the changes at all, stop and go to Step 3 — an unattributable diff is a decision for the owner, not a commit.
 4. Commit with a real message that says *why*, not just what. No heredocs — write to `/tmp/claude/<job>-msg.txt` and `git commit -F`.
-5. If the branch is ahead of `main` and the tree is clean, push and open a **draft** PR (`gh pr create --draft`). Never push to `main`, never force-push, never merge.
-6. Rename the session (Step 5), then **end your turn.**
+5. **If the branch is ahead of `main`, push and open a draft PR — a dirty tree does not excuse skipping this.** the staging rule above deliberately leaves unattributable edits unstaged, so a dirty tree is the *expected* end state, not an error; gating the push on cleanliness would mean the common case commits locally, exits "done", and leaves the work invisible on a machine nobody looks at. Push the commit; mention the leftover unstaged paths in the PR body. Never push to `main`, never force-push, never merge.
+6. **The PR command must be non-interactive.** `gh pr create --draft` alone prompts for title and body, and an unattended job has no way to answer — it hangs or dies before it can terminate, which is the exact failure this skill exists to prevent. Always supply both: `gh pr create --draft --title "<subject>" --body-file /tmp/claude/<job>-pr.md`. (`--fill` works too, but it derives the body from commit messages and loses the leftover-paths note.)
+7. If push or PR creation fails — no remote, auth expired, a protected branch — do **not** exit as done. The commit exists but nobody can see it, which is indistinguishable from the pile-up this skill was written to stop. Classify as **blocked** (Step 3), name the failure, and say where the commit is.
+8. Rename the session (Step 5), then **end your turn.**
 
 If tests exist and you have not run them, run them and report the result plainly in the PR body. A failing suite does not block landing a draft PR — it blocks claiming the work is finished. Say which it is.
 
@@ -65,9 +69,11 @@ This is the branch that matters most. Produce, in this order:
 3. **Your recommendation**, with one sentence of reasoning.
 4. **What it gates** — what stays stuck until this is answered.
 
-Then surface it via **`AskUserQuestion`**, not prose. This session is a background job; prose questions do not notify the owner, and an unnotified question is indistinguishable from no question at all. See `rules/background-job-questions.md`.
+**Order matters: rename first, ask second.** Do the Step 5 rename (`blocked: <one-line decision>`) and write the four items above into your narration *before* calling `AskUserQuestion`. `AskUserQuestion` is synchronous — if the owner does not answer, it does not return, and every instruction after it is unreachable. Put the rename after the call and an unanswered question leaves the session sitting under its old name with the blocker recorded nowhere: exactly the invisible-stall state this skill exists to eliminate, now produced by the skill itself. Renaming first means the disposition survives regardless of whether an answer ever arrives.
 
-Then rename the session (Step 5) and **end your turn.**
+Then surface the decision via **`AskUserQuestion`**, not prose. This session is a background job; prose questions do not notify the owner, and an unnotified question is indistinguishable from no question at all. See `rules/background-job-questions.md`.
+
+Write `needs input:` on its own line. If the call returns with an answer, act on it. If it never returns, the session is already named and the blocker already stated — that is the correct terminal state, not a failure.
 
 > **Never choose on the owner's behalf in order to look finished.** A stalled session is visibly stalled and costs an hour. A silently-wrong autonomous choice is invisible and lands in `main`. This constraint is not negotiable for the sake of a tidier job list — if you are unsure whether a call is yours, it is not yours.
 

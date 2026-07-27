@@ -4,7 +4,7 @@
 
 **In a background job, every decision point MUST go through `AskUserQuestion`. A question written as prose does not reach the user.**
 
-Background jobs (`claude --agent`, detached daemon sessions, anything in `~/.claude/jobs/`) render their text into a job list the user reads later, if at all. `AskUserQuestion` fires a notification; prose does not. A prose question in a background job is therefore not a question — it is a session that has silently stopped, indistinguishable from a stall, and it is the mechanism by which jobs pile up in `blocked` with nobody aware a decision was owed.
+Background jobs (`claude --bg` / `--background`, detached daemon sessions, anything in `~/.claude/jobs/`) render their text into a job list the user reads later, if at all. `AskUserQuestion` fires a notification; prose does not. A prose question in a background job is therefore not a question — it is a session that has silently stopped, indistinguishable from a stall, and it is the mechanism by which jobs pile up in `blocked` with nobody aware a decision was owed.
 
 ## What This Means Concretely
 

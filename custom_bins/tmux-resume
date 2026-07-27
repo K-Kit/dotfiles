@@ -13,11 +13,28 @@ DOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PATTERNS_FILE="${TMUX_RESUME_PATTERNS:-$DOT_DIR/config/tmux-resume-patterns.conf}"
 CAPTURE_LINES="${TMUX_RESUME_LINES:-12}"
 
+# Detect-only rows are throttled, not permanent. A pane sitting on a rate-limit
+# banner produces no new output, so the banner never leaves the capture window —
+# a detect-only row that returned unconditionally would keep winning first-match
+# every hour forever, including after the limit resets, stranding the pane until
+# a human touched it. Instead: hold the pane for this cooldown, then fall through
+# so a later action row can retry. Set to 0 to disable holding entirely (every
+# scan retries, i.e. detect-only rows become no-ops).
+STATE_DIR="${TMUX_RESUME_STATE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tmux-resume}"
+DETECT_COOLDOWN_HOURS="${TMUX_RESUME_DETECT_COOLDOWN_HOURS:-6}"
+
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 trim() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+
+# One 0-byte marker file per (socket, pane, row); its mtime is the hold's start.
+# Key is sanitised to a flat filename — collisions are harmless (worst case two
+# panes share a cooldown clock) and the alternative is parsing a shared file that
+# concurrent runs would race on.
+state_key() { printf '%s' "$1" | tr -c '[:alnum:]' '_'; }
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 
 command -v tmux &>/dev/null || { echo "[$(ts)] tmux-resume: tmux not found" >&2; exit 0; }
 [[ -f "$PATTERNS_FILE" ]] || { echo "[$(ts)] tmux-resume: patterns file missing: $PATTERNS_FILE" >&2; exit 0; }
@@ -43,7 +60,7 @@ discover_sockets() {
 
 resume_pane() {
   local socket="$1" target="$2" captured="$3"
-  local line name after_name regex send
+  local line name after_name regex send state_file cooldown held
   while IFS= read -r line; do
     line="$(printf '%s' "$line" | trim)"
     [[ -z "$line" || "$line" == \#* ]] && continue
@@ -64,10 +81,36 @@ resume_pane() {
     send="$(printf '%s' "$send" | trim)"
     [[ -z "$name" || -z "$regex" ]] && continue
     if printf '%s' "$captured" | grep -iqE "$regex"; then
+      if [[ -z "$send" ]]; then
+        # Detect-only row: hold the pane, then release it to the action rows below.
+        cooldown=$(( DETECT_COOLDOWN_HOURS * 3600 ))
+        if (( cooldown <= 0 )); then
+          echo "[$(ts)] MATCH [$name] $target — detect-only disabled (cooldown 0), falling through"
+          continue
+        fi
+        state_file="$STATE_DIR/$(state_key "${socket}|${target}|${name}")"
+        if [[ -f "$state_file" ]]; then
+          held=$(( $(date -u +%s) - $(file_mtime "$state_file") ))
+        else
+          held=-1
+        fi
+        if (( held >= 0 && held < cooldown )); then
+          echo "[$(ts)] MATCH [$name] $target — detect-only, holding (${held}s of ${cooldown}s)"
+          return 0
+        fi
+        # Either first sighting (start the clock) or the cooldown elapsed (restart
+        # it). Both re-stamp the marker; the difference is that a first sighting
+        # holds and an elapsed one falls through to retry.
+        $DRY_RUN || { mkdir -p "$STATE_DIR"; : > "$state_file"; }
+        if (( held < 0 )); then
+          echo "[$(ts)] MATCH [$name] $target — detect-only, first sighting, holding ${DETECT_COOLDOWN_HOURS}h"
+          return 0
+        fi
+        echo "[$(ts)] MATCH [$name] $target — detect-only cooldown elapsed (${held}s), retrying via action rows"
+        continue
+      fi
       if $DRY_RUN; then
-        echo "[$(ts)] MATCH [$name] $target — would send: ${send:-<detect-only>} (dry-run)"
-      elif [[ -z "$send" ]]; then
-        echo "[$(ts)] MATCH [$name] $target — detect-only (no send configured)"
+        echo "[$(ts)] MATCH [$name] $target — would send: $send (dry-run)"
       else
         echo "[$(ts)] MATCH [$name] $target — sending: $send"
         local steps step
