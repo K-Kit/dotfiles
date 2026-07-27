@@ -22,6 +22,11 @@ export DOT_DIR
 source "$DOT_DIR/config.sh"
 source "$DOT_DIR/scripts/shared/helpers.sh"
 
+# Abort if DOT_DIR is a worktree rather than the main checkout (--allow-worktree
+# overrides). install.sh reaches scripts/cleanup/install.sh, which bakes DOT_DIR
+# into launchd/cron jobs.
+guard_not_worktree "$0" "$@"
+
 # ─── Help ─────────────────────────────────────────────────────────────────────
 
 show_help() {
@@ -59,6 +64,9 @@ COMPONENTS:
     --apps            Install GUI + App Store apps via Brewfile picker (macOS)
     --create-user     Create non-root dev user (Linux only)
     --no-<component>  Disable a component (e.g., --no-ai-tools)
+    --allow-worktree  Run even though DOT_DIR is a git worktree. Refused by
+                      default: scheduled jobs would bake in a path that
+                      cwrm/cwclean will delete.
     --force-reinstall Reinstall tools even if present
     --non-interactive Skip the component menu and install the default set. The
                       menu is the script's only prompt; everything after it
