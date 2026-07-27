@@ -19,8 +19,12 @@ REPORT_FILE="$REPORT_DIR/report-$(date +%Y%m%d).txt"
 # one. That silently picks the wrong binary — system fzf 0.44 instead of the
 # deployed 0.71 — or finds none at all, so the audit reports DRIFT/SKIP for a
 # claim that is actually fine. A weekly false alarm is how an audit gets ignored.
-for _d in "$HOME/.local/bin" "$HOME/.local/share/mise/shims" "$HOME/.cargo/bin" \
-          /opt/homebrew/bin /usr/local/bin; do
+# Listed LOWEST-priority first: each is prepended, so the last one processed ends
+# up leftmost. Reversing this list silently inverts the precedence -- a stale
+# /usr/local/bin/fzf would then outrank the mise shim and reproduce the exact
+# false DRIFT this block exists to prevent.
+for _d in /usr/local/bin /opt/homebrew/bin "$HOME/.cargo/bin" \
+          "$HOME/.local/share/mise/shims" "$HOME/.local/bin"; do
     [[ -d "$_d" ]] || continue
     case ":$PATH:" in *":$_d:"*) ;; *) PATH="$_d:$PATH" ;; esac
 done
