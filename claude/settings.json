@@ -380,11 +380,11 @@
       "mcp__plugin_things-mcp_things__update_project",
       "mcp__claude_ai_Notion__notion-move-pages"
     ],
-    "defaultMode": "acceptEdits"
+    "defaultMode": "auto"
   },
-  "model": "opusplan",
+  "model": "opus",
   "fallbackModel": [
-    "opus"
+    "fable"
   ],
   "hooks": {
     "PermissionRequest": [
