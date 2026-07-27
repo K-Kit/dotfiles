@@ -1,109 +1,19 @@
 # Supply Chain Security
 
-## When Adding Dependencies
+## Environment Facts
 
-Before installing ANY new package (npm, pip, bun, uv), state:
-1. Package name and exact version
-2. Weekly downloads (check npm/PyPI)
-3. Package age and maintainer count
-4. Whether it has postinstall/lifecycle scripts
+- A **7-day `min-release-age` quarantine** is configured across npm, bun, pnpm, and uv. Packages published less than 7 days ago fail to install.
+- Global `~/.npmrc` sets `ignore-scripts=true`. bun ignores lifecycle scripts by default.
+- `UV_MALWARE_CHECK=1` is exported globally (requires uv >=0.11.16). It covers **lockfile syncs only** — `uv add` / `uv sync` — and does NOT run on `uv pip install` or `uv tool install`.
+- API keys are scoped per-project via `setup-envrc` + direnv, never globally exported. BWS token lives at `~/.config/bws/token`.
 
-Flag packages with <1,000 weekly downloads or <6 months old as potential risks.
+## Never Without Explicit User Approval
 
-## min-release-age Quarantine (IMPORTANT)
+- Adding a third-party Homebrew tap (official casks and Mac App Store only).
+- Installing from an arbitrary URL or git repo.
+- Re-enabling lifecycle scripts (`--ignore-scripts=false`, `ignore-scripts=false`, adding to bun's `trustedDependencies`).
+- Bypassing the `min-release-age` quarantine, unsetting `UV_MALWARE_CHECK`, or passing `--no-quarantine` to a cask.
 
-All package managers are configured with a **7-day quarantine** (`min-release-age`). Packages published less than 7 days ago will fail to install. This is intentional — it blocks supply chain attacks that are typically caught within days.
+## When an Install Is Blocked
 
-**When install fails due to min-release-age:**
-1. This is NOT a bug — it's working as intended
-2. Tell the user: "Package X@Y was published less than 7 days ago. The 7-day quarantine is blocking it."
-3. Suggest alternatives:
-   - Wait for the quarantine to expire (safest)
-   - Use a known-good older version: `npm install package@<previous-version>`
-   - Override for this install only (user must confirm): `npm install --min-release-age=0 package`
-4. **Never** silently bypass the quarantine or suggest disabling it globally
-
-**Per-manager override syntax:**
-- npm: `npm install --min-release-age=0 <pkg>`
-- bun: `bun add --minimumReleaseAge=0 <pkg>` (or remove from bunfig.toml temporarily)
-- pnpm: `pnpm add --minimum-release-age=0 <pkg>` (or set to 0 in global rc temporarily)
-- uv: `UV_EXCLUDE_NEWER= uv pip install <pkg>` (unset the env var for this command)
-
-## uv OSV Malware Check
-
-`UV_MALWARE_CHECK=1` is exported globally (`config/aliases/misc.sh`). uv cross-references the OSV database (OpenSSF malicious-packages MAL advisories) against the project lockfile and aborts the sync before any malicious code runs.
-
-- **Coverage: lockfile syncs only** — `uv add`, `uv sync`, and other lock-driven flows. `uv pip install` and `uv tool install` do NOT run the check; for those paths the 7-day `UV_EXCLUDE_NEWER` quarantine and hash-pinning below are the guards. Prefer project (lockfile) flows when installing anything untrusted.
-- Requires uv >=0.11.16; older uv silently ignores the variable (`install.sh` enforces this floor by upgrading older uv). Preview feature (announced 2026-06-08) — behavior may change.
-- **When an install is blocked as malware:** this is NOT a bug. Tell the user which package/version was flagged and link the OSV advisory. Never bypass by unsetting `UV_MALWARE_CHECK` without explicit user approval.
-
-## Python Dependencies
-
-- Use `uv pip compile --generate-hashes` to produce hash-pinned requirements
-- Use `uv pip install --require-hashes -r requirements.txt` when installing
-- For `uv add`: verify package on PyPI before adding
-
-## JavaScript/TypeScript Dependencies
-
-- Global `~/.npmrc` has `ignore-scripts=true` — do not override without user approval
-- bun ignores lifecycle scripts by default (trustedDependencies allowlist)
-- After adding dependencies: run `socket report` if socket CLI is available
-- If lockfile changes, note added/removed/updated packages in commit message
-
-## Never Do
-
-- Install packages from arbitrary URLs or git repos without user approval
-- Run `npm install --ignore-scripts=false` without explicit user confirmation
-- Add packages to bun's `trustedDependencies` without stating why
-- Skip hash verification for production Python dependencies
-- Bypass min-release-age quarantine without explicit user approval
-
-## Tool Selection: Security Floor, then Adoption (two-gate)
-
-When choosing between tools, apply two gates in order:
-
-1. **Hard security floor (non-negotiable):** official core formula / cask / Mac App Store
-   only; **no third-party taps** without approval; notarization + quarantine on for casks;
-   `min-release-age` for language packages. A tool that fails the floor is out regardless
-   of popularity.
-2. **Among options that clear the floor, prefer the more *modern / adopted* one** — GitHub
-   stars, monthly actives, release cadence, and HN/Reddit consensus. Higher adoption is
-   *also* a security positive (more eyes → faster CVE discovery), so this complements the
-   floor rather than fighting it. Don't default to a stale "boring" tool when a
-   well-adopted modern one clears the same floor.
-
-**Residual-risk case:** a tool that is *young AND single-maintainer AND not-yet-widely-
-adopted* (e.g. FineTune). High stars only partially offset bus-factor risk — such tools may
-be *added* but ship **default-OFF** (conscious opt-in), never auto-on.
-
-## GUI Apps & Brewfile (macOS)
-
-Apps live in `config/apps.conf` (registry) → `config/Brewfile` (generated by `app-picker`).
-
-- **Homebrew official casks + Mac App Store (`mas`) ONLY.** NEVER add a third-party tap
-  to `apps.conf`, install.sh, or a Brewfile without explicit user approval.
-- **Prefer `mas`** (sandboxed, Apple-reviewed) when an app ships full-featured on the
-  App Store — highest trust tier ("MAS-first"). Use a cask when MAS is crippled/absent.
-- Before adding any app: run `brew info <cask>` / `mas info <id>`, verify vendor + homepage.
-- **Never `--no-quarantine`.** Gatekeeper + notarization must stay enabled; that's the
-  defense against malicious casks (brew also verifies a pinned sha256 on download).
-- Tier in `apps.conf`: 1 = official vendor auto-approve · 2 = mature OSS (review) ·
-  3 = explicit approval (ships `default=false`).
-
-## curl|bash Installers
-
-Official-page `curl … | sh` gives **authenticity** (HTTPS proves the domain) but NOT
-**integrity** (runs whatever's live, unpinned, unreviewed). Prefer, best→worst:
-1. Official Homebrew **formula** if one exists (`uv`, `rustup-init`, `bun`) — vendor's
-   artifact + sha pin + reviewed PR + reproducible.
-2. No formula → `curl -o` a versioned URL and **verify the vendor checksum/signature**.
-3. Blind `curl … | sh` only as last resort, HTTPS-to-official-domain only.
-
-Eyeballing the script ("glance at it") is a smell test for gross tampering, NOT an
-integrity control — don't treat it as a safeguard.
-
-## Secrets Awareness
-
-- API keys are scoped per-project via direnv `.envrc`, NOT globally exported
-- If a project needs an API key, use `setup-envrc` to set up the repo `.envrc`
-- Never hardcode secrets; verify `.envrc` is in `.gitignore`
+A quarantine or malware-check block is working as intended, not a bug. Tell the user which package and version was blocked and by which guard, then wait — never silently bypass it or suggest disabling the guard globally.
