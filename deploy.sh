@@ -1011,6 +1011,8 @@ fi
             scheduled_jobs+=("claude-cleanup|$DOT_DIR/scripts/cleanup/setup_claude_cleanup.sh")
         [[ -f "$DOT_DIR/scripts/cleanup/setup_claude_tmpdir_cleanup.sh" ]] && \
             scheduled_jobs+=("tmpdir-cleanup|$DOT_DIR/scripts/cleanup/setup_claude_tmpdir_cleanup.sh")
+        [[ -f "$DOT_DIR/scripts/cleanup/setup_cache_clean.sh" ]] && \
+            scheduled_jobs+=("cache-clean|$DOT_DIR/scripts/cleanup/setup_cache_clean.sh")
     fi
 
     if [[ "$DEPLOY_AI_UPDATE" == "true" ]]; then
