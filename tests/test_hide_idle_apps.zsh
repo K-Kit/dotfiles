@@ -95,7 +95,10 @@ run() {  # run <helper_rc> [args...]; sets OUT / ERR / RC
     OUT=$(HOME="$FAKEHOME" PATH="$ROOT/bin:$PATH" \
           "$ROOT/custom_bins/hide-idle-apps" "$@" 2>"$WORK/err")
     RC=$?
-    ERR=$(<"$WORK/err")
+    # cat, not $(<file): zsh evaluates the read-file form even under `zsh -n`,
+    # where these variables are unset, so a syntax check would print errors.
+    ERR=$(cat "$WORK/err" 2>/dev/null)
+    ARGS=$(cat "$STUB_HELPER_ARGS_LOG" 2>/dev/null)
 }
 
 seed_state() {  # seed_state <seconds since last poll>: every app covered an hour
@@ -118,8 +121,8 @@ print -r -- "1. dry run reports measured visibility"
 rm -rf "$FAKEHOME/.cache"
 run 0 --dry-run
 check     "runs clean"                     "$RC"  "0"
-check     "passes --min-visible through"   "$(<$STUB_HELPER_ARGS_LOG)" "--min-visible 40"
-check     "asks for --verbose"             "$(<$STUB_HELPER_ARGS_LOG)" "--verbose"
+check     "passes --min-visible through"   "$ARGS" "--min-visible 40"
+check     "asks for --verbose"             "$ARGS" "--verbose"
 check     "frontmost labelled"             "$OUT" "frontmost  Safari"
 check     "35% for Telegram"               "$OUT" "35%  Telegram"
 check     "41% for Bear"                   "$OUT" "41%  Bear"
@@ -148,7 +151,7 @@ print -r -- "4. real run hides only the covered, still-visible app"
 rm -rf "$FAKEHOME/.cache"; seed_state 60
 : > "$STUB_HIDE_LOG"
 run 0
-HIDES=$(<"$STUB_HIDE_LOG")
+HIDES=$(cat "$STUB_HIDE_LOG")
 check     "covered app is hidden"          "$OUT"   "Hid: Telegram"
 check     "hidden by pid, not name"        "$HIDES" "unix id is 102"
 check_not "frontmost never hidden"         "$HIDES" "unix id is 101"
@@ -156,14 +159,14 @@ check_not "already-hidden not re-hidden"   "$HIDES" "unix id is 103"
 check_not "exposed app never hidden"       "$HIDES" "unix id is 104"
 check_not "unknown app never hidden"       "$HIDES" "unix id is 105"
 check_not "excluded app never hidden"      "$HIDES" "unix id is 106"
-check_not "scheduled run skips --verbose"  "$(<$STUB_HELPER_ARGS_LOG)" "--verbose"
+check_not "scheduled run skips --verbose"  "$ARGS" "--verbose"
 
 # --- 5. skipped polls (sleep) hide nothing ---------------------------------
 print -r -- "5. a gap over 3x the poll interval hides nothing"
 rm -rf "$FAKEHOME/.cache"; seed_state 1000
 : > "$STUB_HIDE_LOG"
 run 0
-check_not "no hide attempted after a gap"  "$(<$STUB_HIDE_LOG)" "unix id"
+check_not "no hide attempted after a gap"  "$(cat "$STUB_HIDE_LOG")" "unix id"
 check_not "nothing reported hidden"        "$OUT" "Hid:"
 rm -rf "$FAKEHOME/.cache"; seed_state 1000
 run 0 --dry-run
