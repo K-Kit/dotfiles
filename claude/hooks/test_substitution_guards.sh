@@ -99,6 +99,10 @@ run "mock_data identifier" nudge_synthetic_data.py \
     "$(pre_write /repo/src/analysis.py "mock_data = [1, 2, 3]")" fire
 run "np.random values" nudge_synthetic_data.py \
     "$(pre_write /repo/src/analysis.py "scores = np.random.normal(0, 1, 100)")" fire
+# AC11a names this exact literal as F2's triggering action. Kept as its own case
+# so the criterion is proven on its own wording, not on a near-neighbour.
+run "AC11a literal: np.random.randn(100)" nudge_synthetic_data.py \
+    "$(pre_write /repo/src/analysis.py "X = np.random.randn(100)")" fire
 run "torch.randn" nudge_synthetic_data.py \
     "$(pre_write /repo/src/model.py "batch = torch.randn(8, 512)")" fire
 run "TODO real data" nudge_synthetic_data.py \
