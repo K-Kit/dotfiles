@@ -81,7 +81,7 @@ COMPONENTS:
     --mcp-sync        Install daily shared MCP sync for Claude and Codex
     --brew-update     Install weekly package upgrade + cleanup (brew/apt/dnf/pacman)
     --keyboard        Install keyboard repeat enforcement at login (macOS only)
-    --hide-idle-apps  Hide idle apps (Cmd+H) after N min not frontmost, except [hide-idle-exclude] (macOS only)
+    --hide-idle-apps  Hide apps (Cmd+H) with no visible window for N min, except [hide-idle-exclude] (macOS only, off by default)
     --file-apps       Set default editor for coding file types (macOS only)
     --bedtime         Install bedtime timezone enforcement (macOS only, opt-in)
     --bearcli         Symlink Bear CLI → /usr/local/bin (macOS only, for cron/scripts)

@@ -1,22 +1,54 @@
 #!/usr/bin/env zsh
-# hide-idle-apps - Hide (Cmd+H equivalent) every running app after it's spent
-# N minutes not frontmost, EXCEPT apps in config's [hide-idle-exclude] section
-# (opt-out: hide-by-default, exclude-list-to-stay-visible). Scheduled as a
-# polling job (see scripts/cleanup/setup_hide_idle_apps.sh).
+# hide-idle-apps - hide (Cmd+H equivalent) an app once it has been continuously
+# COVERED for N minutes, EXCEPT apps in config's [hide-idle-exclude] section
+# (opt-out: hide-by-default). Scheduled as a polling job (see
+# scripts/cleanup/setup_hide_idle_apps.sh).
 #
-# State: ~/.cache/hide-idle-apps/state - tab-separated "app<TAB>last_frontmost_epoch",
-# rewritten atomically each run. On first sight of an app, its timer starts now
-# (not "already idle") so nothing hides immediately after enabling the feature.
+# The tracked signal is EXPOSURE, not focus: an app with any visible window on
+# screen is never hidden, however long since it was last focused. Focus is
+# exclusive (one app at a time), so a 60s poll misses most short visits; exposure
+# is shared and continuous, so one poll observes every visible app at once.
+#
+# Exposure comes from tools/window-exposure (CGWindowList, keyed by owner PID).
+# An app absent from that list - another Space, fullscreen, minimised - is
+# UNKNOWN, never "not exposed", and is never hidden.
+#
+# State: ~/.cache/hide-idle-apps/state, rewritten atomically each run:
+#   #v2
+#   #last_poll<TAB>epoch
+#   pid<TAB>last_exposed_epoch<TAB>consecutive_not_exposed_polls
+# On first sight of an app its timer starts now (not "already idle").
 
 set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
-CONFIG_FILE="${SCRIPT_DIR}/../config/clear_mac_apps.conf"
+DOT_DIR="${SCRIPT_DIR:h}"
+APPS_CONF="${DOT_DIR}/config/clear_mac_apps.conf"
+TUNABLES_CONF="${DOT_DIR}/config/hide-idle.conf"
+HELPER_SRC="${DOT_DIR}/tools/window-exposure/main.swift"
+HELPER_BIN="${DOT_DIR}/tools/window-exposure/window-exposure"
 CACHE_DIR="${HOME}/.cache/hide-idle-apps"
 STATE_FILE="${CACHE_DIR}/state"
-IDLE_MINUTES="${HIDE_IDLE_MINUTES:-5}"
-DRY_RUN=false
+STATE_VERSION="#v2"
 
+# Environment wins over config file, which wins over these defaults.
+env_idle="${HIDE_IDLE_MINUTES:-}"
+env_poll="${HIDE_IDLE_POLL_SECONDS:-}"
+HIDE_IDLE_MINUTES=15
+HIDE_IDLE_POLL_SECONDS=60
+[[ -f "$TUNABLES_CONF" ]] && source "$TUNABLES_CONF"
+[[ -n "$env_idle" ]] && HIDE_IDLE_MINUTES="$env_idle"
+[[ -n "$env_poll" ]] && HIDE_IDLE_POLL_SECONDS="$env_poll"
+
+# An app must be observed covered on this many consecutive valid polls before it
+# is eligible to hide - one bad snapshot should never be enough.
+REQUIRED_STREAK=2
+# A longer gap than this means polls were skipped (sleep, logout, session switch).
+# Wall-clock idle times are then meaningless, so restart every timer rather than
+# hiding everything on the first poll after waking.
+MAX_GAP=$(( HIDE_IDLE_POLL_SECONDS * 3 ))
+
+DRY_RUN=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run|-n)
@@ -26,7 +58,10 @@ while [[ $# -gt 0 ]]; do
         --help|-h)
             echo "Usage: hide-idle-apps [--dry-run|-n]"
             echo "  --dry-run, -n  Show what would happen without hiding anything"
-            echo "  HIDE_IDLE_MINUTES env var overrides the idle threshold (default: 5)"
+            echo ""
+            echo "Tunables (config/hide-idle.conf, overridable by environment):"
+            echo "  HIDE_IDLE_MINUTES       minutes covered before hiding (default: 15)"
+            echo "  HIDE_IDLE_POLL_SECONDS  poll interval, used for gap detection (default: 60)"
             exit 0
             ;;
         *)
@@ -38,8 +73,8 @@ done
 
 # Parse apps from the [hide-idle-exclude] section in config (same format as clear-mac-apps)
 get_hide_idle_exclude() {
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo "Error: Config file not found: $CONFIG_FILE" >&2
+    if [[ ! -f "$APPS_CONF" ]]; then
+        echo "Error: Config file not found: $APPS_CONF" >&2
         exit 1
     fi
     awk -v section="[hide-idle-exclude]" '
@@ -49,7 +84,7 @@ get_hide_idle_exclude() {
             gsub(/^[[:space:]]+|[[:space:]]+$/, "")
             if (length > 0) print
         }
-    ' "$CONFIG_FILE"
+    ' "$APPS_CONF"
 }
 
 # OS chrome that isn't a "program" in the hide-idle sense - hardcoded, not
@@ -57,28 +92,61 @@ get_hide_idle_exclude() {
 # either meaningless or risky (Finder/Dock underpin the desktop shell).
 HARDCODED_EXCLUDE=(Finder Dock SystemUIServer loginwindow WindowServer)
 
-# Snapshot frontmost app name + all running process names in one osascript call
+# Compile the exposure helper once and cache it (deploy.sh does this too; this is
+# the fallback for a machine that hasn't redeployed yet). Never per poll.
+ensure_helper() {
+    [[ -x "$HELPER_BIN" && "$HELPER_BIN" -nt "$HELPER_SRC" ]] && return 0
+    [[ -f "$HELPER_SRC" ]] || return 1
+    command -v swiftc >/dev/null 2>&1 || return 1
+    swiftc -O -o "$HELPER_BIN" "$HELPER_SRC" >/dev/null 2>&1
+}
+
+# Snapshot frontmost PID, and every non-background-only process as
+# "pid<TAB>visible<TAB>name", in one osascript call. Names are read twice and
+# compared so a process starting or quitting mid-query can't misalign the lists.
 get_snapshot() {
     osascript -e 'tell application "System Events"
-        set frontApp to name of first process whose frontmost is true
-        set procNames to name of every process whose background only is false
-        set output to "FRONT:" & frontApp & linefeed
-        repeat with n in procNames
-            set output to output & "RUN:" & n & linefeed
+        set frontPid to unix id of first process whose frontmost is true
+        set nm to name of every process whose background only is false
+        set ids to unix id of every process whose background only is false
+        set vis to visible of every process whose background only is false
+        set nm2 to name of every process whose background only is false
+        if nm is not nm2 then return "INVALID"
+        if (count of nm) is not (count of ids) then return "INVALID"
+        if (count of nm) is not (count of vis) then return "INVALID"
+        set output to "FRONT:" & (frontPid as text) & linefeed
+        repeat with i from 1 to count of nm
+            set output to output & "RUN:" & ((item i of ids) as text) & tab & ((item i of vis) as text) & tab & (item i of nm) & linefeed
         end repeat
         return output
     end tell'
 }
 
-# Hide an app (Cmd+H equivalent). No focus dependency (visibility toggle is
-# name-based, not a keystroke), safe to run in parallel.
-hide_app() {
-    local app="$1"
-    osascript -e "tell application \"System Events\" to set visible of process \"$app\" to false" 2>/dev/null || true
+# Hide an app by PID (Cmd+H equivalent). PID rather than name so WindowServer and
+# System Events can't disagree about what an app is called. No focus dependency
+# (visibility is a property, not a keystroke), so this is safe to run in parallel.
+hide_pid() {
+    local pid="$1"
+    osascript -e "tell application \"System Events\" to set visible of (first process whose unix id is $pid) to false" 2>/dev/null || true
+}
+
+# Restart every timer without hiding anything. Used whenever the snapshot can't be
+# trusted: a covered app must never be hidden on evidence we know is unreliable.
+write_reset_state() {
+    local now="$1"
+    local out="$STATE_VERSION"$'\n'"#last_poll"$'\t'"$now"$'\n'
+    local pid
+    for pid in "${(k)last_active[@]}"; do
+        out+="${pid}"$'\t'"${now}"$'\t'"0"$'\n'
+    done
+    local tmp="${STATE_FILE}.tmp.$$"
+    print -rn -- "$out" > "$tmp"
+    mv "$tmp" "$STATE_FILE"
 }
 
 main() {
     typeset -A exclude_set
+    local app
     for app in "${HARDCODED_EXCLUDE[@]}"; do
         exclude_set[${(L)app}]="$app"
     done
@@ -86,50 +154,119 @@ main() {
         [[ -n "$app" ]] && exclude_set[${(L)app}]="$app"
     done < <(get_hide_idle_exclude)
 
-    local snapshot front_app
-    snapshot=$(get_snapshot)
-    front_app=$(echo "$snapshot" | awk -F: '/^FRONT:/ { sub(/^FRONT:/, ""); print; exit }')
+    local now
+    now=$(date +%s)
+    mkdir -p "$CACHE_DIR"
 
-    typeset -A running_set
+    # Load state. A file without the current version tag is discarded: in v1 the
+    # stored timestamp meant "last frontmost", which is not what v2 measures.
+    typeset -A last_active streak
+    local last_poll=0
+    local key val extra
+    if [[ -f "$STATE_FILE" ]] && [[ "$(head -1 "$STATE_FILE")" == "$STATE_VERSION" ]]; then
+        while IFS=$'\t' read -r key val extra; do
+            case "$key" in
+                '#last_poll') last_poll="$val" ;;
+                '#'*|'') ;;
+                *)
+                    last_active[$key]="$val"
+                    streak[$key]="${extra:-0}"
+                    ;;
+            esac
+        done < "$STATE_FILE"
+    fi
+
+    local invalid=""
+    if (( last_poll > 0 )) && (( now - last_poll > MAX_GAP )); then
+        invalid="polls were skipped ($(( now - last_poll ))s gap; sleep, logout, or session switch)"
+    fi
+
+    local snapshot=""
+    if [[ -z "$invalid" ]]; then
+        snapshot=$(get_snapshot 2>/dev/null) || snapshot=""
+        [[ -z "$snapshot" || "$snapshot" == INVALID* ]] && invalid="System Events snapshot unavailable"
+    fi
+
+    local exposure=""
+    if [[ -z "$invalid" ]]; then
+        if ! ensure_helper; then
+            invalid="window-exposure helper unavailable (swiftc missing or compile failed)"
+        elif ! exposure=$("$HELPER_BIN" 2>/dev/null); then
+            invalid="no usable window list (screen locked, Mission Control, or a Space transition)"
+        fi
+    fi
+
+    if [[ -n "$invalid" ]]; then
+        write_reset_state "$now"
+        if $DRY_RUN; then
+            echo "=== DRY RUN ==="
+            echo "Snapshot not trusted: ${invalid}. Nothing would be hidden; all timers restarted."
+        fi
+        return 0
+    fi
+
+    # pid -> 1 exposed / 0 fully covered. A PID absent from this map owns no
+    # window on the current Space: unknown, and never grounds to hide.
+    typeset -A exposed
+    local pid
+    while IFS=$'\t' read -r pid val; do
+        [[ -n "$pid" ]] && exposed[$pid]="$val"
+    done <<< "$exposure"
+
+    typeset -A proc_name proc_visible
+    local front_pid="" line rest name vis
     while IFS= read -r line; do
-        [[ "$line" == RUN:* ]] || continue
-        local name="${line#RUN:}"
-        running_set[${(L)name}]="$name"
+        case "$line" in
+            FRONT:*)
+                front_pid="${line#FRONT:}"
+                ;;
+            RUN:*)
+                rest="${line#RUN:}"
+                pid="${rest%%$'\t'*}"
+                rest="${rest#*$'\t'}"
+                vis="${rest%%$'\t'*}"
+                name="${rest#*$'\t'}"
+                [[ -n "$pid" && -n "$name" ]] || continue
+                proc_name[$pid]="$name"
+                proc_visible[$pid]="$vis"
+                ;;
+        esac
     done <<< "$snapshot"
 
-    if (( ${#running_set} == 0 )); then
+    if (( ${#proc_name} == 0 )); then
+        write_reset_state "$now"
         echo "No running apps detected."
         return 0
     fi
 
-    # Load previous state: app_lower -> last_frontmost_epoch
-    typeset -A last_active
-    mkdir -p "$CACHE_DIR"
-    if [[ -f "$STATE_FILE" ]]; then
-        while IFS=$'\t' read -r app_lower epoch; do
-            [[ -n "$app_lower" ]] && last_active[$app_lower]="$epoch"
-        done < "$STATE_FILE"
-    fi
+    local -a would_hide=() hide_pids=()
+    local new_state="$STATE_VERSION"$'\n'"#last_poll"$'\t'"$now"$'\n'
+    local is_exposed since idle s
+    for pid in "${(k)proc_name[@]}"; do
+        name="${proc_name[$pid]}"
+        (( ${+exclude_set[${(L)name}]} )) && continue  # excluded: never track, never hide
 
-    local now front_app_lower
-    now=$(date +%s)
-    front_app_lower="${(L)front_app}"
-
-    local -a would_hide=()
-    local new_state=""
-    for app_lower in "${(k)running_set[@]}"; do
-        (( ${+exclude_set[$app_lower]} )) && continue  # excluded, never track/hide
-        local app="${running_set[$app_lower]}"
-
-        if [[ "$app_lower" == "$front_app_lower" ]]; then
-            last_active[$app_lower]="$now"
-        else
-            local since="${last_active[$app_lower]:-$now}"  # first sight: start timer now
-            local idle_seconds=$(( now - since ))
-            (( idle_seconds >= IDLE_MINUTES * 60 )) && would_hide+=("$app")
-            last_active[$app_lower]="$since"
+        is_exposed=true
+        if [[ "$pid" != "$front_pid" ]] && [[ "${exposed[$pid]:-unknown}" == "0" ]]; then
+            is_exposed=false  # has windows here, and every one of them is covered
         fi
-        new_state+="${app_lower}"$'\t'"${last_active[$app_lower]}"$'\n'
+
+        if $is_exposed; then
+            last_active[$pid]="$now"
+            streak[$pid]=0
+        else
+            since="${last_active[$pid]:-$now}"  # first sight: start the timer now
+            s=$(( ${streak[$pid]:-0} + 1 ))
+            idle=$(( now - since ))
+            last_active[$pid]="$since"
+            streak[$pid]="$s"
+            if (( idle >= HIDE_IDLE_MINUTES * 60 )) && (( s >= REQUIRED_STREAK )) \
+               && [[ "${proc_visible[$pid]}" == "true" ]]; then
+                would_hide+=("$name")
+                hide_pids+=("$pid")
+            fi
+        fi
+        new_state+="${pid}"$'\t'"${last_active[$pid]}"$'\t'"${streak[$pid]}"$'\n'
     done
 
     # Atomic rewrite of state file
@@ -137,21 +274,18 @@ main() {
     print -rn -- "$new_state" > "$tmp_state"
     mv "$tmp_state" "$STATE_FILE"
 
-    # Dispatch the actual hide calls in parallel, only after state is fully
-    # computed and written above - hide_app() just spawns an osascript
-    # process with no shared state, so backgrounding it is safe. State
-    # tracking (last_active, new_state) stays entirely synchronous in the
-    # parent; these subshells never touch it. Matches clear-mac-apps'
-    # slow-quit parallelization pattern.
-    if ! $DRY_RUN && (( ${#would_hide} > 0 )); then
-        for app in "${would_hide[@]}"; do
-            hide_app "$app" &
+    # Dispatch the hides in parallel, only after state is fully computed and
+    # written above - hide_pid() just spawns an osascript process with no shared
+    # state. State tracking stays entirely synchronous in the parent.
+    if ! $DRY_RUN && (( ${#hide_pids} > 0 )); then
+        for pid in "${hide_pids[@]}"; do
+            hide_pid "$pid" &
         done
         wait
     fi
 
     if $DRY_RUN; then
-        echo "=== DRY RUN (threshold: ${IDLE_MINUTES}m, frontmost: ${front_app:-none}) ==="
+        echo "=== DRY RUN (threshold: ${HIDE_IDLE_MINUTES}m covered, frontmost pid: ${front_pid:-none}) ==="
         if (( ${#would_hide} > 0 )); then
             echo "Would HIDE:"
             for app in "${would_hide[@]}"; do

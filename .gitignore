@@ -538,6 +538,7 @@ claude/*.local.md
 # Compiled binaries (built per-platform by deploy.sh)
 custom_bins/claude-tools
 tools/set-default-app/set-default-app
+tools/window-exposure/window-exposure
 
 # Misplaced .claude/ dirs (created when CWD != git root)
 config/.claude/
