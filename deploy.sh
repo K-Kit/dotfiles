@@ -1348,3 +1348,18 @@ log_success "Deployment complete!"
 echo ""
 echo "Next steps:"
 echo "  Restart your terminal or run: source $RC_FILE"
+
+# ssh-agent: sandboxed Claude Code sessions authenticate over the agent socket, so
+# the key never has to be read from disk (~/.ssh/id_* stays deny-read). If nothing
+# is loaded, every sandboxed `git push` falls back to the key file and fails.
+if cmd_exists ssh-add; then
+    ssh_add_status=0
+    ssh-add -l >/dev/null 2>&1 || ssh_add_status=$?
+    if [[ "$ssh_add_status" -eq 1 ]]; then
+        echo "  ssh-agent has no keys loaded — run: ssh-add ~/.ssh/id_ed25519"
+        echo "    (without this, git push from a sandboxed Claude Code session fails)"
+    elif [[ "$ssh_add_status" -ne 0 ]]; then
+        echo "  Cannot reach ssh-agent — run: eval \"\$(ssh-agent -s)\" && ssh-add ~/.ssh/id_ed25519"
+        echo "    (without this, git push from a sandboxed Claude Code session fails)"
+    fi
+fi
