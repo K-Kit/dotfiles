@@ -6,7 +6,7 @@
 |---|---|
 | Packages, Python versions, CLI tools | `uv` |
 | Lint + format | `ruff` |
-| Type check | `ty` |
+| Type check | `ty` (beta as of 2026-07-27 — 0.0.x, diagnostics can change between releases) |
 | Task runner | `just` |
 | CLI | `cyclopts` |
 | Config / env | `pydantic-settings` |

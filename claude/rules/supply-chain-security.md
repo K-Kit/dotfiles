@@ -4,7 +4,7 @@
 
 - A **7-day `min-release-age` quarantine** is configured across npm, bun, pnpm, and uv. Packages published less than 7 days ago fail to install.
 - Global `~/.npmrc` sets `ignore-scripts=true`. bun ignores lifecycle scripts by default.
-- `UV_MALWARE_CHECK=1` is exported globally (requires uv >=0.11.16). It covers **lockfile syncs only** — `uv add` / `uv sync` — and does NOT run on `uv pip install` or `uv tool install`.
+- `UV_MALWARE_CHECK=1` is exported globally (requires uv >=0.11.16). It covers **lockfile syncs only** — `uv add` / `uv sync` — and does NOT run on `uv pip install` or `uv tool install`. Still undocumented in `uv help` as of 2026-07-27; `scripts/audit/stale-claims.sh` re-checks it.
 - API keys are scoped per-project via `setup-envrc` + direnv, never globally exported. BWS token lives at `~/.config/bws/token`.
 
 ## Never Without Explicit User Approval

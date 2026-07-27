@@ -2,7 +2,7 @@
 
 ## Plans
 
-`plansDirectory` resolves relative to CWD, not the git root — plans land in the wrong place if the session didn't start at the repo root. The `claude()` wrapper auto-cds there; the `check_git_root.sh` SessionStart hook warns when it isn't. Only the global `settings.json` setting works: project-level `plansDirectory` is buggy (claude-code issue #18623), and plan filenames are auto-generated, not yet configurable (#21342). `CLAUDE_CODE_TASK_LIST_ID` is auto-set by the `claude()` wrapper in `config/aliases/claude.sh`.
+`plansDirectory` resolves relative to CWD, not the git root — plans land in the wrong place if the session didn't start at the repo root. The `claude()` wrapper auto-cds there; the `check_git_root.sh` SessionStart hook warns when it isn't. Set it in the global `settings.json`. Plan filenames are auto-generated, not yet configurable (claude-code [#21342](https://github.com/anthropics/claude-code/issues/21342), open as of 2026-07-27). `CLAUDE_CODE_TASK_LIST_ID` is auto-set by the `claude()` wrapper in `config/aliases/claude.sh`.
 
 ## Config-First
 
@@ -14,7 +14,7 @@ Never use `.local.md` unless explicitly asked — default to `.md`, which is ver
 
 ## Shell
 
-Piped output that appears stuck is usually block-buffering (libc switches from line to block buffering when stdout isn't a TTY): use `stdbuf -oL cmd | ...` or Python's `-u`. Duplicate skills in the slash picker are plugin-created symlinks in `~/.claude/skills/` — run `clean-skill-dupes` (#14549).
+Piped output that appears stuck is usually block-buffering (libc switches from line to block buffering when stdout isn't a TTY): use `stdbuf -oL cmd | ...` or Python's `-u`. Duplicate skills in the slash picker are plugin-created symlinks in `~/.claude/skills/` — run `clean-skill-dupes`.
 
 ## Experiments
 

@@ -17,3 +17,5 @@ files: <explicit paths, not globs — overlap is detected at file level>
 task: <what you're doing; note sub-file granularity here>
 since: <ISO-8601 UTC>
 ```
+
+This practice is live because the harness auto-approves its file operations — `rg -q 'agent-claims' claude/hooks/auto_classify.py` (true as of 2026-07-27). If that regex is ever removed, every claim operation starts prompting, nobody will keep doing this, and the rule should be deleted rather than kept as aspiration.

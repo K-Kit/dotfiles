@@ -42,7 +42,7 @@ Work may touch bright red lines (mass surveillance, autonomous weapons). Disting
 | Rules (auto-loaded) | `~/.claude/rules/*.md` | `<repo>/.claude/rules/*.md` |
 | Knowledge (on-demand) | `~/.claude/docs/` | `<repo>/docs/` |
 | Plans | — | `<repo>/plans/` (via `plansDirectory`) |
-| Tasks | `~/.claude/tasks/` | not yet supported ([#20425](https://github.com/anthropics/claude-code/issues/20425)) |
+| Tasks | `~/.claude/tasks/` | not yet supported (as of 2026-07-27) |
 | Agents / Skills | `~/.claude/agents/`, `skills/` | `<repo>/.claude/…` |
 
 Specs go in `<repo>/specs/`. `docs/` is a custom convention — not auto-loaded; skills read it on demand. Plugin architecture and context profiles: `docs/plugin-management.md`.
