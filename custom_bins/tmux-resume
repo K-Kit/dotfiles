@@ -75,8 +75,17 @@ resume_pane() {
         for step in "${steps[@]}"; do
           step="$(printf '%s' "$step" | trim)"
           [[ -z "$step" ]] && continue
-          # shellcheck disable=SC2086  # deliberate word-split into tmux key tokens
-          tmux -S "$socket" send-keys -t "$target" $step
+          if [[ ${#step} -ge 2 && "$step" == \"*\" ]]; then
+            # Double-quoted step -> literal text. `-l` disables key-name lookup,
+            # so spaces survive and "Enter" would be typed as the word Enter.
+            # Send real keys as their own unquoted step: "some text" ; Enter
+            tmux -S "$socket" send-keys -t "$target" -l "${step:1:${#step}-2}"
+          else
+            # Unquoted step -> word-split into separate tmux key tokens. Multi-word
+            # text here LOSES its spaces (`wrap up` types as `wrapup`); quote it.
+            # shellcheck disable=SC2086  # deliberate word-split into tmux key tokens
+            tmux -S "$socket" send-keys -t "$target" $step
+          fi
           sleep 0.6
         done
       fi
