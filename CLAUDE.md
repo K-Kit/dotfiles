@@ -32,7 +32,7 @@ If you're an AI agent (Claude Code, Codex, etc.) working in this repo, read this
 | Add an encrypted secret | `secrets-edit` (interactive dotenv editor) |
 | Run an experiment with resource caps | `jexp uv run python -m ...` (Linux: needs pueue + systemd user session) |
 | Commit / commit + push + PR | `/commit` skill or `/commit-push-sync` |
-| Switch active plugin context | `claude-tools context <profile>` (composable: `code python frontend`) |
+| Switch active plugin context | `claude-tools context <profile>` (composable: `code python rust`; `claude-tools context --list` for the current set) |
 | Merge worktree → parent branch | `cwmerge` (or `git merge <branch>` from parent if branch isn't `worktree-` prefixed) |
 | Pre-deploy verification | See [Claude Code Verification Planning](#claude-code-verification-planning) |
 
@@ -222,7 +222,7 @@ config/
 └── systemd-user/         # systemd user units (slices, pueued service, reset-failed timer)
 
 claude/                   # Symlinked to ~/.claude/
-├── CLAUDE.md             # Global AI instructions (slim ~120 lines, identity + pointers)
+├── CLAUDE.md             # Global AI instructions (identity + pointers, deliberately slim)
 ├── settings.json         # Claude Code settings
 ├── output-styles/        # Custom output styles (10x-mentor: 4-track growth coaching)
 ├── rules/                # Auto-loaded behavioral rules (safety, workflow, conventions)

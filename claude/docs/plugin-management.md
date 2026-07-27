@@ -1,8 +1,8 @@
 # Plugin Organization & Context Profiles
 
-**12 always-on plugins** (`base:` in `profiles.yaml`) load in every session: `bear-mcp`, `claude-md-management`, `codex`, `commit-commands`, `context7`, `core`, `hookify`, `llms-fetch-mcp`, `plugin-dev`, `remember`, `superpowers`, `workflow`.
+**Always-on plugins** are whatever `base:` lists in `profiles.yaml`; they load in every session regardless of profile. Everything else is profile-gated, so the enabled set differs per project — never assume a count. To see what is actually on right now: `claude-tools context --list`.
 
-**6 ai-safety-plugins** (`github.com/yulonglin/ai-safety-plugins`):
+**ai-safety-plugins** (`github.com/yulonglin/ai-safety-plugins`):
 - `core` — foundational agents, skills, safety hooks (always-on)
 - `research` — experiments, evals, analysis, literature
 - `writing` — papers, drafts, presentations, multi-critic review
@@ -39,3 +39,31 @@ claude-tools setup context              # Plugin profile picker (delegates to co
 - Statusline shows active context profiles (e.g., `[code python]`)
 
 Adding a new plugin: add its marketplace to `marketplaces:` in `profiles.yaml`, run `claude-tools context --sync`, then add to a profile.
+
+## Renaming a local marketplace plugin
+
+Update these four locations, then restart Claude Code:
+
+1. **Source**: rename dir `claude/ai-safety-plugins/plugins/<old>/` → `<new>/`, update `"name"` in `.claude-plugin/plugin.json`
+2. **Marketplace manifest**: update the entry in `claude/ai-safety-plugins/.claude-plugin/marketplace.json`
+3. **settings.json**: change `"<old>@ai-safety-plugins"` → `"<new>@ai-safety-plugins"` in `enabledPlugins`
+4. **Clear cache**: remove `~/.claude/plugins/cache/ai-safety-plugins/<old>` (re-created on next `/plugin` install)
+
+## Stopping Serena's dashboard from auto-opening
+
+Serena's web dashboard opens in the browser on every new session unless the MCP server is started with `--open-web-dashboard false`. Add the flag to the server args in `claude/plugins/marketplaces/claude-plugins-official/external_plugins/serena/.mcp.json`:
+
+```json
+{
+  "serena": {
+    "command": "uvx",
+    "args": [
+      "--from", "git+https://github.com/oraios/serena",
+      "serena", "start-mcp-server",
+      "--open-web-dashboard", "false"
+    ]
+  }
+}
+```
+
+That file lives in the plugin marketplace cache (`plugins/marketplaces/`), which is gitignored — so the change must be reapplied after clearing the plugin cache or on a new machine, and needs a full Claude Code restart to take effect. The dashboard stays reachable at `http://127.0.0.1:24286/dashboard/index.html` when you actually want it; `~/.claude/logs/mcp-serena.log` is the place to check if it misbehaves.
