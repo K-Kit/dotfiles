@@ -11,6 +11,10 @@
 #   - tasks:    tasklists delete, tasks delete
 #   - docs/sheets/slides/chat: any delete subcommand
 #
+# Also blocks the equivalent MCP connector calls, which carry no command field:
+#   - mcp__claude_ai_Google_Calendar__delete_event
+#   - mcp__claude_ai_Gmail__delete_label
+#
 # ALLOWS:
 #   - trash/untrash (gmail, drive)
 #   - modify/archive (gmail labels)
@@ -24,16 +28,39 @@ set -euo pipefail
 
 INPUT=$(cat)
 
-# Extract the command from tool_input
-CMD=$(printf '%s' "$INPUT" | python3 -c "
+# Extract tool_name and command. MCP tool calls carry NO command field, so a
+# command-only hook would silently allow them — hence the tool_name branch below.
+FIELDS=$(printf '%s' "$INPUT" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
     inp = d.get('tool_input', d)
-    print(inp.get('command', ''))
-except:
+    print(d.get('tool_name', ''))
+    print(inp.get('command', '').replace('\n', ' '))
+except Exception:
+    print('')
     print('')
 " 2>/dev/null) || exit 0
+
+TOOL=$(printf '%s' "$FIELDS" | sed -n '1p')
+CMD=$(printf '%s' "$FIELDS" | sed -n '2p')
+
+# --- MCP connector deletions (no command field; matched by tool name) ---
+# Google Calendar delete_event and Gmail delete_label are irreversible calls
+# reachable without ever touching Bash.
+case "$TOOL" in
+    mcp__*Google_Calendar__delete_event)
+        printf 'BLOCKED: Calendar event deletion via MCP not allowed.\n' >&2
+        printf 'Deletions are irreversible. Cancel/decline the event, or delete via Calendar UI.\n' >&2
+        exit 2
+        ;;
+    mcp__*Gmail__delete_label)
+        printf 'BLOCKED: Gmail label deletion via MCP not allowed.\n' >&2
+        printf 'Deleting a label is irreversible and unlabels every message using it.\n' >&2
+        printf 'Use update_label to rename, or delete via the Gmail UI.\n' >&2
+        exit 2
+        ;;
+esac
 
 # No command = not a Bash tool call, allow
 [ -z "$CMD" ] && exit 0

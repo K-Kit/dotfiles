@@ -11,6 +11,14 @@
 #
 # Reads Bash tool_input JSON from stdin, checks the command field.
 # Exit 0 = allow, Exit 2 = block.
+#
+# MCP coverage audit (2026-07-27): the Gmail connector exposes NO send tool —
+# only create_draft / update_draft / list_drafts, plus label operations. So there
+# is no MCP send path to block here, and no matcher is wired: a matcher naming a
+# nonexistent tool is dead config. Re-check after connector updates; if a
+# send/send_draft tool appears, add a tool_name branch like block_gws_delete.sh.
+# (Out of scope but adjacent: mcp__claude_ai_Slack__slack_send_message IS a live
+# unilateral send, with slack_send_message_draft as the safe sibling.)
 
 set -euo pipefail
 
