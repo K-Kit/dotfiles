@@ -25,7 +25,9 @@ Dry-run by default; pass --apply to write.
 import argparse
 import json
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -56,17 +58,50 @@ MCP_DELETE_TOOLS = (
 # block_gws_delete.sh is exactly that case: the old copy handles only `command`
 # and returns early on MCP input, so wiring the MCP matchers against it yields a
 # blocking matcher that silently permits — the failure this tranche exists to
-# remove. Each marker is a string that only the NEW version contains.
-CAPABILITY_MARKERS = {
-    "block_gws_delete.sh": (
-        "Google_Calendar__delete_event",
-        "the MCP tool_name branch (H2)",
-    ),
-    "block_unsafe_install.py": (
-        "--no-quarantine",
-        "the four supply-chain gates (H1)",
-    ),
+# remove.
+#
+# So we RUN each hook rather than reading it. A content marker is not proof of
+# capability: an inert `#!/bin/sh` + `# --no-quarantine` + `exit 0` stub contains
+# the marker and blocks nothing.
+#
+# Each probe is TWO-SIDED, and both sides are load-bearing:
+#
+#   forbidden -> exit 2 AND non-empty stderr
+#       Exit status alone is forgeable in the same way the marker was: a stub
+#       that unconditionally `exit 2`s passes it, and so does a truncated script
+#       that happens to die non-zero. Requiring an explanation on stderr means
+#       the hook has to have reached its own refusal path. It is also the hook
+#       contract — a refusal the user cannot read is a refusal they cannot act on.
+#
+#   benign -> exit 0
+#       This is what an unconditional blocker fails. Without it, "blocks
+#       everything" reads as "capability present", and we would happily wire a
+#       hook that bricks the tool it guards.
+#
+# Neither side alone is sufficient; that is the whole point of the pair.
+CAPABILITY_PROBES = {
+    "block_gws_delete.sh": {
+        "what": "the MCP tool_name branch (H2)",
+        "forbidden": {
+            "tool_name": "mcp__claude_ai_Google_Calendar__delete_event",
+            "tool_input": {},
+        },
+        "benign": {"tool_name": "Bash", "tool_input": {"command": "ls -la"}},
+    },
+    "block_unsafe_install.py": {
+        "what": "the supply-chain gates (H1)",
+        "forbidden": {
+            "tool_name": "Bash",
+            "tool_input": {"command": "brew install --no-quarantine somecask"},
+        },
+        "benign": {
+            "tool_name": "Bash",
+            "tool_input": {"command": "uv pip install requests"},
+        },
+    },
 }
+
+PROBE_TIMEOUT = 5  # a hung hook must not hang --apply
 
 # (event, matcher, script, timeout, anchor)
 # `anchor`: insert immediately before the entry whose command contains this
@@ -107,7 +142,73 @@ def find_block(blocks: list, matcher: str | None) -> dict | None:
 
 
 def has_command(block: dict, script: str) -> bool:
-    return any(script in h.get("command", "") for h in block.get("hooks", []))
+    """Is `script` already wired in this block, as an actual command word?
+
+    A substring test says yes to `true # block_unsafe_install.py`, where the
+    name is inside a comment and the hook never runs — we would then report
+    "already wired" and leave a permitting no-op in place. Split the command
+    the way a shell would (dropping comments) and compare basenames, so
+    `$HOME/.claude/hooks/block_x.py` and `python3 .../block_x.py` both count.
+
+    Biased strict: on unbalanced quotes we return False, which at worst adds a
+    duplicate entry (noisy, harmless). Returning True on a wiring that is not
+    really there is silent permission.
+    """
+    for hook in block.get("hooks", []):
+        try:
+            tokens = shlex.split(hook.get("command", ""), comments=True)
+        except ValueError:
+            continue
+        if any(tok.rsplit("/", 1)[-1] == script for tok in tokens):
+            return True
+    return False
+
+
+def run_probe(script: Path, payload: dict) -> tuple[int, str]:
+    """Feed one hook payload to a deployed hook. Returns (exit code, stderr).
+
+    Exit -1 means the hook could not be run at all (timeout, not executable,
+    bad interpreter). That is never treated as "capability present".
+    """
+    try:
+        proc = subprocess.run(
+            [str(script)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return -1, f"hook did not exit within {PROBE_TIMEOUT}s"
+    except OSError as exc:
+        return -1, str(exc)
+    return proc.returncode, proc.stderr
+
+
+def probe_failures(script: str, probe: dict, path: Path) -> list[str]:
+    """Both sides of the two-sided capability probe. Empty list = healthy."""
+    rc, err = run_probe(path, probe["forbidden"])
+    if rc != 2:
+        return [
+            f"{script}: did NOT block the forbidden call (exit {rc}, expected 2)"
+            f" — looks like it predates {probe['what']}"
+            + (f"\n      {err.strip()}" if rc == -1 and err.strip() else "")
+        ]
+    if not err.strip():
+        return [
+            f"{script}: blocked the forbidden call but wrote nothing to stderr"
+            " — either a stub that exits 2 unconditionally, or a real refusal"
+            " the user cannot read. Both are unwireable."
+        ]
+
+    rc_ok, _ = run_probe(path, probe["benign"])
+    if rc_ok != 0:
+        return [
+            f"{script}: also blocked a BENIGN call (exit {rc_ok}, expected 0)"
+            " — this is a blanket blocker, not a working gate. Wiring it would"
+            " break the tool it is meant to guard."
+        ]
+    return []
 
 
 def main() -> None:
@@ -146,19 +247,21 @@ def main() -> None:
     if not_exec:
         fail(f"these hook scripts are not executable: {not_exec}")
 
+    # Run each blocker against a forbidden and a benign payload. Reading the
+    # file cannot tell these apart; executing it can.
     stale = []
-    for script, (marker, what) in CAPABILITY_MARKERS.items():
+    for script, probe in CAPABILITY_PROBES.items():
         if script not in scripts:
             continue
-        if marker not in (HOOKS_DIR / script).read_text():
-            stale.append(f"{script} (missing {what})")
+        stale.extend(probe_failures(script, probe, HOOKS_DIR / script))
     if stale:
         fail(
-            "these deployed hook scripts predate the capability being wired:\n  "
+            "these deployed hook scripts failed their capability probe:\n  "
             + "\n  ".join(stale)
-            + f"\nThe file in {HOOKS_DIR} is an older version. Merge the updated "
-            "script to the main checkout first — wiring a matcher to a hook that "
-            "cannot handle it produces a blocker that silently permits."
+            + f"\nThe file in {HOOKS_DIR} is not a working version of the hook. "
+            "Merge the updated script to the main checkout first — wiring a "
+            "matcher to a hook that cannot handle it produces a blocker that "
+            "silently permits."
         )
 
     hooks = data["hooks"]

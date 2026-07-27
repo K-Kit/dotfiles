@@ -64,6 +64,11 @@ def main() -> None:
     except Exception:
         sys.exit(0)
 
+    # `[]` is valid JSON: it parses fine, then has no .get(). A Stop hook that
+    # raises is an error shown to the user, so degrade to silence instead.
+    if not isinstance(data, dict):
+        sys.exit(0)
+
     if data.get("stop_hook_active"):
         sys.exit(0)
 

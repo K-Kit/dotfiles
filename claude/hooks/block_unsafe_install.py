@@ -11,12 +11,20 @@ Blocks:
   3. `--ignore-scripts=false`     — re-enabling npm lifecycle scripts
   4. `--no-quarantine`            — disabling Gatekeeper on a cask
 
-Allows: `--help`, `--dry-run`, local paths, editable installs, `-r requirements.txt`,
-and index/registry flags (a custom index is a real vector but is NOT one of the four
-named gates — keeping the gate precise avoids blocking `pip install -i <mirror> pkg`).
+Allows: `--help`, `--dry-run`, local paths, editable installs, a LOCAL
+`-r requirements.txt`, and index/registry/mirror flags (a custom index is a real
+vector but is NOT one of the four named gates — keeping the gate precise avoids
+blocking `pip install -i <mirror> pkg`).
 
 Each block names the approval path, because all four are overridable by the user
 saying so explicitly — the hook stops the *unilateral* action, not the action.
+
+DESIGN: fail CLOSED on ambiguity. Every earlier version of this hook keyed gates
+1 and 2 on tokens[0] and tried to skip wrapper flags to find it. That is
+unwinnable: `sudo -n` looks exactly like `nice -n`, but sudo's -n is a boolean
+and nice's takes a value, so any single skip-table silently permits one of them.
+Instead we test EVERY plausible command start. Over-blocking prints a message
+naming the approval path; under-blocking is silent permission.
 
 Exit 0 = allow, exit 2 = block.
 """
@@ -26,13 +34,18 @@ import re
 import shlex
 import sys
 
-# Flags whose *value* is a URL by design — skip the following token when scanning
-# for package arguments, so a mirror/index URL is not mistaken for a package URL.
-VALUE_TAKING_FLAGS = {
+# Flags whose value is a URL *by design* (mirrors, registries, proxies). Their
+# value is skipped so a legitimate mirror is not read as a package URL.
+URL_BY_DESIGN_FLAGS = {
     "-i", "--index-url", "--extra-index-url", "--find-links", "-f",
     "--trusted-host", "--proxy", "--registry", "--cert", "--client-cert",
-    "-r", "--requirement", "-c", "--constraint", "--config-settings",
-    "--python", "-p", "--prefix", "--target", "-t", "--cache-dir",
+}
+# Flags taking a path value that MUST still be checked: a remote requirements or
+# constraints file is precisely the arbitrary-URL-install vector.
+CHECKED_VALUE_FLAGS = {"-r", "--requirement", "-c", "--constraint"}
+# Flags taking a local path value, not a package source.
+PATH_VALUE_FLAGS = {
+    "--config-settings", "--python", "-p", "--prefix", "--target", "-t", "--cache-dir",
 }
 
 REMOTE_PKG_RE = re.compile(
@@ -45,13 +58,11 @@ TAP_FORMULA_RE = re.compile(r"^[\w.-]+/[\w.-]+/[\w.@+-]+$")
 SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|[;\n|]")
 
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
-# Wrappers that prefix a real command without changing what it does. Any gate
-# keyed on tokens[0] fails OPEN without stripping these: `sudo brew tap o/r` and
-# `HOMEBREW_NO_AUTO_UPDATE=1 brew install o/r/f` both walk straight past a check
-# that stops the bare form.
-PREFIX_CMDS = {"sudo", "doas", "env", "command", "nohup", "nice", "stdbuf", "time"}
-# Wrapper flags that consume the NEXT token (sudo -u USER, env -u NAME).
-PREFIX_VALUE_FLAGS = {"-u", "--user", "-g", "--group", "-n", "--nice"}
+# Shells whose `-c STRING` argument is a whole nested command. shlex keeps that
+# string as ONE token, so without re-entering it `bash -c "pip install git+..."`
+# is invisible to every token-level gate.
+SHELL_CMDS = {"bash", "sh", "zsh", "dash", "ksh", "ash"}
+MAX_NEST_DEPTH = 4
 
 
 def block(title: str, detail: str, approval: str) -> None:
@@ -61,34 +72,32 @@ def block(title: str, detail: str, approval: str) -> None:
     sys.exit(2)
 
 
-def strip_prefix(tokens: list[str]) -> list[str]:
-    """Drop leading env assignments and wrapper commands, returning the real
-    command. Loops, so `sudo env VAR=1 brew ...` reduces to `brew ...`."""
-    i, n = 0, len(tokens)
-    while i < n:
-        tok = tokens[i]
-        if ENV_ASSIGN_RE.match(tok):
-            i += 1
-            continue
-        if tok.rsplit("/", 1)[-1] in PREFIX_CMDS:
-            i += 1
-            while i < n and tokens[i].startswith("-"):  # the wrapper's own flags
-                if tokens[i] in PREFIX_VALUE_FLAGS and i + 1 < n:
-                    i += 1
-                i += 1
-            continue
-        break
-    return tokens[i:]
+def basename(tok: str) -> str:
+    return tok.rsplit("/", 1)[-1]
 
 
-def installer_of(tokens: list[str]) -> str | None:
-    """Return a normalised installer name if this segment installs packages."""
-    rest = strip_prefix(tokens)
+def candidate_starts(tokens: list[str]) -> list[list[str]]:
+    """Every suffix that could plausibly be the real command.
+
+    Keying on tokens[0] requires correctly modelling each wrapper's flag
+    arity; getting that wrong fails OPEN. Testing all suffixes needs no such
+    model, so `sudo -n pip install URL`, `nice -n 10 pip install URL`, and
+    `env A=1 doas -u x pip install URL` are all covered by construction.
+    """
+    out = [tokens]
+    for i in range(1, len(tokens)):
+        # A command name is never a flag or an env assignment.
+        if tokens[i].startswith("-") or ENV_ASSIGN_RE.match(tokens[i]):
+            continue
+        out.append(tokens[i:])
+    return out
+
+
+def installer_of(rest: list[str]) -> str | None:
+    """Return a normalised installer name if this token run installs packages."""
     if not rest:
         return None
-
-    head, args = rest[0], rest[1:]
-    head = head.rsplit("/", 1)[-1]  # /usr/bin/pip3 -> pip3
+    head, args = basename(rest[0]), rest[1:]
 
     if head in ("pip", "pip3") and args and args[0] == "install":
         return "pip"
@@ -103,7 +112,47 @@ def installer_of(tokens: list[str]) -> str | None:
     return None
 
 
-def check_segment(tokens: list[str]) -> None:
+def check_install_args(rest: list[str]) -> None:
+    """Gate 2 over one installer invocation's arguments."""
+    skip_next = False
+    check_next = False
+    for tok in rest[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if check_next:
+            check_next = False
+            # fall through to the remote check below for this value
+        elif tok in URL_BY_DESIGN_FLAGS or tok in PATH_VALUE_FLAGS:
+            skip_next = True
+            continue
+        elif tok in CHECKED_VALUE_FLAGS:
+            check_next = True
+            continue
+        elif tok.startswith("-"):
+            # --requirement=URL / --index-url=URL inline forms
+            name, sep, value = tok.partition("=")
+            if sep and name in CHECKED_VALUE_FLAGS and (
+                REMOTE_PKG_RE.match(value) or ARCHIVE_URL_RE.match(value)
+            ):
+                block(
+                    f"install from a remote requirements/constraints file (`{value}`).",
+                    "A remote requirements file installs unreviewed pinned packages, "
+                    "bypassing the registry, quarantine, and OSV checks.",
+                    "download and review it locally first, or get explicit user approval.",
+                )
+            continue
+        if REMOTE_PKG_RE.match(tok) or ARCHIVE_URL_RE.match(tok):
+            block(
+                f"install from an arbitrary URL or git repo (`{tok}`).",
+                "Packages from URLs/git bypass the registry, the 7-day "
+                "min-release-age quarantine, and OSV malware checks.",
+                "get explicit user approval, or install the published "
+                "registry package instead.",
+            )
+
+
+def check_segment(tokens: list[str], depth: int) -> None:
     if not tokens:
         return
     if "--help" in tokens or "-h" in tokens or "--dry-run" in tokens:
@@ -130,69 +179,51 @@ def check_segment(tokens: list[str]) -> None:
                 "get explicit user confirmation for this specific package.",
             )
 
-    # Gates 3 and 4 scan every token, so a wrapper prefix cannot hide a flag
-    # from them. Gates 1 and 2 key on the command NAME, so they must look past
-    # `sudo` / `VAR=value` / `env` first or they silently permit the wrapped form.
-    rest = strip_prefix(tokens)
+    # Gates 3 and 4 scan every token, so no wrapper can hide a flag from them.
+    # Gates 1 and 2 key on a command NAME, so they run over every candidate
+    # start rather than trusting a wrapper-flag skip table (see module docstring).
+    for rest in candidate_starts(tokens):
+        head = basename(rest[0])
 
-    # --- Gate 1: third-party Homebrew taps ---
-    head = rest[0].rsplit("/", 1)[-1] if rest else ""
-    if head == "brew" and len(rest) > 1:
-        sub = rest[1]
-        positional = [t for t in rest[2:] if not t.startswith("-")]
-        if sub == "tap" and positional:
-            block(
-                f"third-party Homebrew tap `{positional[0]}`.",
-                "Only official core formulae/casks and Mac App Store apps are allowed; "
-                "a tap is unreviewed third-party code.",
-                "get explicit user approval before adding any tap.",
-            )
-        if sub in ("install", "reinstall", "upgrade"):
-            # `positional` already excludes flags, so --cask needs no special case.
-            # Skipping a leading element here would silently exempt the first
-            # package from the tap check — check every positional.
-            for t in positional:
-                if TAP_FORMULA_RE.match(t):
-                    block(
-                        f"install from a third-party tap (`{t}`).",
-                        "An owner/repo/formula reference installs from an unreviewed tap.",
-                        "get explicit user approval, or use the official core formula.",
-                    )
-
-    # --- Gate 2: arbitrary URL / git installs ---
-    installer = installer_of(tokens)
-    if installer:
-        skip_next = False
-        for tok in rest[1:]:
-            if skip_next:
-                skip_next = False
-                continue
-            if tok in VALUE_TAKING_FLAGS:
-                skip_next = True
-                continue
-            if tok.startswith("-"):
-                continue
-            if REMOTE_PKG_RE.match(tok) or ARCHIVE_URL_RE.match(tok):
+        # --- Gate 1: third-party Homebrew taps ---
+        if head == "brew" and len(rest) > 1:
+            sub = rest[1]
+            positional = [t for t in rest[2:] if not t.startswith("-")]
+            if sub == "tap" and positional:
                 block(
-                    f"install from an arbitrary URL or git repo (`{tok}`).",
-                    "Packages from URLs/git bypass the registry, the 7-day "
-                    "min-release-age quarantine, and OSV malware checks.",
-                    "get explicit user approval, or install the published "
-                    "registry package instead.",
+                    f"third-party Homebrew tap `{positional[0]}`.",
+                    "Only official core formulae/casks and Mac App Store apps are allowed; "
+                    "a tap is unreviewed third-party code.",
+                    "get explicit user approval before adding any tap.",
                 )
+            if sub in ("install", "reinstall", "upgrade"):
+                # `positional` already excludes flags, so --cask needs no special
+                # case. Skipping a leading element would silently exempt the
+                # first package from the tap check — check every positional.
+                for t in positional:
+                    if TAP_FORMULA_RE.match(t):
+                        block(
+                            f"install from a third-party tap (`{t}`).",
+                            "An owner/repo/formula reference installs from an unreviewed tap.",
+                            "get explicit user approval, or use the official core formula.",
+                        )
+
+        # --- Gate 2: arbitrary URL / git installs ---
+        if installer_of(rest):
+            check_install_args(rest)
+
+    # --- Nested shells: `bash -c "<whole command>"` ---
+    if depth < MAX_NEST_DEPTH:
+        for idx, tok in enumerate(tokens):
+            if basename(tok) not in SHELL_CMDS:
+                continue
+            for j in range(idx + 1, len(tokens) - 1):
+                if tokens[j] == "-c":
+                    check_command(tokens[j + 1], depth + 1)
+                    break
 
 
-def main() -> None:
-    try:
-        data = json.load(sys.stdin)
-    except Exception:
-        sys.exit(0)
-
-    inp = data.get("tool_input", data) or {}
-    command = inp.get("command", "") or ""
-    if not command.strip():
-        sys.exit(0)
-
+def check_command(command: str, depth: int = 0) -> None:
     for segment in SEGMENT_SPLIT_RE.split(command):
         segment = segment.strip()
         if not segment:
@@ -201,8 +232,25 @@ def main() -> None:
             tokens = shlex.split(segment)
         except ValueError:
             tokens = segment.split()
-        check_segment(tokens)
+        check_segment(tokens, depth)
 
+
+def main() -> None:
+    try:
+        data = json.load(sys.stdin)
+    except Exception:
+        sys.exit(0)
+
+    if not isinstance(data, dict):
+        sys.exit(0)
+    inp = data.get("tool_input", data)
+    if not isinstance(inp, dict):
+        sys.exit(0)
+    command = inp.get("command", "") or ""
+    if not command.strip():
+        sys.exit(0)
+
+    check_command(command)
     sys.exit(0)
 
 

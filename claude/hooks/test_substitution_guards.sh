@@ -183,6 +183,21 @@ run "missing transcript"    nudge_number_provenance.py \
     '{"transcript_path":"/nonexistent/nope.jsonl"}' silent
 run "malformed input"       nudge_number_provenance.py 'not json at all' silent
 
+# --- Regression: valid JSON that is not an object -----------------------------
+# `[]` parses cleanly and then has no .get(), so the natural code raises. For a
+# PostToolUse or Stop hook a traceback is not a silent no-op — the non-zero exit
+# surfaces to the user as a hook error on every tool call. `run` already fails
+# any non-zero exit, so these assert the degradation is to SILENCE, not a crash.
+# `malformed input` above only covers unparseable text, which takes a different
+# branch; that test passing is not evidence for this one.
+echo "=== Regression: non-dict JSON payloads ==="
+for h in guard_existing_code.sh nudge_synthetic_data.py \
+         nudge_hyperparam_provenance.py nudge_number_provenance.py; do
+    run "$h on []"      "$h" '[]'      silent
+    run "$h on a string" "$h" '"hi"'   silent
+    run "$h on null"    "$h" 'null'    silent
+done
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed (total $((PASS + FAIL)))"
 [ "$FAIL" -eq 0 ] && echo "All tests passed!" || exit 1

@@ -79,6 +79,39 @@ run_test "env prefix plain pip" "FOO=bar pip install requests" "allow"
 run_test "sudo pip index-url" "sudo pip install -i https://pypi.org/simple requests" "allow"
 run_test "env wrapper unrelated" "env FOO=1 git status" "allow"
 
+# --- Regression: the four fail-open paths found by review on 2026-07-27 -------
+# Every case below was PERMITTED while this suite was green. That is the point:
+# a passing suite was not evidence the gates worked, so each probe lives here
+# permanently rather than in a scratch script outside the repo.
+echo "=== Regression: flag arity must not be guessed ==="
+# `sudo -n` is boolean; `nice -n 10` takes a value. The two are token-identical,
+# so ANY single skip table that decides how many tokens to consume after `-n`
+# silently permits one of them. The fix stopped keying on tokens[0] and now
+# tests every candidate command start — which is exactly what this pair checks.
+# Keep BOTH: dropping either one makes a wrong skip table look correct again.
+run_test "sudo -n (boolean flag)" "sudo -n pip install git+https://github.com/foo/bar" "block"
+run_test "nice -n 10 (flag takes a value)" "nice -n 10 brew tap someuser/some-repo" "block"
+run_test "nice -n 10 must not false-block" "nice -n 10 brew install ripgrep" "allow"
+
+echo "=== Regression: remote requirements files ==="
+# -r takes a URL as readily as a path, and the URL is the payload: pip fetches
+# and installs whatever that server returns. Gate 2 scanned install targets but
+# not the argument to -r.
+run_test "pip -r remote url" "pip install -r https://example.com/reqs.txt" "block"
+run_test "uv pip -r remote url" "uv pip install -r https://example.com/reqs.txt" "block"
+run_test "pip -r local file still allowed" "pip install -r requirements.txt" "allow"
+
+echo "=== Regression: nested shell -c ==="
+# `bash -c '<cmd>'` keeps the whole nested command as ONE shlex token, invisible
+# to every token-level gate unless the hook re-enters it. Chaining operators
+# INSIDE the nested string are likewise invisible to the outer split.
+run_test "bash -c nested url install" \
+    "bash -c 'pip install git+https://github.com/foo/bar'" "block"
+run_test "sh -c nested tap" "sh -c 'brew tap someuser/some-repo'" "block"
+run_test "bash -c nested, chained inside" \
+    "bash -c 'cd /tmp && npm install github:foo/bar'" "block"
+run_test "bash -c benign must not block" "bash -c 'pip install requests'" "allow"
+
 echo "=== SHOULD ALLOW: ordinary installs ==="
 run_test "plain pip install" "pip install requests" "allow"
 run_test "pip requirements file" "pip install -r requirements.txt" "allow"

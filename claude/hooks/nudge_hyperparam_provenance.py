@@ -44,8 +44,15 @@ EXEMPT_LINE_RE = re.compile(
 )
 
 
-def extract(data: dict) -> tuple[str, str]:
-    inp = data.get("tool_input", data) or {}
+def extract(data: object) -> tuple[str, str]:
+    # A nudge must never crash: a non-zero exit from a PostToolUse hook is an
+    # error surfaced to the user, and `[]` is valid JSON that parses fine and
+    # then has no .get(). Degrade to "nothing to say", not to a traceback.
+    if not isinstance(data, dict):
+        return "", ""
+    inp = data.get("tool_input", data)
+    if not isinstance(inp, dict):
+        return "", ""
     path = inp.get("file_path", "") or ""
     content = inp.get("content") or inp.get("new_string") or ""
     if not content and isinstance(inp.get("edits"), list):

@@ -4,7 +4,11 @@
 
 set -euo pipefail
 
-HOOK="$HOME/.claude/hooks/block_email_send.sh"
+# Resolve the hook NEXT TO this test, not through $HOME. ~/.claude points at the
+# main checkout, so a worktree copy of the suite would silently exercise the
+# deployed hook instead of the one it ships with — green here, unchanged code
+# there. The sibling path is the only one that tests what the commit changes.
+HOOK="$(cd "$(dirname "$0")" && pwd)/block_email_send.sh"
 PASS=0
 FAIL=0
 
@@ -125,6 +129,33 @@ test_case "gws gmail +send --help at end of command" \
 
 test_case "gws gmail +reply --help at end" \
     '{"tool_input":{"command":"gws gmail +reply --help"}}' 0
+
+echo ""
+echo ""
+echo "=== Regression: fail-open paths found by review 2026-07-27 (exit 2) ==="
+# Both cases below were PERMITTED while this suite was green.
+
+# A flag is a position in argv, not a substring of the command. `--draft` sitting
+# INSIDE a --body value is message text the user typed; reading it as an exemption
+# lets a live send through. After shlex.split the whole body is ONE token, which
+# is not equal to `--draft`.
+test_case "--draft inside a --body value is text, not a flag" \
+    '{"tool_input":{"command":"gws gmail +send --to a@b.com --body \"remind me to --draft this\""}}' 2
+
+test_case "--draft inside a --subject value is text, not a flag" \
+    '{"tool_input":{"command":"gws gmail +send --to a@b.com --subject \"re: --draft\" --body hi"}}' 2
+
+# Bash executes `+se""nd` as `+send`; a regex over the raw string never matches.
+test_case "empty-string split inside the verb" \
+    '{"tool_input":{"command":"gws gmail +se\"\"nd --to a@b.com --body hi"}}' 2
+
+test_case "single-quote split inside the verb" \
+    "{\"tool_input\":{\"command\":\"gws gmail +se''nd --to a@b.com --body hi\"}}" 2
+
+# --draft in its real argv position must still exempt — otherwise the fix above
+# would have been "block everything", which is not a working gate.
+test_case "real --draft flag still allowed alongside a body mentioning it" \
+    '{"tool_input":{"command":"gws gmail +send --draft --to a@b.com --body \"about --draft\""}}' 0
 
 echo ""
 echo "=== RESULTS ==="

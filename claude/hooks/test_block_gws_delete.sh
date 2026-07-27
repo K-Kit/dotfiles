@@ -89,6 +89,22 @@ echo "=== SHOULD ALLOW: non-gws commands ==="
 run_test "regular rm" "rm -rf /tmp/test" "allow"
 run_test "git command" "git log --oneline" "allow"
 
+# --- Regression: the fail-open paths found by review on 2026-07-27 ------------
+# Both were PERMITTED while this suite was green, so they live here permanently.
+echo "=== Regression: --help must be scoped to its own segment ==="
+# A whole-string `--help` check reads the flag in ONE segment and exempts the
+# deletion in ANOTHER. `: --help` is a no-op that exists only to carry the flag.
+run_test "help in a different segment" "gws drive files delete ; : --help" "block"
+run_test "help after &&" "gws drive files delete && echo --help" "block"
+run_test "help in its own segment only" "echo hi ; gws drive files delete --help" "allow"
+
+echo "=== Regression: shell quoting must be normalised before matching ==="
+# Bash executes `de""lete` as `delete`; a regex over the RAW command string never
+# matches it. shlex.split collapses the quotes first, so both forms are one word.
+run_test "empty-string split inside verb" 'gws drive files de""lete --params x' "block"
+run_test "single-quote split inside verb" "gws drive files de''lete --params x" "block"
+run_test "quoted whole verb still blocks" 'gws drive files "delete" --params x' "block"
+
 # --- MCP coverage (H2) -------------------------------------------------------
 # MCP calls carry NO `command` field, so these fixtures exercise the tool_name
 # branch specifically. A command-only hook wired to an MCP matcher would be a
