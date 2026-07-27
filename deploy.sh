@@ -29,6 +29,10 @@ source "$DOT_DIR/config.sh"
 source "$DOT_DIR/scripts/shared/helpers.sh"
 source "$DOT_DIR/scripts/helpers/dotfiles_secrets.sh"
 
+# Abort if DOT_DIR is a worktree rather than the main checkout (--allow-worktree
+# overrides). Must run before parse_args so a mistake can't reach any component.
+guard_not_worktree "$0" "$@"
+
 # ─── Help ─────────────────────────────────────────────────────────────────────
 
 show_help() {
@@ -93,6 +97,9 @@ COMPONENTS:
     --append          Append to existing configs instead of overwrite
     --ascii=FILE      ASCII art file for shell startup
     --no-<component>  Disable a component (e.g., --no-editor)
+    --allow-worktree  Deploy even though DOT_DIR is a git worktree. Refused by
+                      default: it repoints ~/.claude and ~20 other user symlinks
+                      at a directory cwrm/cwclean will delete.
     --non-interactive Skip the component menu and deploy the default set. The
                       menu is the script's only prompt; everything after it
                       already runs with safe defaults (git conflicts keep
@@ -1003,54 +1010,57 @@ fi
 
 # ─── Scheduled Tasks (parallel — independent launchd/cron jobs) ──────────────
 
+# Queue a setup script, warning if it is missing. Every one of these is tracked
+# in the repo, so an absent script means a partial checkout or an unmerged
+# branch — skipping silently reads as a successful deploy that installed nothing.
+queue_scheduled_job() {
+    local job_id="$1" script="$2"
+    if [[ -f "$script" ]]; then
+        scheduled_jobs+=("$job_id|$script")
+    else
+        log_warning "Scheduled task '$job_id' skipped: $script not found"
+    fi
+}
+
 {
     local scheduled_jobs=()
 
     if [[ "$DEPLOY_CLAUDE_CLEANUP" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_claude_cleanup.sh" ]] && \
-            scheduled_jobs+=("claude-cleanup|$DOT_DIR/scripts/cleanup/setup_claude_cleanup.sh")
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_claude_tmpdir_cleanup.sh" ]] && \
-            scheduled_jobs+=("tmpdir-cleanup|$DOT_DIR/scripts/cleanup/setup_claude_tmpdir_cleanup.sh")
+        queue_scheduled_job claude-cleanup "$DOT_DIR/scripts/cleanup/setup_claude_cleanup.sh"
+        queue_scheduled_job tmpdir-cleanup "$DOT_DIR/scripts/cleanup/setup_claude_tmpdir_cleanup.sh"
+        queue_scheduled_job cache-clean "$DOT_DIR/scripts/cleanup/setup_cache_clean.sh"
     fi
 
     if [[ "$DEPLOY_AI_UPDATE" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_ai_update.sh" ]] && \
-            scheduled_jobs+=("ai-update|$DOT_DIR/scripts/cleanup/setup_ai_update.sh")
+        queue_scheduled_job ai-update "$DOT_DIR/scripts/cleanup/setup_ai_update.sh"
     fi
 
     if [[ "$DEPLOY_MCP_SYNC" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_mcp_sync.sh" ]] && \
-            scheduled_jobs+=("mcp-sync|$DOT_DIR/scripts/cleanup/setup_mcp_sync.sh")
+        queue_scheduled_job mcp-sync "$DOT_DIR/scripts/cleanup/setup_mcp_sync.sh"
     fi
 
     if [[ "$DEPLOY_USAGE_PING" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_usage_ping.sh" ]] && \
-            scheduled_jobs+=("usage-ping|$DOT_DIR/scripts/cleanup/setup_usage_ping.sh")
+        queue_scheduled_job usage-ping "$DOT_DIR/scripts/cleanup/setup_usage_ping.sh"
     fi
 
     if [[ "$DEPLOY_TMUX_RESUME" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_tmux_resume.sh" ]] && \
-            scheduled_jobs+=("tmux-resume|$DOT_DIR/scripts/cleanup/setup_tmux_resume.sh")
+        queue_scheduled_job tmux-resume "$DOT_DIR/scripts/cleanup/setup_tmux_resume.sh"
     fi
 
     if [[ "$DEPLOY_BREW_UPDATE" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_brew_update.sh" ]] && \
-            scheduled_jobs+=("brew-update|$DOT_DIR/scripts/cleanup/setup_brew_update.sh")
+        queue_scheduled_job brew-update "$DOT_DIR/scripts/cleanup/setup_brew_update.sh"
     fi
 
     if [[ "$DEPLOY_DEP_AUDIT" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/security/setup_dep_audit.sh" ]] && \
-            scheduled_jobs+=("dep-audit|$DOT_DIR/scripts/security/setup_dep_audit.sh")
+        queue_scheduled_job dep-audit "$DOT_DIR/scripts/security/setup_dep_audit.sh"
     fi
 
     if [[ "$DEPLOY_KEYBOARD" == "true" ]] && is_macos; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_keyboard_repeat.sh" ]] && \
-            scheduled_jobs+=("keyboard-repeat|$DOT_DIR/scripts/cleanup/setup_keyboard_repeat.sh")
+        queue_scheduled_job keyboard-repeat "$DOT_DIR/scripts/cleanup/setup_keyboard_repeat.sh"
     fi
 
     if [[ "$DEPLOY_HIDE_IDLE_APPS" == "true" ]] && is_macos; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh" ]] && \
-            scheduled_jobs+=("hide-idle-apps|$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh")
+        queue_scheduled_job hide-idle-apps "$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh"
     fi
 
     if (( ${#scheduled_jobs[@]} > 0 )); then

@@ -1,0 +1,14 @@
+#!/bin/bash
+# Wrapper for the scheduled Claude plugin-cache clean.
+#
+# Exists because schedule_daily embeds its command as a single launchd
+# ProgramArguments string, so `claude-cache-clean --apply` cannot be scheduled
+# directly on macOS. Resolves the dotfiles root relative to this script so it
+# works on any machine.
+set -euo pipefail
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+DOT_DIR="$(dirname "$(dirname "$(realpath "$0")")")"
+
+exec "$DOT_DIR/custom_bins/claude-cache-clean" --apply
