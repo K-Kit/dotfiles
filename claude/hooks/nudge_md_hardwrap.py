@@ -51,7 +51,7 @@ def extract(data: object) -> tuple[str, str, list[str]]:
             frags = [inp["new_string"]]
         elif isinstance(inp.get("edits"), list):
             frags = [
-                e.get("new_string", "")
+                e["new_string"]
                 for e in inp["edits"]
                 if isinstance(e, dict) and e.get("new_string")
             ]
@@ -104,12 +104,18 @@ def main() -> None:
     if doc:  # Write: the content IS the document
         hits = find_hard_wraps(doc)
     else:  # Edit: scan the post-edit file so fence context is real
+        written = {
+            ln.strip() for f_ in frags for ln in f_.splitlines() if ln.strip()
+        }
+        # A hit must be a written line that is long and ends mid-sentence —
+        # skip the disk read entirely when no fragment line qualifies.
+        if not any(
+            len(ln) > 40 and ENDS_MID_SENTENCE_RE.search(ln) for ln in written
+        ):
+            sys.exit(0)
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 on_disk = f.read(MAX_DOC_BYTES)
-            written = {
-                ln.strip() for f_ in frags for ln in f_.splitlines() if ln.strip()
-            }
             hits = [h for h in find_hard_wraps(on_disk) if h in written]
         except OSError:
             # No document context: scan each fragment independently, skipping

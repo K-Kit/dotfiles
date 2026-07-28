@@ -39,7 +39,7 @@ import subprocess, sys
 try:
     r = subprocess.run(sys.argv[1:], stdout=subprocess.PIPE,
                        stderr=subprocess.DEVNULL, text=True, timeout=4)
-    sys.stdout.write(r.stdout or "")
+    sys.stdout.write(r.stdout)
 except Exception:
     pass
 ' "$@"
@@ -51,12 +51,12 @@ case "$FILE_PATH" in
     *.py)
         command -v ruff >/dev/null 2>&1 || exit 0
         TOOL="ruff"
-        FINDINGS=$(run_lint ruff check --quiet --no-fix "$FILE_PATH") || true
+        FINDINGS=$(run_lint ruff check --quiet --no-fix "$FILE_PATH")
         ;;
     *.sh)
         command -v shellcheck >/dev/null 2>&1 || exit 0
         TOOL="shellcheck"
-        FINDINGS=$(run_lint shellcheck -f gcc "$FILE_PATH") || true
+        FINDINGS=$(run_lint shellcheck -f gcc "$FILE_PATH")
         ;;
     *) exit 0 ;;
 esac

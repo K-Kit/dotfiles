@@ -62,22 +62,22 @@ EXEMPT_RE = re.compile(
 )
 
 
-def strip_comment(line: str) -> str:
-    """Drop `#`/`//` comments so commented-out params don't fire. Quote parity
-    keeps `#` inside string literals (and `//` in quoted URLs) intact."""
-    for i, ch in enumerate(line):
-        if ch == "#" or (ch == "/" and line[i : i + 2] == "//"):
-            before = line[:i]
-            if before.count('"') % 2 == 0 and before.count("'") % 2 == 0:
-                return line[:i]
-    return line
-
-
 def in_string(line: str, pos: int) -> bool:
     """True when pos sits inside a quoted literal (odd quotes before it) —
     `print("fallback n_samples=10")` is prose, not an assignment."""
     before = line[:pos]
     return before.count('"') % 2 == 1 or before.count("'") % 2 == 1
+
+
+def strip_comment(line: str) -> str:
+    """Drop `#`/`//` comments so commented-out params don't fire. Quote parity
+    (via in_string) keeps `#` inside string literals and `//` in URLs intact."""
+    if "#" not in line and "//" not in line:
+        return line
+    for i, ch in enumerate(line):
+        if (ch == "#" or line[i : i + 2] == "//") and not in_string(line, i):
+            return line[:i]
+    return line
 
 
 def exempt(line: str, start: int, end: int) -> bool:

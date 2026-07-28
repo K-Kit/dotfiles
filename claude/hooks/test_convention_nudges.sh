@@ -111,7 +111,7 @@ chmod +x "$TMP/bin/ruff"
 printf 'x = 1\n' > "$TMP/hang.py"
 START=$SECONDS
 rc=0
-out=$(printf '%s' "$(post_write "$TMP/hang.py" "x = 1")" \
+out=$(post_write "$TMP/hang.py" "x = 1" \
       | PATH="$TMP/bin:$PATH" bash "$DIR/nudge_lint.sh" 2>/dev/null) || rc=$?
 ELAPSED=$((SECONDS - START))
 if [ "$rc" -eq 0 ] && [ "$ELAPSED" -lt 8 ] && [ -z "$out" ]; then
