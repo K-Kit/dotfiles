@@ -5,6 +5,10 @@
 # clean run stays silent by design -- a daily "nothing to report" message trains
 # you to ignore the channel.
 #
+# This wrapper exits 0 only when it has nothing to report OR it reported
+# successfully. Findings it could not deliver -- failed send, no token -- exit
+# non-zero, so a green unit always means "you have been told everything".
+#
 # Telegram delivery is optional and off until a token exists. Create
 # ~/.claude/channels/telegram/tripwire.env with:
 #     TELEGRAM_BOT_TOKEN=...
@@ -84,9 +88,17 @@ ${body}
 full report: ${report}" 2>&1); then
     # Never echo the URL: it carries the bot token. curl's own error text is safe.
     echo "tripwire: telegram delivery FAILED (${tg_out}); report at $report" >&2
+    exit 1
   fi
-else
-  echo "tripwire: findings recorded at $report (no telegram token configured)" >&2
+  exit 0
 fi
 
-exit 0
+echo "tripwire: findings recorded at $report (no telegram token configured)" >&2
+# Undelivered findings are not a success. The wrapper exits 0 in exactly two
+# cases -- nothing to report, or something to report that was reported -- so a
+# green unit always means "you have been told everything I know". Exiting 0
+# here instead would make an unreachable operator look identical to a clean
+# vault, which is the same silent-failure shape as the exit-127 and the
+# missing-`--fail` bugs above. Expect this to stay red until EX-9's bot token
+# is configured; that redness is the signal, not noise.
+exit 1

@@ -134,8 +134,37 @@ MB = 1024 * 1024
 # point of check (a): local_files carries no `deleted` key at all, so a counter
 # reading that table is structurally always zero (the QR-6 defect).
 HAS_DELETED_KEY = "json_type(data, '$.deleted') IS NOT NULL"
-IS_TOMBSTONE = "COALESCE(json_extract(data, '$.deleted'), 0) NOT IN (0, 'false')"
-IS_FOLDER = "COALESCE(json_extract(data, '$.folder'), 0) NOT IN (0, 'false')"
+
+# Only a literal JSON `true` counts as deleted -- json_extract yields the
+# integer 1 for it, or the text 'true' if the value was stored as a string.
+# The previous form, COALESCE(...) NOT IN (0, 'false'), was broad truthiness:
+# the strings "0" and "no", and the containers {} and [], all read as
+# tombstones. Looseness here points the wrong way, because a spurious tombstone
+# is precisely what unlocks the irreversible filter change.
+IS_TOMBSTONE = "json_extract(data, '$.deleted') IN (1, 'true')"
+
+# Deliberately the complement of IS_TOMBSTONE, not a positive test for
+# `deleted:false`. A row we cannot confidently call deleted must count as LIVE,
+# because live rows are what block the exclusion -- ambiguity has to fail closed.
+IS_LIVE = f"NOT ({IS_TOMBSTONE})"
+
+IS_FOLDER = "json_extract(data, '$.folder') IN (1, 'true')"
+
+
+def under_target(folder: str) -> tuple[str, tuple]:
+    """SQL fragment + params matching `folder` itself and everything beneath it.
+
+    Deliberately NOT `path LIKE folder || '/%'`. SQLite's LIKE treats `_` as a
+    single-character wildcard and is ASCII case-insensitive by default, and
+    EXCLUDED_FOLDER contains an underscore -- so a pattern meant for
+    `node_modules/` also matches `node-modules/x.js`, `nodeXmodules/x.js` and
+    `NODE_MODULES/x.js`. A tombstone under any of those unrelated directories
+    would satisfy a gate about this one. substr() comparison has no
+    metacharacters and is case-sensitive, so there is nothing to escape and no
+    way for a sibling directory to sneak through.
+    """
+    child = folder + "/"
+    return "(path = ? OR substr(path, 1, ?) = ?)", (folder, len(child), child)
 
 
 def utc_stamp() -> str:
@@ -261,6 +290,64 @@ def open_ro(db_path: Path) -> sqlite3.Connection:
 
 def scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> int:
     return int(conn.execute(sql, params).fetchone()[0])
+
+
+@dataclass(frozen=True)
+class TargetRows:
+    """server_files rows under the folder EX-7 is about to exclude."""
+
+    tombstones: int
+    tombstone_folders: int
+    live: int
+
+    @property
+    def total(self) -> int:
+        return self.tombstones + self.live
+
+
+def count_target_rows(conn: sqlite3.Connection, folder: str = EXCLUDED_FOLDER) -> TargetRows:
+    """The three numbers the EX-6 gate turns on, read from one connection.
+
+    Both enforcement points (`verify` and `filters`) call this rather than
+    each spelling out their own query -- when the same predicate was written
+    twice, the two copies were free to drift, and a reviewer had to check both
+    to know what the gate actually did.
+    """
+    where, params = under_target(folder)
+    q = f"SELECT COUNT(*) FROM server_files WHERE {{}} AND {where}"
+    return TargetRows(
+        tombstones=scalar(conn, q.format(IS_TOMBSTONE), params),
+        tombstone_folders=scalar(conn, q.format(f"{IS_TOMBSTONE} AND {IS_FOLDER}"), params),
+        live=scalar(conn, q.format(IS_LIVE), params),
+    )
+
+
+def exclusion_blocker(rows: TargetRows, folder: str = EXCLUDED_FOLDER) -> str | None:
+    """Why EX-7 must not run, or None if it is safe to tighten the exclusion.
+
+    The invariant is about what is STILL ON THE SERVER, not about what has gone.
+    Counting tombstones alone is fail-open, and that is how this gate was wrong
+    for the third time: a sync that tombstoned a single row before dying leaves
+    26,983 rows live, yet a `tombstones >= 1` test unlocks the non-retroactive
+    exclusion that strands every one of them. Zero live rows is the only
+    condition that makes the irreversible step safe.
+
+    The tombstone count is still required, separately: a target folder with no
+    rows of any kind means the deletions never reached the server, or that this
+    is the wrong state.db -- either way there is nothing here to have confirmed.
+    """
+    if rows.live:
+        return (
+            f"{rows.live:,} rows under {folder} are still live on the server "
+            f"({rows.tombstones:,} tombstoned). Exclusion is not retroactive, so "
+            "tightening the filters now would strand those rows permanently."
+        )
+    if not rows.tombstones:
+        return (
+            f"no rows at all under {folder} -- neither live nor tombstoned. "
+            "The deletions never reached the server, or this is the wrong state.db."
+        )
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -437,6 +524,29 @@ def compute_runs_plan() -> StagePlan:
     return plan
 
 
+def fsync_dir(d: Path) -> None:
+    """Persist a directory's own entries, not just the data of files within it.
+
+    fsync on a file descriptor persists that file's contents; it says nothing
+    about whether the *name* linking it into its parent has reached the disk.
+    So a journal that fsyncs every append can still be entirely absent after a
+    power loss, because the create was never durable -- which defeats the point
+    of journalling at all. Best-effort: some filesystems refuse O_RDONLY fsync
+    on a directory, and failing the whole stage over that would be worse than
+    the weaker guarantee.
+    """
+    try:
+        fd = os.open(str(d), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def move_out(path: Path, holding: Path, base: Path) -> Path:
     """EX-4: mv, never rm. Structure is preserved so the move is reversible."""
     dest = holding / path.relative_to(base)
@@ -447,6 +557,22 @@ def move_out(path: Path, holding: Path, base: Path) -> Path:
     if dest.exists() or dest.is_symlink():
         die(f"refusing to move onto an existing path: {dest}")
     shutil.move(str(path), str(dest))
+    # Within one filesystem this is a rename and only the two directory entries
+    # need persisting. Across filesystems -- which `--holding` makes easy to ask
+    # for -- shutil.move degrades to copy-then-unlink, so the copy's data has to
+    # be on disk before the journal records the move as done; otherwise a power
+    # loss leaves a "done" entry pointing at a file that lost its contents while
+    # the original has already been unlinked.
+    if dest.is_file() and not dest.is_symlink():
+        try:
+            fd = os.open(str(dest), os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+    fsync_dir(dest.parent)
     return dest
 
 
@@ -526,13 +652,23 @@ def cmd_stage(args: argparse.Namespace) -> int:
     # summary, not the only copy.
     journal_path = holding / "manifest.jsonl"
 
+    journal_created = journal_path.exists()
+
     def journal(entry: dict) -> None:
         # fsync: the record has to survive a power loss between this write and
         # the move, not merely a Python-level crash.
+        nonlocal journal_created
         with journal_path.open("a") as fh:
             fh.write(json.dumps(entry) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
+        if not journal_created:
+            # The first append also created the file. fsync above persisted its
+            # contents but not the directory entry naming it, so without this
+            # the whole journal can vanish in a power loss -- the one failure
+            # the journal exists to survive.
+            fsync_dir(holding)
+            journal_created = True
 
     def do_move(entry: dict, move) -> None:
         """Journal intent, move, journal completion.
@@ -656,23 +792,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
         folders = scalar(
             conn, f"SELECT COUNT(*) FROM server_files WHERE {IS_TOMBSTONE} AND {IS_FOLDER}"
         )
-        prefix = (EXCLUDED_FOLDER, EXCLUDED_FOLDER + "/%")
-        under_nm = scalar(
-            conn,
-            f"SELECT COUNT(*) FROM server_files "
-            f"WHERE {IS_TOMBSTONE} AND (path = ? OR path LIKE ?)",
-            prefix,
-        )
         # EX-6 quotes 24,041 files + 2,943 folders *under the prefix*. Report
         # that split too: the runs/ deletions shift the vault-wide totals, so
         # without this the operator sees neither expected number and may abort
         # a run that is in fact correct.
-        under_nm_folders = scalar(
-            conn,
-            f"SELECT COUNT(*) FROM server_files "
-            f"WHERE {IS_TOMBSTONE} AND {IS_FOLDER} AND (path = ? OR path LIKE ?)",
-            prefix,
-        )
+        rows = count_target_rows(conn)
         conn.close()
 
     files = total - folders
@@ -682,32 +806,34 @@ def cmd_verify(args: argparse.Namespace) -> int:
     log(f"  tombstones, total       : {total:>8,}")
     log()
     log(f"  under {EXCLUDED_FOLDER}:")
-    log(f"    file rows   : {under_nm - under_nm_folders:>8,}   (EX-6 expects ~24,041)")
-    log(f"    folder rows : {under_nm_folders:>8,}   (EX-6 expects ~2,943)")
-    log(f"    total       : {under_nm:>8,}")
-    log(f"  elsewhere in the vault    : {total - under_nm:>8,}")
+    log(f"    tombstoned files   : {rows.tombstones - rows.tombstone_folders:>8,}"
+        "   (EX-6 expects ~24,041)")
+    log(f"    tombstoned folders : {rows.tombstone_folders:>8,}   (EX-6 expects ~2,943)")
+    log(f"    tombstoned total   : {rows.tombstones:>8,}")
+    log(f"    STILL LIVE         : {rows.live:>8,}   (must be 0 before EX-7)")
+    log(f"  tombstones elsewhere in the vault : {total - rows.tombstones:>8,}")
 
-    # The gate must be scoped to the folder about to be excluded, not vault-wide.
-    # `stage --what runs` tombstones 25 runs/ files; those alone make the total
-    # nonzero while every node_modules row is still live. A vault-wide test would
-    # then pass, EX-7 would tighten a non-retroactive exclusion, and ~285 MB of
-    # remote node_modules would strand with no way to reclaim it. Same class as
-    # the original QR-6 defect -- right table, wrong scope.
-    if under_nm == 0:
+    # The gate is about what remains on the server under the folder EX-7 will
+    # exclude, not about how much has gone. Counting tombstones alone is
+    # fail-open in both the scope and the threshold: `stage --what runs`
+    # tombstones 25 runs/ files, and a sync that died after one node_modules row
+    # leaves a tombstone under the prefix -- either would satisfy a "nonzero"
+    # test while ~285 MB of remote node_modules is still live and about to be
+    # stranded by a non-retroactive exclusion. Same defect class as QR-6 (right
+    # table, wrong scope) and P1 (right table, wrong prefix): P2 is right prefix,
+    # wrong threshold.
+    blocker = exclusion_blocker(rows)
+    if blocker:
         log()
-        log(f"  Zero tombstones under {EXCLUDED_FOLDER}.")
-        if total:
+        log(f"  {blocker}")
+        if total and not rows.tombstones:
             log(f"  ({total:,} tombstones exist elsewhere in the vault -- most likely the")
-            log("   runs/ deletions. They do NOT license the exclusion: excluding a folder")
-            log("   whose remote rows are still live strands those bytes permanently.)")
-        log("  The node_modules deletions did not reach the server.")
-        log("  Tightening the filters now would strand the remote copies permanently,")
-        log("  because exclusion is not retroactive.")
-        die(f"EX-6 hard stop: zero tombstones under {EXCLUDED_FOLDER}, no filter change made")
+            log("   runs/ deletions. They do NOT license the exclusion.)")
+        die(f"EX-6 hard stop: {blocker} -- no filter change made")
 
     log()
-    log(f"  {under_nm:,} tombstones under {EXCLUDED_FOLDER}.")
-    log("  The node_modules deletions reached the server.")
+    log(f"  {rows.tombstones:,} tombstones under {EXCLUDED_FOLDER}, and zero live rows.")
+    log("  Every node_modules deletion reached the server.")
     log()
     log("  STOP. EX-11 requires Yulong's explicit approval of this split")
     log("  before `filters` may run. Pass it through:")
@@ -738,29 +864,24 @@ def cmd_filters(args: argparse.Namespace) -> int:
     # Re-read the count here so the EX-6 -> EX-7 ordering is a code invariant.
     with tempfile.TemporaryDirectory(prefix="vault-sync-filters-") as tmp:
         conn = open_ro(copy_state_db(state_dir, Path(tmp)))
-        # Scoped to the folder being excluded, matching cmd_verify. A vault-wide
-        # count is unlocked by any unrelated deletion (the runs/ files), which
-        # would let the non-retroactive exclusion land while the remote
-        # node_modules rows are still live -- stranding them for good.
-        prefix = (EXCLUDED_FOLDER, EXCLUDED_FOLDER + "/%")
-        tombstones = scalar(
-            conn,
-            f"SELECT COUNT(*) FROM server_files "
-            f"WHERE {IS_TOMBSTONE} AND (path = ? OR path LIKE ?)",
-            prefix,
-        )
+        # Same helper as cmd_verify, so the two enforcement points cannot drift
+        # apart. The condition is zero LIVE rows under the excluded folder --
+        # not "some tombstones exist", which any unrelated deletion or any
+        # partially-completed sync would satisfy while the rows EX-7 is about to
+        # orphan are still on the server.
+        rows = count_target_rows(conn)
         total = scalar(conn, f"SELECT COUNT(*) FROM server_files WHERE {IS_TOMBSTONE}")
         conn.close()
     log()
-    log(f"  EX-6 re-check, tombstones under {EXCLUDED_FOLDER}: {tombstones:,}")
+    log(f"  EX-6 re-check, under {EXCLUDED_FOLDER}:")
+    log(f"    tombstoned : {rows.tombstones:,}")
+    log(f"    still live : {rows.live:,}")
     log(f"  (vault-wide tombstones, for context only: {total:,})")
-    if tombstones == 0:
+    blocker = exclusion_blocker(rows)
+    if blocker:
         log("  Exclusion is not retroactive: tightening now would strand the")
         log("  remote copies with no way to reclaim the quota they hold.")
-        die(
-            f"EX-6 hard stop: zero tombstones under {EXCLUDED_FOLDER}, "
-            "refusing to tighten filters"
-        )
+        die(f"EX-6 hard stop: {blocker} -- refusing to tighten filters")
 
     log()
     log(f"  approved by : {args.approved_by}")
@@ -830,7 +951,17 @@ def cmd_tripwire(args: argparse.Namespace) -> int:
     regenerable: list[tuple[str, int]] = []
     oversized: list[tuple[str, int]] = []
 
-    for dirpath, dirnames, filenames in os.walk(VAULT):
+    # os.walk swallows every error it meets, including a root that does not
+    # exist: it yields nothing and the run prints "Clean. No findings." A
+    # daily unattended check that reports clean because it looked at nothing
+    # is worse than no check, because it is indistinguishable from a real
+    # clean result. Fail loudly instead -- both for a missing root, and for
+    # any directory that turns unreadable mid-walk.
+    if not VAULT.is_dir():
+        die(f"vault root is not a directory: {VAULT} -- refusing to report a clean scan")
+    walk_errors: list[OSError] = []
+
+    for dirpath, dirnames, filenames in os.walk(VAULT, onerror=walk_errors.append):
         rel_dir = os.path.relpath(dirpath, VAULT)
         rel_dir = "" if rel_dir == "." else rel_dir
 
@@ -871,6 +1002,15 @@ def cmd_tripwire(args: argparse.Namespace) -> int:
     log(f"  vault        : {VAULT}")
     log(f"  exclusions   : {excluded or 'none'}")
     log(f"  size ceiling : {args.max_file_mb:.2f} MB")
+
+    if walk_errors:
+        log()
+        log(f"  UNREADABLE DIRECTORIES ({len(walk_errors)}):")
+        for err in walk_errors[:20]:
+            log(f"    {err.filename}: {err.strerror}")
+        if len(walk_errors) > 20:
+            log(f"    ... and {len(walk_errors) - 20} more")
+        die("scan was incomplete; its result cannot be trusted")
 
     if regenerable:
         log()
