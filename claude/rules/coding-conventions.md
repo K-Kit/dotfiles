@@ -1,140 +1,38 @@
 # Coding Conventions
 
-## Code Quality Priorities
+## Python
 
-Apply in order when writing or reviewing code:
+| Need | Tool |
+|---|---|
+| Packages, Python versions, CLI tools | `uv` |
+| Lint + format | `ruff` |
+| Type check | `ty` (beta as of 2026-07-27 — 0.0.x, diagnostics can change between releases) |
+| Task runner | `just` |
+| CLI | `cyclopts` |
+| Config / env | `pydantic-settings` |
+| Validation | `pydantic` |
+| Testing | `pytest` |
+| HTTP | `httpx` |
+| Async | `anyio` |
 
-1. **Minimal edits to external code** — for third-party or paper-author code, only touch what's necessary; preserve structure and style
-2. **Clean** — no dead code, no magic numbers, no redundant abstractions
-3. **Readable** — names communicate intent; comment only non-obvious logic; avoid clever one-liners at the cost of clarity
-4. **Extensible** — expose hyperparams and config as named variables or `pydantic-settings`; never hardcode values that experiments might vary
-5. **Experiment logging** — log key params, step milestones, and final metrics; enough to reconstruct a run without re-running it (see `research-engineer` agent for detailed patterns)
+Invoke tools via `uv run` — avoids stale `VIRTUAL_ENV`. `uv run --no-sync` when deps are unchanged. Read `.eval` files with Inspect AI's `read_eval_log()`.
 
-These apply to all code including experiments and prototypes — coding agents write code at scale, so scrappy shortcuts are no longer a justified tradeoff.
+**Never call `sys.path.insert` directly — it crashes the Claude Code session.** Wrap it in a helper invoked only under `if __name__ == "__main__":`.
 
-## Python Basics
+Pass data as pydantic `BaseModel`/`dataclass`, not `pd.DataFrame`; JSONL for intermediates; pandas only at the pipeline edge for metrics. Copy shared configs/prompts rather than mutating them. Rewrite shell in Python past ~50 lines.
 
-- Run from project root with `uv` and `python -m`
-- **`uv run --no-sync`** for experiment runs where deps haven't changed — skips lock resolution overhead
-- Type hints required, imports at top
-- Let errors propagate (no unnecessary try/except)
-- Testing: `pytest`
-- **Read .eval files** using Inspect AI's `read_eval_log()` (look up via MCP server)
-- **Config via pydantic-settings** (preferred for 3+ env vars):
-  ```python
-  from pydantic_settings import BaseSettings
+## Shell
 
-  class Config(BaseSettings):
-      api_key: str  # reads API_KEY from env/.env automatically
+`shellcheck` before committing; `# shellcheck shell=bash` at the top of zsh scripts. fzf pickers: `--bind 'space:toggle'` for multi-select; `--bind "load:pos(N)+select"` needs fzf 0.54+.
 
-  config = Config()
-  ```
+## Any Language
 
-### sys.path.insert (Safe Pattern)
+**Parallelize embarrassingly parallel loops by default** — background N independent iterations and wait, rather than looping (`asyncio.gather`, `Promise.all`, `cmd & … wait`). Stay sequential only for a genuine ordering dependency, shared mutable state, or OS-level exclusivity (keystroke UI automation needs the app frontmost).
 
-```python
-# src/utils/paths.py
-import sys
-from pathlib import Path
+UTC and ISO-8601 for all timestamps: `$(utc_date)` → `YYYY-MM-DD`, `$(utc_timestamp)` → `YYYY-MM-DD_HH-MM-SS`.
 
-def add_project_root():
-    project_root = Path(__file__).resolve().parent.parent.parent
-    if project_root not in sys.path:
-        sys.path.insert(0, str(project_root))
+TypeScript over JavaScript; bun/bunx over npm/npx; Biome over ESLint + Prettier. Installs: Homebrew on macOS, apt/dnf/pacman on Linux, then ecosystem-native (`uv tool`, `cargo`, `bun`). Avoid nix, Flatpak, Snap.
 
-# In scripts (only in __main__ block):
-if __name__ == "__main__":
-    from src.utils.paths import add_project_root
-    add_project_root()
-```
+Available: `rg` `fd` `fzf` `bat` `eza` `z` `delta` `jq` `jless` `dust` `duf` `sd` (over `sed`) `trash` (over `rm`) `gws`. `any2md <input>` converts to Markdown — arxiv id, file, directory, URL, or `-c` for clipboard.
 
-### Python Tooling (preference order)
-
-| Need | Tool | Over | Why |
-|------|------|------|-----|
-| Package mgmt | `uv` | pip/poetry | 10-100x faster, single binary, replaces pip+venv+poetry |
-| Lint + format | `ruff` | flake8/black/isort | Single Rust binary replaces 3 tools, near-instant |
-| Type check | `ty` | mypy/pyright | Rust-based, 10-60x faster |
-| Task runner | `just` | Makefile / shell scripts | Simpler syntax, no tab sensitivity, cross-platform |
-| CLI | `cyclopts` | argparse/typer | Pydantic-native, `Annotated` types, 38% less code; niche — LLM codegen may need corrections |
-| Config/env | `pydantic-settings` | python-dotenv / manual `os.getenv` | Typed config with `SecretStr`, env/file/vault sources |
-| Validation | `pydantic` | manual parsing | Schema validation + serialization, ecosystem standard |
-| Testing | `pytest` | unittest | Less boilerplate, fixtures, parametrize, rich plugin ecosystem |
-| HTTP client | `httpx` | requests | Async-native, HTTP/2, drop-in requests-compatible API |
-| Async | `anyio` | raw asyncio / trio | Structured concurrency on asyncio backend; proper task group cancellation, cleaner API |
-
-### Python Practices
-
-- **Don't mutate objects** — copy/`deepcopy` configs, prompts, and shared data structures. Mutation causes silent bugs
-- **Python over complex bash** — if a shell script exceeds ~50 lines or needs error handling, rewrite it in Python. Python is a scripting language — use it
-- **No YAML-as-code** — YAML for static config is fine; YAML that branches, loops, or templates is not. Prefer Python so you can "Go to References" in your editor
-- **Pydantic models over DataFrames** — pass data as `BaseModel` / `dataclass`, not `pd.DataFrame`. DataFrames are untyped, lossy, and opaque to both humans and LLMs. Use JSONL for intermediate storage
-- **Pandas at the edges only** — use pandas for computing metrics / aggregations at the end of a pipeline, not as the data transport format throughout
-
-## TypeScript
-
-- Prefer TypeScript over JavaScript for all frontend/Node work
-- Tooling: bun (runtime + pkg mgr) + tsc (types) + Biome (lint + format)
-- Biome replaces ESLint + Prettier — single Rust-based binary
-
-## Date & Timestamp Formatting
-
-- **Always use UTC timezone** for all timestamps
-- **Standard format**: `YYYY-MM-DD` (ISO 8601) for dates, `YYYY-MM-DD_HH-MM-SS` for timestamps
-- **Helper commands** (in PATH):
-  - `$(utc_date)` → outputs `YYYY-MM-DD` (e.g., `2026-01-25`)
-  - `$(utc_timestamp)` → outputs `YYYY-MM-DD_HH-MM-SS` (e.g., `2026-01-25_14-30-22`)
-
-## Interactive TUI (fzf)
-
-All fzf-based pickers in dotfiles tooling should follow these conventions:
-
-- **Space to toggle** in multi-select (`--bind 'space:toggle'`) — TAB still works but space is primary
-- **Preview pane** for any picker where the item has viewable content (file contents, secret values, descriptions)
-- **Header** should mention key bindings: `SPACE to toggle, ENTER to confirm`
-- **`--with-nth`** to control display columns; keep raw data in hidden fields for extraction
-
-## Shell Scripts
-
-- Run `shellcheck script.sh` before committing
-- Fix all errors; warnings are usually worth addressing
-- For zsh scripts, use `# shellcheck shell=bash` at top (closest approximation)
-- Suppress false positives with `# shellcheck disable=SCXXXX` (include reason)
-
-See `docs/shell-scripting-gotchas.md` for zsh-specific footguns (`local` in loops, `set -e` + arithmetic).
-
-## General Programming
-
-- Match existing code style
-- Run linting and type checking after Python changes (see Python Tooling table)
-- **Use `uv run`** for `ruff`, `ty`, `pytest` — avoids stale `VIRTUAL_ENV` issues (see `docs/environment-setup.md`)
-- Refactor when unwieldy (>50 lines/function, >500 lines/file)
-- **Parallelize embarrassingly parallel work by default** — if a loop does N independent per-item operations (no shared mutable state, no ordering dependency), background each iteration and wait for all, rather than looping sequentially. Applies across languages: shell (`cmd & pids+=($!); done; wait`), Python (`asyncio.gather`/`concurrent.futures`), TypeScript (`Promise.all`). Only keep a loop sequential when there's a real reason — a genuine ordering dependency, a shared resource that isn't safe under concurrent writes (e.g. don't let backgrounded jobs write shared state directly; compute state synchronously in the parent, parallelize only the side-effecting dispatch), or the operation requires real OS-level focus/exclusivity (e.g. a `Cmd+W` keystroke needs the target app to actually be frontmost — parallelizing keystroke-based UI automation across apps races). When capping concurrency (e.g. many subprocess spawns), a small fixed cap (~4-8) is usually enough — diminishing returns past that for most local I/O-bound work.
-
-## Package Managers (preference order)
-
-1. **bun** — Fastest, includes runtime, good compatibility  
-   - Prefer `bunx` over `npx` for executing CLI tools/scripts—`bunx` is significantly faster.
-2. **pnpm** — Efficient disk usage, strict dependencies
-3. **npm** — Universal fallback
-
-Check for `bun.lockb`, `pnpm-lock.yaml`, or `package-lock.json` to detect which is in use.
-
-## Language Selection
-
-| Need | Default | When to reconsider |
-|------|---------|-------------------|
-| ML / research / prototyping | Python | — |
-| Frontend / scripting / APIs | TypeScript | Plain JS only for trivial scripts |
-| Performance-critical CLI/tools | Rust | Go if team familiarity matters; Zig for low-level/embedded |
-| Shell glue | Bash/Zsh | Python if >50 lines, needs error handling, or involves data manipulation |
-
-This is a preference order, not a mandate. Match the tool to the job.
-
-## CLI Tools Available
-
-ripgrep (`rg`), fd, fzf, bat, eza, zoxide (`z`), delta, jq, jless, htop, dust, duf, bun, bunx, sd (prefer over `sed`), trash (macOS — prefer over `rm`), gws (Google Workspace CLI — Docs, Sheets, Drive, Gmail, Calendar)
-
-## Visual Output Quality
-
-For any visual output (TikZ, HTML/CSS, Slidev, matplotlib): verify against rendered output, use layout systems not manual coordinates, pad containers not per-child elements. Full principles + minimum spacing floors: `docs/visual-layout-quality.md`.
+Visual output (TikZ, CSS, Slidev, matplotlib): `docs/visual-layout-quality.md`.
