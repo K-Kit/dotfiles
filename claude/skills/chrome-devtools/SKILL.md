@@ -1,1 +1,1 @@
-/home/yulong/.claude/skills/chrome-devtools.md
+../chrome-devtools.md

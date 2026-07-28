@@ -1,1 +1,1 @@
-/home/yulong/.claude/skills/browser-session.md
+../browser-session.md
