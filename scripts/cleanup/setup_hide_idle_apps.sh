@@ -1,7 +1,8 @@
 #!/bin/bash
-# Setup periodic hide-idle-apps polling (hide running apps not in the
-# [hide-idle-exclude] section once they've had no visible window for N minutes).
-# macOS only. Poll interval and threshold come from config/hide-idle.conf.
+# Setup periodic hide-idle-apps polling: apps left covered up are hidden, then
+# have their windows closed, then are quit, each after its own delay.
+# macOS only. Poll interval comes from config/hide-idle.conf; every per-app
+# policy (which rungs apply, and after how long) from config/app-lifecycle.yaml.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

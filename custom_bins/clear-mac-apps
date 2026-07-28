@@ -1,19 +1,27 @@
 #!/usr/bin/env zsh
 # Clear Mac Apps - Manage running apps with configurable behavior
-# Used by macOS Shortcuts via "Run Shell Script" action
+# This is the MANUAL trigger (macOS Shortcuts, "Run Shell Script"): it acts
+# immediately, keeps no timers, and does whatever each app's `manual:` says.
+# The idle trigger is hide-idle-apps, which calls back into this script with
+# --only/--max-action once one of its clocks expires.
 #
-# Config file supports four sections:
-#   [no-touch]           - Apps to leave completely alone
-#   [close-windows]      - Apps where we close windows but don't quit
-#   [slow-quit]          - Apps that ignore keystrokes; quit then poll for exit
-#   [protected-windows]  - Tab title patterns: close non-matching windows, keep app alive
+# Behaviour comes from config/app-lifecycle.yaml, read via app-lifecycle-config
+# so no zsh here parses YAML:
+#   manual: skip   - leave the app completely alone
+#   manual: close  - close its windows but never quit it
+#   manual: quit   - quit it (the default for unlisted apps)
+#   slow: true     - ignores keystrokes; quit then poll for exit
+#   protect_windows - title substrings: close non-matching windows, app lives
 
 set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
-CONFIG_FILE="${SCRIPT_DIR}/../config/clear_mac_apps.conf"
+CONFIG_FILE="${SCRIPT_DIR}/../config/app-lifecycle.yaml"
+CONFIG_HELPER="${SCRIPT_DIR}/app-lifecycle-config"
 REGISTRY_FILE="${SCRIPT_DIR}/../config/safari_web_apps.local"
 DRY_RUN=false
+MAX_ACTION=quit
+typeset -a ONLY_APPS=()
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -22,9 +30,38 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --only)
+            [[ -n "${2:-}" ]] || { echo "--only needs an app name" >&2; exit 1; }
+            ONLY_APPS+=("$2")
+            shift 2
+            ;;
+        --max-action)
+            case "${2:-}" in
+                close|quit) MAX_ACTION="$2" ;;
+                *) echo "--max-action takes close or quit" >&2; exit 1 ;;
+            esac
+            shift 2
+            ;;
+        --migrate-config)
+            # Takes the source path explicitly: this is a one-shot conversion,
+            # and after it runs the old file no longer lives in config/ (the
+            # last shipped copy is kept as tests/fixtures/clear_mac_apps.conf,
+            # which is what pins the byte-identical dry-run test).
+            [[ -n "${2:-}" ]] || {
+                echo "Usage: clear-mac-apps --migrate-config <clear_mac_apps.conf>" >&2
+                exit 1
+            }
+            exec "$CONFIG_HELPER" --migrate "$2"
+            ;;
         --help|-h)
-            echo "Usage: clear-mac-apps [--dry-run|-n]"
-            echo "  --dry-run, -n  Show what would happen without making changes"
+            echo "Usage: clear-mac-apps [--dry-run|-n] [--only NAME]... [--max-action close|quit]"
+            echo "  --dry-run, -n     Show what would happen without making changes"
+            echo "  --only NAME       Consider only this app (repeatable). Config still"
+            echo "                    vetoes, so this can never act on a skipped app."
+            echo "  --max-action ACT  Cap the action at close or quit (default: quit)."
+            echo "                    Only ever does less than a bare run would."
+            echo "  --migrate-config FILE"
+            echo "                    Print an old clear_mac_apps.conf converted to YAML"
             exit 0
             ;;
         *)
@@ -34,22 +71,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Parse apps from a specific section in config
-# Usage: get_entries_in_section "no-touch"
-get_entries_in_section() {
-    local section="$1"
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo "Error: Config file not found: $CONFIG_FILE" >&2
+# Load config into ALC_* variables. A broken config must stop us dead: this
+# script's default action is "quit", so guessing would quit everything.
+load_config() {
+    local emitted
+    if ! emitted=$("$CONFIG_HELPER" --file "$CONFIG_FILE"); then
+        echo "Error: could not read $CONFIG_FILE (see above)" >&2
         exit 1
     fi
-    awk -v section="[$section]" '
-        /^\[.*\]$/ { in_section = ($0 == section); next }
-        in_section && !/^#/ && !/^[[:space:]]*$/ {
-            sub(/#.*/, "")
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
-            if (length > 0) print
-        }
-    ' "$CONFIG_FILE"
+    eval "$emitted"
 }
 
 # Get list of running GUI apps as "name|bundle_id" per line
@@ -95,9 +125,86 @@ slow_quit_and_wait() {
 }
 
 # Close all windows of an app without quitting
+# Apps whose windows have no clickable close button, learned the only way there
+# is: by trying once. Keyed by app NAME, because that is all the AX API and the
+# keystroke path agree on. Lives beside the idle job's state - one system.
+AX_CAPABILITY_FILE="${HOME}/.cache/hide-idle-apps/ax-capability"
+
+ax_close_unsupported() {
+    [[ -f "$AX_CAPABILITY_FILE" ]] || return 1
+    grep -qxF -- "$1" "$AX_CAPABILITY_FILE" 2>/dev/null
+}
+
+record_ax_unsupported() {
+    ax_close_unsupported "$1" && return 0
+    mkdir -p "${AX_CAPABILITY_FILE:h}"
+    print -r -- "$1" >> "$AX_CAPABILITY_FILE"
+}
+
+count_app_windows() {
+    osascript -e "tell application \"System Events\" to tell process \"$1\" to count windows" 2>/dev/null
+}
+
+# Close every window by clicking its close button, and print how many are left.
+# Unlike the keystroke path this needs no focus, so it never yanks the desktop
+# out from under someone. Errors out (non-zero) when a window has no such button
+# - that click fails immediately - or when `patience` consecutive clicks leave
+# the count unmoved, which is what marks the app keystroke-only. The count is
+# consecutive rather than cumulative on purpose: an app that takes longer than
+# the delay to tear a window down would otherwise be branded on its first slow
+# close and, since the record is never revisited, branded forever.
+ax_close_app_windows() {
+    local app="$1"
+    local patience="${2:-3}"
+    osascript -e "
+        tell application \"System Events\"
+            tell process \"$app\"
+                set attempts to 0
+                set stalls to 0
+                repeat while (count of windows) > 0 and attempts < 20
+                    set before to count of windows
+                    click (first button of window 1 whose subrole is \"AXCloseButton\")
+                    delay 0.2
+                    set attempts to attempts + 1
+                    if (count of windows) < before then
+                        set stalls to 0
+                    else
+                        set stalls to stalls + 1
+                        if stalls >= $patience then error \"no progress\"
+                    end if
+                end repeat
+                return (count of windows) as text
+            end tell
+        end tell" 2>/dev/null
+}
+
 # Usage: close_app_windows "AppName" [patience]
-#   patience: number of no-progress attempts before escalating/giving up (default: 3)
+#   patience: consecutive no-progress attempts tolerated before giving up on a
+#             path (default: 3) - it governs both the click probe and the
+#             keystroke fallback, so one knob sets how stubborn closing is
+# Tries the focus-free AX close first, and falls back to keystrokes for apps
+# that cannot do it - remembering which those are so the probe happens once.
 close_app_windows() {
+    local app="$1"
+    local patience="${2:-3}"
+    local count remaining
+
+    # An app with no windows is already in the state closing would leave it. Do
+    # not probe it, and above all do not record it as keystroke-only: a probe
+    # that fails for want of a window says nothing about what the app supports.
+    count=$(count_app_windows "$app") || count=""
+    [[ "$count" == 0 ]] && return 0
+
+    if ! ax_close_unsupported "$app"; then
+        if remaining=$(ax_close_app_windows "$app" "$patience") && [[ "$remaining" == 0 ]]; then
+            return 0
+        fi
+        record_ax_unsupported "$app"
+    fi
+    close_app_windows_keystroke "$app" "$patience"
+}
+
+close_app_windows_keystroke() {
     local app="$1"
     local patience="${2:-3}"
     # Use Cmd+W via System Events - works for Electron apps and others
@@ -166,6 +273,26 @@ APPLESCRIPT
 }
 
 # Selectively close non-protected windows of an app
+# Hide an app the way Cmd+H does, without making it frontmost first. This is
+# what `manual: hide` asks for, and it is also the rung the idle job reaches
+# on its own - so both triggers end up in the same one-line implementation.
+hide_app() {
+    osascript -e "tell application \"System Events\" to set visible of process \"$1\" to false" 2>/dev/null
+}
+
+# A quit that the close rung is allowed to veto. close_app_selectively decides
+# on its own, from a rescan, that an app with no protected windows left should
+# be quit - and that decision happens after main() has already capped the run,
+# so without this check `--max-action close` could still quit an app whose
+# protected window closed in the intervening moment.
+quit_app_capped() {
+    if [[ "$MAX_ACTION" == close ]]; then
+        echo "  $1: would quit, but this run is capped at close"
+        return 0
+    fi
+    quit_app "$1"
+}
+
 # Usage: close_app_selectively "Google Chrome" "Google Meet" "pattern2" ...
 close_app_selectively() {
     local app="$1"; shift
@@ -204,7 +331,7 @@ close_app_selectively() {
 
     # No protected windows → quit entirely
     if (( ${#protected_windows} == 0 )); then
-        quit_app "$app"
+        quit_app_capped "$app"
         return
     fi
 
@@ -220,7 +347,7 @@ close_app_selectively() {
     local remaining
     remaining=$(osascript -e 'tell application "Google Chrome" to return count of windows' 2>/dev/null || echo "")
     if [[ "$remaining" == "0" ]]; then
-        quit_app "$app"
+        quit_app_capped "$app"
     fi
     return 0
 }
@@ -245,6 +372,7 @@ refresh_registry_if_stale() {
 }
 
 main() {
+    load_config
     refresh_registry_if_stale
 
     # Load Safari web app registry for bundle ID fallback matching
@@ -256,36 +384,45 @@ main() {
         done < "$REGISTRY_FILE"
     fi
 
-    # Build associative arrays for O(1) lookup (keys are lowercase)
+    # Build associative arrays for O(1) lookup (keys are lowercase). These are
+    # the same three buckets the old sectioned config had, now derived from
+    # each app's `manual:` value; `manual: quit` needs no set, it's the default.
     typeset -A no_touch_set
+    typeset -A hide_only_set
     typeset -A close_windows_set
     typeset -A slow_quit_set
 
-    while IFS= read -r app; do
-        [[ -n "$app" ]] && no_touch_set[${(L)app}]=1
-    done < <(get_entries_in_section "no-touch")
+    # One bucket per value on the scale, `quit` being the default and so needing
+    # none. `hide` needs its own: it is a valid `manual:` value, and without a
+    # bucket it fell through to the default and QUIT the app - the config asking
+    # for the gentlest action and getting the harshest.
+    local key
+    for key in "${ALC_APP_KEYS[@]}"; do
+        case "${ALC_MANUAL[$key]}" in
+            skip)  no_touch_set[$key]=1 ;;
+            hide)  hide_only_set[$key]=1 ;;
+            close) close_windows_set[$key]=1 ;;
+        esac
+        # NOT a bucket: `slow:` says how a quit is AWAITED, so it only means
+        # anything once an app has been classified as a quit. As a bucket it
+        # outranked `manual: close` and slow-quit those apps instead.
+        [[ "${ALC_SLOW[$key]}" == true ]] && slow_quit_set[$key]=1
+    done
 
-    while IFS= read -r app; do
-        [[ -n "$app" ]] && close_windows_set[${(L)app}]=1
-    done < <(get_entries_in_section "close-windows")
-
-    while IFS= read -r app; do
-        [[ -n "$app" ]] && slow_quit_set[${(L)app}]=1
-    done < <(get_entries_in_section "slow-quit")
-
-    # Load protected-window patterns
-    local -a protected_patterns=()
-    while IFS= read -r pattern; do
-        [[ -n "$pattern" ]] && protected_patterns+=("$pattern")
-    done < <(get_entries_in_section "protected-windows")
+    # Order matters: the dry-run prints these patterns in file order.
+    local -a protected_patterns=("${ALC_PROTECT_WINDOWS[@]}")
 
     # Build bundle ID sets for fallback matching (from registry)
     typeset -A no_touch_bids
+    typeset -A hide_only_bids
     typeset -A close_windows_bids
     typeset -A slow_quit_bids
 
     for name in ${(k)no_touch_set}; do
         [[ -n "${registry[$name]:-}" ]] && no_touch_bids[${registry[$name]}]=1
+    done
+    for name in ${(k)hide_only_set}; do
+        [[ -n "${registry[$name]:-}" ]] && hide_only_bids[${registry[$name]}]=1
     done
     for name in ${(k)close_windows_set}; do
         [[ -n "${registry[$name]:-}" ]] && close_windows_bids[${registry[$name]}]=1
@@ -300,15 +437,41 @@ main() {
     local -a running_entries=()
     while IFS='|' read -r name bid; do
         [[ -n "$name" ]] || continue
+        # --only narrows the candidate list BEFORE classification, so config
+        # still gets to veto. It can only ever make us do less, never more.
+        if (( ${#ONLY_APPS} > 0 )); then
+            local wanted matched=false
+            for wanted in "${ONLY_APPS[@]}"; do
+                [[ "${(L)name}" == "${(L)wanted}" ]] && { matched=true; break }
+            done
+            $matched || continue
+        fi
         running_entries+=("${name}${SEP}${bid}")
     done < <(get_running_apps)
 
     # Classify: check name match first, bundle ID as fallback
+    # Declared once, out here: `local x` with no value re-run on a later loop
+    # iteration PRINTS `x=''` to stdout, because zsh leaves TYPESET_SILENT unset.
+    # Inside the loop below that leaked a stray line into the dry-run report.
+    local _title
     local -a apps_to_quit=()
+    local -a apps_hide=()
     local -a apps_close_windows=()
     local -a apps_slow_quit=()
     local -a apps_selective_close=()
     local -a apps_skipped=()
+
+    # A quit, awaited slowly or not. Kept in one place so the two sites that
+    # decide "this app gets quit" cannot disagree about the slow modifier.
+    # Appends to the arrays above by zsh's dynamic scoping.
+    push_quit() {
+        local qapp="$1" qbid="$2" qlower="${(L)1}"
+        if (( ${+slow_quit_set[$qlower]} )) || { [[ -n "$qbid" ]] && (( ${+slow_quit_bids[$qbid]} )) }; then
+            apps_slow_quit+=("$qapp")
+        else
+            apps_to_quit+=("$qapp")
+        fi
+    }
 
     for entry in "${running_entries[@]}"; do
         local app="${entry%%${SEP}*}"
@@ -317,8 +480,8 @@ main() {
 
         if (( ${+no_touch_set[$app_lower]} )) || { [[ -n "$bid" ]] && (( ${+no_touch_bids[$bid]} )) }; then
             apps_skipped+=("$app")
-        elif (( ${+slow_quit_set[$app_lower]} )) || { [[ -n "$bid" ]] && (( ${+slow_quit_bids[$bid]} )) }; then
-            apps_slow_quit+=("$app")
+        elif (( ${+hide_only_set[$app_lower]} )) || { [[ -n "$bid" ]] && (( ${+hide_only_bids[$bid]} )) }; then
+            apps_hide+=("$app")
         elif (( ${+close_windows_set[$app_lower]} )) || { [[ -n "$bid" ]] && (( ${+close_windows_bids[$bid]} )) }; then
             apps_close_windows+=("$app")
         elif (( ${#protected_patterns} > 0 )); then
@@ -341,7 +504,6 @@ main() {
                 done <<< "$_chrome_tabs_cache"
             else
                 # Other apps: active window title only (best-effort)
-                local _title
                 _title=$(get_app_frontmost_window_title "$app")
                 if [[ -n "$_title" ]]; then
                     for pattern in "${protected_patterns[@]}"; do
@@ -355,12 +517,23 @@ main() {
             if $has_protected; then
                 apps_selective_close+=("$app")
             else
-                apps_to_quit+=("$app")
+                push_quit "$app" "$bid"
             fi
         else
-            apps_to_quit+=("$app")
+            push_quit "$app" "$bid"
         fi
     done
+
+    # Cap the rung. The idle job climbs hide -> close -> quit, and reaches the
+    # close rung by calling us with --max-action close; without the cap an app
+    # whose `manual:` is quit would be quit there and the ladder would collapse
+    # into a single step. Classification has already run, so this only ever
+    # downgrades an action - it never promotes one.
+    if [[ "$MAX_ACTION" == close ]]; then
+        apps_close_windows+=("${apps_to_quit[@]}" "${apps_slow_quit[@]}")
+        apps_to_quit=()
+        apps_slow_quit=()
+    fi
 
     # Dry-run mode: just show what would happen
     if $DRY_RUN; then
@@ -370,6 +543,16 @@ main() {
         for app in "${apps_to_quit[@]}"; do
             echo "  - $app"
         done
+        # Printed only when it applies, like SELECTIVE-CLOSE below: no app in the
+        # shipped config asks for `manual: hide`, and an always-empty section
+        # would be noise in the output people actually read.
+        if (( ${#apps_hide} > 0 )); then
+            echo ""
+            echo "Would HIDE (${#apps_hide}):"
+            for app in "${apps_hide[@]}"; do
+                echo "  - $app"
+            done
+        fi
         echo ""
         echo "Would CLOSE WINDOWS (${#apps_close_windows}):"
         for app in "${apps_close_windows[@]}"; do
@@ -405,7 +588,17 @@ main() {
         wait
     fi
 
-    # Close windows sequentially (need focus for Cmd+W)
+    # Hides in parallel: nothing here needs focus either.
+    if (( ${#apps_hide} > 0 )); then
+        echo "Hiding ${#apps_hide} apps in parallel..."
+        for app in "${apps_hide[@]}"; do
+            hide_app "$app" &
+        done
+        wait
+    fi
+
+    # Sequential, because the keystroke fallback needs focus and two of those in
+    # parallel would fight over it. The AX path itself needs no focus.
     for app in "${apps_close_windows[@]}"; do
         echo "Closing windows: $app"
         close_app_windows "$app" 3
@@ -430,6 +623,7 @@ main() {
     echo ""
     echo "Done."
     (( ${#no_touch_set} > 0 )) && echo "  No-touch: ${(k)no_touch_set}"
+    (( ${#hide_only_set} > 0 )) && echo "  Hide-only: ${(k)hide_only_set}"
     (( ${#close_windows_set} > 0 )) && echo "  Close-windows: ${(k)close_windows_set}"
     (( ${#slow_quit_set} > 0 )) && echo "  Slow-quit: ${(k)slow_quit_set}"
 }
