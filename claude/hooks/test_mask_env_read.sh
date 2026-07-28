@@ -10,7 +10,12 @@ PASS=0
 FAIL=0
 
 # Fixture dir with a real .env, because the hook only masks files that exist.
-FIXTURE=$(mktemp -d "${TMPDIR:-/tmp}/mask_env_test.XXXXXX")
+# Repo-local tmp/ (gitignored): $TMPDIR is not reliably writable under the
+# Claude Code sandbox, and a fixture that silently fails to write turns every
+# "should mask" case into a false pass-looking allow.
+TMP_ROOT="$(cd "$(dirname "$0")/../.." && pwd)/tmp"
+mkdir -p "$TMP_ROOT"
+FIXTURE=$(mktemp -d "$TMP_ROOT/mask_env_test.XXXXXX")
 trap 'rm -rf "$FIXTURE"' EXIT
 printf 'API_KEY=supersecretvalue\nPLAIN=hello\n' > "$FIXTURE/.env"
 printf 'export TOKEN=anothersecret\n' > "$FIXTURE/.envrc"

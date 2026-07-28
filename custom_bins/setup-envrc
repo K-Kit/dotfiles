@@ -458,12 +458,23 @@ write_envrc() {
 
         # Batch path: plain env-name secrets (no spaces) via `shell` eval
         if [[ ${#plain_required_secrets[@]} -gt 0 ]]; then
+            # Capture-then-eval, never eval "$(...)": a command substitution
+            # inside eval throws away the helper's exit status, so if a newly
+            # added BWS secret makes one of these env names ambiguous after this
+            # .envrc was generated, the eval would silently expand to nothing and
+            # leave the variable unset with no indication why.
             # shellcheck disable=SC2016
-            printf 'eval "$("$DOTFILES_SECRETS_BIN" shell'
+            printf 'if _dfs_exports=$("$DOTFILES_SECRETS_BIN" shell'
             for secret_key in "${plain_required_secrets[@]}"; do
                 printf ' %q' "$secret_key"
             done
-            echo ')"'
+            echo '); then'
+            # shellcheck disable=SC2016
+            printf '%s\n' '  eval "$_dfs_exports"'
+            printf '%s\n' 'else'
+            printf '%s\n' '  echo "direnv: dotfiles-secrets could not resolve this repo'"'"'s secrets (reason above). If a new BWS key made an env name ambiguous, re-run: setup-envrc" >&2'
+            printf '%s\n' 'fi'
+            printf '%s\n' 'unset _dfs_exports'
 
             for binding in "${export_bindings[@]}"; do
                 env_key=$(binding_env_key "$binding")

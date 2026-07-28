@@ -113,7 +113,7 @@ run_test "git status"              'git status --short'                        a
 run_test "echo PATH"               'echo "$PATH"'                              allow
 run_test "echo plain var"          'echo "$HOME/code"'                         allow
 run_test "cat env file"            'cat .env'                                  allow
-run_test "get-value by exact key"  "dotfiles-secrets get-value 'ANTHROPIC_API_KEY - personal'"  allow
+run_test "get-value by exact key"  "dotfiles-secrets get-value 'ANTHROPIC_API_KEY - mats'"  allow
 run_test "non-Bash tool"           'printenv'                                  allow Read
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

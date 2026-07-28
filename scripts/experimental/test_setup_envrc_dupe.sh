@@ -8,11 +8,23 @@ HELPER="$DOT_DIR/custom_bins/dotfiles-secrets"
 export DOT_DIR
 export DOTFILES_SECRETS_BACKEND=bws
 
-TEST_HOME=$(mktemp -d)
+# Repo-local tmp/ (gitignored): $TMPDIR is not reliably writable under the
+# Claude Code sandbox, and a fixture that silently fails to create turns the
+# whole suite into an early mktemp abort.
+TMP_ROOT="$DOT_DIR/tmp"
+mkdir -p "$TMP_ROOT"
+TEST_HOME=$(mktemp -d "$TMP_ROOT/envrc-dupe.XXXXXX")
 trap 'rm -rf "$TEST_HOME"' EXIT
 export HOME="$TEST_HOME"
 export BWS_ACCESS_TOKEN="test-token"   # avoids require_bws reading real token
 mkdir -p "$TEST_HOME/.cache/dotfiles-secrets"
+
+# Pin the global-scope map at a path that does not exist. Without this the suite
+# reads the real config/secrets-global.conf, so the moment a global default for
+# OPENAI_API_KEY is declared there the ambiguity assertions below would start
+# resolving and fail — a test that depends on the user's live config is not
+# hermetic.
+export DOTFILES_SECRETS_GLOBAL_CONF="$TEST_HOME/no-such-scope.conf"
 
 # Synthesize cache as if BWS returned two OPENAI_API_KEY entries plus HF_TOKEN
 printf 'OPENAI_API_KEY=sk-matsval\nOPENAI_API_KEY=sk-personalval\nHF_TOKEN=hf_xyz\n' \
@@ -78,7 +90,7 @@ else
 fi
 
 echo "== write-telegram-env (duplicate refusal, exact ok) =="
-TG_STATE=$(mktemp -d)
+TG_STATE=$(mktemp -d "$TMP_ROOT/envrc-dupe-tg.XXXXXX")
 # Unambiguous env_name writes successfully.
 if "$HELPER" write-telegram-env HF_TOKEN "$TG_STATE" >/dev/null 2>&1; then
   if [[ "$(cat "$TG_STATE/.env")" == "TELEGRAM_BOT_TOKEN=hf_xyz" ]]; then
@@ -121,7 +133,10 @@ fi
 # Duplicate env should NOT export; stderr should mention ambiguity.
 shell_err=$("$HELPER" shell OPENAI_API_KEY 2>&1 >/dev/null || true)
 shell_out=$("$HELPER" shell OPENAI_API_KEY 2>/dev/null || true)
-if [[ -z "$shell_out" && "$shell_err" == *"ambiguous"* ]]; then
+# Match case-insensitively: the named-key path says "Ambiguous env name ...",
+# the --all path says "skipping ambiguous env name ...". Asserting the lowercase
+# spelling alone silently stopped matching when the named path became fail-loud.
+if [[ -z "$shell_out" && "${shell_err,,}" == *"ambiguous"* ]]; then
   echo "  ok  shell OPENAI_API_KEY refuses ambiguous"
   pass=$((pass+1))
 else
