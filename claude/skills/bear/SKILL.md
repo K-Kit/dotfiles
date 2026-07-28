@@ -1,1 +1,1 @@
-/home/yulong/.claude/skills/bear.md
+../bear.md

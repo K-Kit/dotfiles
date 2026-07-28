@@ -1,1 +1,1 @@
-/home/yulong/.claude/skills/decide.md
+../decide.md
