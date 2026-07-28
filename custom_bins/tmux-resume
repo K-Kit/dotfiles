@@ -91,6 +91,15 @@ fi
 # behaviour this gate exists to prevent.
 optin_ok() { [[ -n "$OPTIN_PREFIX" && "$1" == "$OPTIN_PREFIX"* ]]; }
 
+# Publish the resolved prefix so the shell helpers (tauto/tnoauto/tautols) read it
+# from here instead of hard-coding "auto-". Without this they rename windows to a
+# prefix the gate may no longer accept, silently opting the pane out of the thing
+# the human just asked for. Empty output means sending is disabled.
+if [[ "${1:-}" == "--print-optin-prefix" ]]; then
+  printf '%s\n' "$OPTIN_PREFIX"
+  exit 0
+fi
+
 # Discover all tmux server sockets for this user. tmux uses $TMUX_TMPDIR else
 # $TMPDIR else /tmp, plus /tmux-<uid>/. launchd/cron may hand us a different
 # TMPDIR than the interactive shell, so probe every plausible base dir +
@@ -155,7 +164,17 @@ resume_pane() {
         # Either first sighting (start the clock) or the cooldown elapsed (restart
         # it). Both re-stamp the marker; the difference is that a first sighting
         # holds and an elapsed one falls through to retry.
-        $DRY_RUN || { mkdir -p "$STATE_DIR"; : > "$state_file"; }
+        #
+        # If the marker cannot be persisted the clock never starts, so every scan
+        # sees held<0 and reports a fresh "first sighting" forever. Keep holding —
+        # falling through would send into a weekly-limit pane every hour, the exact
+        # behaviour this gate exists to stop — but name the cause, because the
+        # "first sighting" line repeating hourly is what made this undiagnosable.
+        # resume_pane runs under `|| true`, so errexit will not catch this.
+        if ! $DRY_RUN && ! { mkdir -p "$STATE_DIR" && : > "$state_file"; } 2>/dev/null; then
+          echo "[$(ts)] MATCH [$name] $target — detect-only, marker unwritable ($state_file), holding"
+          return 0
+        fi
         if (( held < 0 )); then
           echo "[$(ts)] MATCH [$name] $target — detect-only, first sighting, holding ${DETECT_COOLDOWN_HOURS}h"
           return 0

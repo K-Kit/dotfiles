@@ -199,6 +199,31 @@ assert_eq "benign pane does not match" "yes" \
   "$([[ "$out" != *MATCH* ]] && echo yes || echo no)"
 assert_eq "benign pane receives nothing" "" "$(sends)"
 
+echo "== resolved prefix is published for the shell helpers =="
+# tauto/tnoauto/tautols read the prefix from here instead of hard-coding `auto-`.
+# If this stops agreeing with the gate, those helpers rename windows to a prefix
+# the gate rejects and silently leave the pane opted out.
+assert_eq "prints the file directive's prefix" "auto-" \
+  "$("$T/tmux-resume-test" --print-optin-prefix)"
+assert_eq "prints the env override" "ci-" \
+  "$(TMUX_RESUME_OPTIN_PREFIX="ci-" "$T/tmux-resume-test" --print-optin-prefix)"
+assert_eq "prints nothing when sending is disabled" "" \
+  "$(TMUX_RESUME_OPTIN_PREFIX="" "$T/tmux-resume-test" --print-optin-prefix)"
+assert_eq "printing the prefix sends nothing" "" "$(sends)"
+
+echo "== unwritable marker holds, and says why =="
+# resume_pane runs under `|| true`, so a failed marker write does not trip
+# errexit. Without the explicit check, held stays -1 and every hourly scan
+# reports a fresh "first sighting" — holding forever while claiming otherwise.
+reset_state
+: > "$T/blocked"   # a regular file, so mkdir -p "$T/blocked/state" cannot succeed
+out="$(TMUX_RESUME_STATE_DIR="$T/blocked/state" run)"
+assert_eq "unwritable marker names the cause" "yes" \
+  "$([[ "$out" == *"marker unwritable"* ]] && echo yes || echo no)"
+assert_eq "unwritable marker does not claim a first sighting" "yes" \
+  "$([[ "$out" != *"first sighting"* ]] && echo yes || echo no)"
+assert_eq "unwritable marker still sends nothing" "" "$(sends)"
+
 echo
 if [[ $FAILED -eq 0 ]]; then echo "all checks passed"; else echo "FAILURES — see above"; fi
 exit $FAILED
