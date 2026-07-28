@@ -137,6 +137,16 @@ AX_CAPABILITY_FILE="${HOME}/.cache/hide-idle-apps/ax-capability"
 # extra click attempt per app per month and lets an update correct the verdict.
 AX_CAPABILITY_TTL_DAYS="${AX_CAPABILITY_TTL_DAYS:-30}"
 
+# A non-numeric value would otherwise blow up inside $(( )) on the first lookup.
+# Unlike HIDE_IDLE_MIN_VISIBLE_PERCENT, which refuses to act on a bad value, the
+# safe direction here is to trust nothing: every record then counts as expired,
+# which costs one extra click per app and can never brand an app permanently.
+if [[ "$AX_CAPABILITY_TTL_DAYS" != <-> ]]; then
+    echo "clear-mac-apps: AX_CAPABILITY_TTL_DAYS must be a whole number of days," \
+         "got '$AX_CAPABILITY_TTL_DAYS' - re-probing every app instead." >&2
+    AX_CAPABILITY_TTL_DAYS=0
+fi
+
 # Lines are `name<TAB>epoch`. A line with no epoch was written by the version that
 # had no expiry; it is treated as due for a re-probe rather than trusted forever,
 # which is the whole point of adding expiry.
