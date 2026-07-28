@@ -18,25 +18,25 @@ You have been woken by the hourly `tmux-resume` nudge, not by a human. Something
 
 The hourly nudge in `config/tmux-resume-patterns.conf` used to send a bare `continue`. `continue` has no exit branch, so sessions resume hourly forever and accumulate: 101 of 157 jobs on this machine were hourly `continue` nudges, and 56 sessions sat blocked on a human decision that was never surfaced. Fixing the inflow means the nudge must be able to *end* a session — so the nudge now types `/wrap-up` instead.
 
-**Status: the nudge is wired, the keystrokes are not yet confirmed.** Detection anchors on rate-limit wordings captured from real prompts, but the *action* — `1 Enter`, then `/wrap-up`, then two `Enter`s — has never been fired at a live prompt, because a sandboxed session cannot open a tmux socket. Both guesses are marked as such in the pattern file and are settled by one `tmux-resume --dry-run` against a real rate-limited pane.
+**Status: the nudge is wired, gated on opt-in, and its keystrokes are unconfirmed.** `tmux-resume` types `/wrap-up` only into panes whose tmux window name starts with `auto-` (`config/tmux-resume-patterns.conf`; toggle with `tauto` / `tnoauto`). So you are reading this because a human named this window that way — reaching this skill is itself evidence someone wanted this session wrapped up. Detection anchors on rate-limit wordings captured from real prompts, but the *action* — `1 Enter`, then `/wrap-up`, then two `Enter`s — has never been fired at a live prompt, because a sandboxed session cannot open a tmux socket. Both guesses are marked as such in the pattern file and are settled by one `tmux-resume --dry-run` against a real rate-limited pane.
 
 **`disable-model-invocation: true` stays on regardless.** It makes this skill reachable only by someone typing `/wrap-up` — and the nudge sending those keystrokes *is* that invocation, so wiring the nudge is not a reason to drop the flag. Omitting it would instead make the skill model-invoked (see `claude/skills/writing-great-skills/SKILL.md` § Invocation), letting any matching dotfiles prompt fire an autonomous commit-and-push path with no nudge involved at all. That is a different and much wider trigger surface than the one being trialled here. Discovery during the trial is via `claude/skills/catalog/SKILL.md`.
 
 ## Step 0: Scope guard (required first)
 
-This skill is being trialled on `dotfiles` only. Before anything else:
+Writing to git unattended — staging, committing, pushing, opening a PR — is trialled on `dotfiles` only. Before anything else:
 
 ```bash
 basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")"
 ```
 
-**If that basename is not `dotfiles`**, do none of the steps below. Print one line — `wrap-up: out of trial scope (<repo>), resuming prior task` — and then **carry on with whatever the session was already doing**, exactly as a bare `continue` would have. Do not do the wrap-up work "just this once."
+**If that basename is not `dotfiles`**, Step 2 is closed: stage nothing, commit nothing, push nothing. Still classify (Step 1), then take the **blocked** branch (Step 3) — say where the work stands, name what is left uncommitted and in which checkout, and rename the session (Step 5). Then end your turn.
 
-That fall-back is deliberate and load-bearing. The nudge in `config/tmux-resume-patterns.conf` no longer sends `continue` — it sends `/wrap-up` — so this branch is what every rate-limited pane *outside* dotfiles now lands on. Stopping dead here would strand those panes mid-work with no PR, no blocker stated, and no rename; and because a resumed pane stops displaying a rate-limit banner, no row would match on the next hourly scan to retry. That is strictly worse than the `continue` it replaced, and it is the same shape as the detect-only regression this PR already had to fix once. A trial scoped to `dotfiles` must not change behaviour outside `dotfiles`.
+**Out of scope terminates; it does not resume.** An earlier version of this guard announced out-of-scope and then carried on with the prior task, exactly as a bare `continue` would. That was right while the nudge fired at every pane the scheduler could see: stopping dead would have stranded unrelated panes with no PR and no blocker stated, and since a resumed pane stops displaying a rate-limit banner, nothing would have matched on the next scan to retry. Opt-in removed that premise. The nudge now reaches only windows a human named `auto-…`, so there are no bystander panes to strand, and resuming would rebuild the endless-`continue` pump this entire change exists to remove. The trial scope governs *who may write to git*, not *whether the session may stop*.
 
 Use `--git-common-dir`, not `--show-toplevel`. In a linked worktree (`cw`, `claude --worktree`) `--show-toplevel` returns the *worktree* path, whose basename is the worktree's name — `agent-sprawl-spec`, not `dotfiles` — so a `show-toplevel` test excludes every branch worktree, which is where most sessions actually live. `--git-common-dir` resolves to the owning repo's `.git` in both a worktree and the root checkout, so its parent's basename is the repo name either way. Worktrees are in scope: they are the intended home for a wrap-up commit, since Step 2 forbids committing on `main`.
 
-This guard exists because the nudge fires against every pane the scheduler can see, and the pattern file has no per-repo field. The skill is the only place scoping can live right now.
+The opt-in prefix in `config/tmux-resume-patterns.conf` is the primary scope, and it lives in the sender, where it belongs — by the time this guard runs the keystrokes have already landed, so a check here can never prevent an unwanted interruption. This guard is defence-in-depth for the git-writing branch only.
 
 ## Step 1: Classify honestly
 
@@ -76,7 +76,17 @@ What you may do about it depends on which checkout you are in, because a branch 
 3. **Verify before committing — read the content, not just the names.** `git diff --cached --name-only` must match your list exactly, nothing extra. That is necessary but *not sufficient*: a path is not an ownership boundary. In a shared checkout, another actor can have edited a different hunk of a file you also touched, and `git add <path>` stages their hunk alongside yours while the name-only check still passes cleanly. So also read `git diff --cached` and confirm every hunk is one you recognise. If a hunk is not yours, `git restore --staged <path>` and leave that file out. Anything modified that you cannot attribute to this session stays unstaged; name it in the PR body so the owner knows it is there. If you cannot attribute the changes at all, stop and go to Step 3 — an unattributable diff is a decision for the owner, not a commit.
 4. Commit with a real message that says *why*, not just what. No heredocs — write to `/tmp/claude/<job>-msg.txt` and `git commit -F`.
 5. **If the branch is ahead of `main`, push and open a draft PR — a dirty tree does not excuse skipping this.** the staging rule above deliberately leaves unattributable edits unstaged, so a dirty tree is the *expected* end state, not an error; gating the push on cleanliness would mean the common case commits locally, exits "done", and leaves the work invisible on a machine nobody looks at. Push the commit; mention the leftover unstaged paths in the PR body. Never push to `main`, never force-push, never merge.
-6. **The PR command must be non-interactive.** `gh pr create --draft` alone prompts for title and body, and an unattended job has no way to answer — it hangs or dies before it can terminate, which is the exact failure this skill exists to prevent. Always supply both: `gh pr create --draft --title "<subject>" --body-file /tmp/claude/<job>-pr.md`. (`--fill` works too, but it derives the body from commit messages and loses the leftover-paths note.)
+6. **The PR command must be non-interactive.** `gh pr create --draft` alone prompts for title and body, and an unattended job has no way to answer — it hangs or dies before it can terminate, which is the exact failure this skill exists to prevent. Always supply both: `gh pr create --draft --title "<subject>" --body-file /tmp/claude/<job>-pr.md`. Do **not** use `--fill`: it derives the body from commit messages, which cannot carry the three sections below.
+
+   **The body is the state of the work, in three headed sections, under ~250 words total.** Write it to that file before calling `gh`:
+
+   | Section | Contents |
+   |---|---|
+   | **What's done** | What now works that did not before. Not a file list — `gh pr diff` already shows files. |
+   | **What's left** | Known gaps, deferred decisions, and any paths left unstaged because you could not attribute them to this session. "Nothing" is a valid answer — say it explicitly rather than dropping the section. |
+   | **How it was tested** | The command you ran and what it returned. If the suite failed, or you did not run one, say that here; per item 0 a failing suite does not block a draft PR, it blocks claiming the work is finished. Never write "tested" without naming what was run. |
+
+   The word ceiling is load-bearing, not politeness. This PR is read cold by someone deciding whether to look further, and the session that produced it cannot answer follow-up questions. A wall of narration gets skipped exactly the way a 157-entry job list does — the sections exist so a reviewer can reconstruct the state in one screen.
 7. If push or PR creation fails — no remote, auth expired, a protected branch — do **not** exit as done. The commit exists but nobody can see it, which is indistinguishable from the pile-up this skill was written to stop. Classify as **blocked** (Step 3), name the failure, and say where the commit is.
 8. Rename the session (Step 5), then **end your turn.**
 
@@ -122,7 +132,8 @@ Keep `<topic>` to two or three words. If `tmux rename-window` fails (no tmux, de
 |---|---|
 | "I'll just keep going, I'm close" | That is what `continue` did 101 times. Classify and terminate. |
 | "I'll pick the sensible option and note it" | Step 3 exists precisely to stop this. Surface it. |
-| "This repo isn't dotfiles but the work is obviously fine" | Step 0 is a hard stop *on the wrap-up steps*. The trial scope is the point. Announce out-of-scope, resume the prior task, and do none of the steps below it. |
+| "This repo isn't dotfiles but the work is obviously fine" | Step 0 closes Step 2 only. Say where the work stands, name the uncommitted paths and their checkout, rename the session, and end the turn. Do **not** resume — out of scope means "do not write to git", never "keep going". |
+| "The PR body should explain everything I did" | Under ~250 words, three sections, no narration. `gh pr diff` shows the files; the body says what works, what does not, and what was run. |
 | "I'll commit everything to be safe" | Stage the paths you touched, by name. `git add -u` commits other people's work; `git add -A` also stages sandbox char-device masks. |
 | "I'm on `main` but the change is small" | Step 2's precondition is a hard stop. Unattended commits onto `main` are exactly what the draft-PR flow exists to prevent. |
 | "I'll just switch the checkout to a branch first" | Only in a linked worktree. In the root checkout that moves HEAD for every other pane and cron job pointed at it. |
