@@ -1,12 +1,12 @@
-# Anthropic Plot Styling
+# Anthropic Plot Styling (legacy — superseded by the `pastelplot` skill)
 
-**What this is**: An internal Anthropic styling module (a `.py` file you copy into projects). NOT a pip package.
+> **Use the `pastelplot` skill instead** (`claude/skills/pastelplot/`): same copy-in-module approach, pastel palette, no S3 font dependency. This doc remains as the reference for the original brand hexes and tertiary gradients. The `anthroplot.py` reference file this doc used to point at (`~/.claude/skills/research-presentation/references/anthroplot.py`) no longer exists.
+
+**What this was**: An internal Anthropic styling module (a `.py` file you copy into projects). NOT a pip package.
 
 **For paper figures**: Use matplotlib (not Plotly) - conferences require PDF with embedded fonts.
 
-## Quick Start
-
-Copy `anthroplot.py` from `~/.claude/skills/research-presentation/references/anthroplot.py` into your project, then:
+## Quick Start (historical)
 
 ```python
 import anthroplot
