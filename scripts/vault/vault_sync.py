@@ -28,6 +28,7 @@ commit. Config printing is allowlisted by key name -- see SAFE_CONFIG_KEYS.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -300,22 +301,76 @@ def print_config_safely(cfg: dict) -> None:
         log(f"    ({withheld} further key(s) withheld -- may contain secret material)")
 
 
+STATE_DB_FILES = ("state.db", "state.db-wal", "state.db-shm")
+
+
+def state_db_fingerprint(state_dir: Path) -> dict[str, tuple[int, int]]:
+    """(size, mtime_ns) for each state.db file that exists, for tear detection."""
+    marks: dict[str, tuple[int, int]] = {}
+    for name in STATE_DB_FILES:
+        try:
+            st = (state_dir / name).stat()
+        except FileNotFoundError:
+            continue
+        marks[name] = (st.st_size, st.st_mtime_ns)
+    return marks
+
+
 def copy_state_db(state_dir: Path, dest_dir: Path) -> Path:
-    """Copy state.db plus any -wal/-shm sidecars.
+    """Copy state.db plus any -wal/-shm sidecars, refusing a torn snapshot.
 
     A sync killed by SIGTERM never checkpoints, so fresh tombstones sit in the
     WAL rather than the main database file. Reading state.db alone would miss
     them entirely. The sidecars are frequently absent on a cleanly checkpointed
     database -- that is the normal case, not an error.
+
+    Copying three files one at a time is not atomic. If a sync writes to the
+    database while we are partway through, the copy mixes pages from two
+    different states, and a b-tree page split caught mid-flight can drop rows
+    from the copy outright. Rows that vanish are not misclassified rows: the
+    accounting invariant in count_target_rows() balances only the rows actually
+    present, so it passes, and `live` reads low for no reason the counts reveal.
+    Zero live rows is exactly what unlocks the irreversible EX-7 filter change,
+    which makes a torn snapshot a member of the same class as the four gate
+    defects already fixed -- so it gets the same treatment: refuse to proceed.
+
+    The check is a before/after fingerprint. Any concurrent write bumps
+    st_mtime_ns, and a checkpoint that removes -wal changes the file set, so a
+    mismatch means "something moved under us" without needing to identify what
+    was writing. quick_check then rejects a copy that is structurally torn even
+    if the timing happened to look clean.
     """
     src = state_dir / "state.db"
     dest = dest_dir / "state.db"
+    before = state_db_fingerprint(state_dir)
     shutil.copy2(src, dest)
     for suffix in ("-wal", "-shm"):
         sidecar = state_dir / f"state.db{suffix}"
         if sidecar.exists():
             shutil.copy2(sidecar, dest_dir / f"state.db{suffix}")
             log(f"    copied sidecar state.db{suffix} ({fmt_mb(sidecar.stat().st_size)})")
+    after = state_db_fingerprint(state_dir)
+    if before != after:
+        changed = sorted(set(before) ^ set(after)) or sorted(
+            name for name in before if before[name] != after[name]
+        )
+        die(f"sync state changed while being copied ({', '.join(changed)}) -- the "
+            "snapshot may be torn and undercount live rows. Stop any running sync "
+            "and re-run this command")
+
+    try:
+        with contextlib.closing(open_ro(dest)) as conn:
+            verdict = conn.execute("PRAGMA quick_check").fetchone()[0]
+    except sqlite3.DatabaseError as exc:
+        # Damage bad enough to be rejected at open time raises instead of
+        # reporting a verdict. Folding it into `verdict` rather than dying here
+        # keeps this to a single guard: two death branches, only one of which a
+        # test can actually reach, would leave the other free to rot or be
+        # deleted with nothing failing.
+        verdict = f"unreadable -- {exc}"
+    if verdict != "ok":
+        die(f"copied sync state fails PRAGMA quick_check ({verdict!r}) -- refusing "
+            "to read counts from a damaged snapshot")
     return dest
 
 

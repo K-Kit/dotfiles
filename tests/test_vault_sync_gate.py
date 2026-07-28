@@ -435,3 +435,52 @@ def test_tripwire_reports_clean_on_a_genuinely_clean_vault(vs, monkeypatch, tmp_
     monkeypatch.setattr(vs, "VAULT", vault)
     make_sync_root(vs, monkeypatch, tmp_path, [])
     assert vs.cmd_tripwire(argparse.Namespace(max_file_mb=vs.DEFAULT_MAX_FILE_MB)) == 0
+
+
+# --------------------------------------------------------------------------
+# The snapshot the counts are read from must be whole.
+# --------------------------------------------------------------------------
+
+
+def test_a_torn_state_db_snapshot_is_refused(vs, monkeypatch, tmp_path, capsys):
+    """A sync writing mid-copy can drop rows, and dropped rows read as absent.
+
+    copy_state_db() copies state.db and its sidecars one file at a time. A
+    concurrent writer makes that mixture inconsistent, and a page split caught
+    in flight can drop rows from the copy outright. Missing rows are not
+    misclassified rows -- count_target_rows()'s accounting invariant balances
+    only the rows actually present, so it passes while `live` reads low, and a
+    low `live` is what unlocks the irreversible filter change.
+    """
+    rows = [(f"{vs.EXCLUDED_FOLDER}/t{i}.js", TOMBSTONE) for i in range(30)]
+    state = make_sync_root(vs, monkeypatch, tmp_path, rows)
+    real_copy2 = vs.shutil.copy2
+
+    def copy2_then_write(src, dst, *a, **kw):
+        out = real_copy2(src, dst, *a, **kw)
+        db = sqlite3.connect(state / "state.db")
+        db.execute("INSERT INTO server_files VALUES (?,?)", ("mid-copy.md", LIVE))
+        db.commit()
+        db.close()
+        return out
+
+    monkeypatch.setattr(vs.shutil, "copy2", copy2_then_write)
+    with pytest.raises(SystemExit):
+        verify(vs)
+    assert "torn" in capsys.readouterr().out.lower()
+
+
+def test_a_structurally_damaged_snapshot_is_refused(vs, monkeypatch, tmp_path, capsys):
+    """Timing that happens to look clean is not proof the pages are intact."""
+    rows = [(f"{vs.EXCLUDED_FOLDER}/t{i}.js", TOMBSTONE) for i in range(400)]
+    state = make_sync_root(vs, monkeypatch, tmp_path, rows)
+    db_file = state / "state.db"
+    raw = bytearray(db_file.read_bytes())
+    assert len(raw) > 8192, "test setup: need more than one page to corrupt"
+    raw[4096:5120] = b"\xde\xad\xbe\xef" * 256  # clobber a b-tree page, not the header
+    db_file.write_bytes(raw)
+
+    with pytest.raises(SystemExit):
+        verify(vs)
+    out = capsys.readouterr().out.lower()
+    assert "quick_check" in out or "malformed" in out
