@@ -79,6 +79,7 @@ COMPONENTS:
     --secrets         Sync secrets with GitHub gist
     --secrets-env     Verify BWS secrets are configured
     --dep-audit       Install weekly dependency audit (supply chain defense)
+    --stale-claims    Install weekly staleness audit of auto-loaded AI instructions
     --cleanup         Install file cleanup: Downloads/Screenshots (macOS only)
     --claude-cleanup  Install Claude Code session cleanup (both platforms)
     --ai-update       Install AI tools auto-update (daily, both platforms)
@@ -1100,6 +1101,10 @@ queue_scheduled_job() {
 
     if [[ "$DEPLOY_DEP_AUDIT" == "true" ]]; then
         queue_scheduled_job dep-audit "$DOT_DIR/scripts/security/setup_dep_audit.sh"
+    fi
+
+    if [[ "$DEPLOY_STALE_CLAIMS" == "true" ]]; then
+        queue_scheduled_job stale-claims "$DOT_DIR/scripts/audit/setup_stale_claims.sh"
     fi
 
     if [[ "$DEPLOY_KEYBOARD" == "true" ]] && is_macos; then

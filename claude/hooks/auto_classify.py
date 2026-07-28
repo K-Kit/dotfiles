@@ -243,8 +243,6 @@ FAST_ALLOW_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(rf"^{_CMD_PREFIX}python3?\s+-m\s+inspect_ai\b"), "inspect_ai module"),
     # codex exec (sandboxed CLI — review, task, etc.; exec is a codex subcommand, not shell exec)
     (re.compile(r"codex\s+exec\b"), "codex exec (sandboxed CLI)"),
-    # .agent-claims/ operations (multi-agent coordination, ephemeral files only)
-    (re.compile(r"^(?:mkdir\s+-p|cat|ls|rm\s+-f|printf|for\b).*\.agent-claims"), "agent claims coordination"),
     # gws (Google Workspace CLI) — read and create operations are safe.
     # Deletes are caught by block_gws_delete.sh PreToolUse hook.
     # Verbs: list, get, search, export, create, insert, send (with --draft)

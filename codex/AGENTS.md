@@ -76,7 +76,7 @@ You have superpowers.
 **Tool Mapping for Codex:**
 When skills reference tools you don't have, substitute your equivalent tools:
 - `TodoWrite` → `update_plan` (your planning/task tracking tool)
-- `Task` tool with subagents → Tell the user that subagents aren't available in Codex yet and you'll do the work the subagent would do
+- `Task` tool with subagents → delegate to your own subagents. The `multi_agent` feature is enabled on this install; do not tell the user subagents are unavailable. Re-check with `codex features list`.
 - `Skill` tool references → load/apply the skill instructions directly from discovered skills
 - `Read`, `Write`, `Edit`, `Bash` → Use your native tools with similar functions
 

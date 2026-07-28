@@ -414,7 +414,7 @@ The 15 patterns were selected specifically to minimize false positives:
 
 **clarity-critic agent** (separate plugin): Checks for vague pronouns, hedging, run-ons, passive voice. Overlaps with humanizer's hedging patterns.
 
-**Future alignment**: Once humanizer validated, integrate with `/review-draft` as optional `--humanize` flag.
+**Current invocation**: `/review-draft <file> --critics=humanizer`. This section previously described the integration as future work behind a `--humanize` flag; that shipped, and the standalone `/humanize-draft` skill is now marked DEPRECATED in favour of the flag above.
 
 ---
 

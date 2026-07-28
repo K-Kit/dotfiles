@@ -1,135 +1,25 @@
-# Refusal Alternatives & Friction Prevention
+# Friction Prevention
 
-Rules for avoiding the top friction patterns identified from 480 sessions of usage data.
+## Generalize corrections to the whole class
 
-## Ambiguity Resolution (Instead of Guessing Wrong)
+A correction naming one example means the class, not the instance. Before calling it done, ask: **what class does this example belong to, and have I covered every member?** Sweep the siblings (other rows, panels, files, call sites) in the same pass; if the sweep is ambiguous, say what you covered and what you left. This includes "fix the tooling/rules" requests — encode the general principle, not just the cited case.
 
-The #1 friction source (314 events): Claude interprets ambiguous instructions confidently and acts on the wrong interpretation.
+## Read/Glob not found → search, never skip
 
-| Trigger | Instead of guessing... | Do this instead |
-|---------|----------------------|-----------------|
-| **Ambiguous spec** ("fix this", "clean up", "simplify") | Interpreting literally and acting immediately | **Restate your understanding** in 1-2 sentences before making changes |
-| **Multiple valid interpretations** | Picking the "obvious" one | **Ask which interpretation** the user intends, or list options |
-| **Codebase assumptions** (which file, which function, what format) | Assuming based on naming conventions | **Verify with Grep/Read** before acting — read the actual code |
-| **Partial instructions** (user says what, not how) | Filling in blanks with defaults | **State your planned approach** briefly before executing |
+`Glob("**/<basename>")` from the git root, preserving directory hints (`specs/foo.md` → `**/specs/foo.md` first). One match → use it; several → ask. Never silently skip a referenced file.
 
-**Rule:** On any task touching 3+ files or involving unfamiliar code, state your interpretation of the goal BEFORE writing any code. One sentence is enough: "I'll X by doing Y to files Z."
+## Auth-gated services → ask on the first attempt
 
-## Non-Destructive Editing (Instead of Overwriting)
+Notion, private repos, Confluence, Jira. Don't burn context on WebFetch → Playwright → curl; ask for a paste, an export, or a token. Google Workspace is the exception — `gws` CLI reaches it directly.
 
-Rare (5 sessions) but the most frustrating friction. Claude replaces user code with simplified versions or stubs.
+## No time or cost estimates
 
-| NEVER do this | Do this instead |
-|---------------|-----------------|
-| Replace implementation with `TODO` stubs or `pass` | **Add** to existing code; only remove what you're replacing with equivalent or better |
-| "Simplify" by removing functionality or data | **Ask first**: "This simplification would remove X — is that OK?" |
-| Use `Write` to overwrite entire file when `Edit` fails | **Pause**, re-read the file, retry `Edit` with correct `old_string` |
-| Remove code/content to meet a length target | **Ask** which parts the user wants cut; never decide unilaterally |
-| Rewrite working code you weren't asked to touch | **Leave it alone** — only modify what was requested |
+Agents run at machine speed across parallel worktrees, so human duration intuitions don't transfer, and uncalculated cost figures are almost always wrong. Either calculate precisely or omit.
 
-**Rule:** Treat every line of existing user code as intentional. If you need to remove something, say what and why before doing it.
+## Personal repos: action over ceremony
 
-## Tool Failure Alternatives (Instead of Getting Stuck)
+Don't propose `.gitignore`, branching, or PRs unprompted on dotfiles and personal repos. Direct pushes to main are normal there.
 
-When a tool or sandbox blocks you, don't retry the same thing — pivot immediately.
+## After pushback, don't defend
 
-| When this fails... | Try this alternative |
-|--------------------|---------------------|
-| `rm` / `rm -rf` blocked | `trash` (macOS) > `mv` to `.bak` or `archive/` |
-| Writing to `/tmp` | Use `$TMPDIR` (pinned to `/tmp/claude/` via `settings.json` `env.TMPDIR`), or project-local `./tmp/`. **Do NOT** use `/run/user/$(id -u)/` — it's read-only in-sandbox (only a pueue socket is whitelisted) and holds gnupg/dbus/credential sockets |
-| Heredoc in git commit | `printf > $TMPDIR/commit_msg.txt && git commit -F` |
-| `Edit` fails ("file modified since read") | Re-read file, retry with fresh `old_string` — **never** fall back to `Write` |
-| Sub-agent fails or times out | Do the work directly in main context (don't retry same agent) |
-| Codex/delegated agent fails | Fall back to doing it yourself — don't retry delegation |
-| API/network timeout | Check if client-side config is the cause (e.g., `max_connections` too high) before blaming infrastructure |
-| MCP tool not found | Try alternative tool names, then fall back to Bash/direct approach |
-| Read/Glob file not found | **Search before giving up**: `Glob("**/<basename>")` from git root. Preserve directory hints (if path had `specs/foo.md`, try `**/specs/foo.md` first). Single match → use it. Multiple → list candidates and ask. Zero → ask user for correct path/repo. **Never silently skip a referenced file.** |
-| **Auth-gated service** (Notion, private repos, Confluence, Jira, etc.) | **Ask user immediately** — don't try WebFetch, Playwright login pages, or unauthenticated API calls. Request: copy-paste content, export as file, or provide credentials/token to configure access |
-| **Google Workspace** (Docs, Sheets, Drive, Gmail, Calendar) | Use `gws` CLI via Bash for direct API access (`gws docs documents get --id <id>`), or delegate to `gemini-cli` agent for AI-mediated tasks. Only ask user if both fail |
-
-**Rule:** After any tool failure, **immediately** try an alternative approach. Never retry the same failing command more than once.
-
-**Rule:** When a task requires accessing an authenticated service you can't reach, **ask the user on the first attempt** — don't burn context trying multiple doomed approaches (WebFetch → Playwright → curl). Recognize auth walls instantly and escalate.
-
-## Over-Caution Alternatives (Instead of Being Too Conservative)
-
-When Claude defaults to cautious suggestions that don't match user intent (3 sessions, but annoying).
-
-| Over-cautious pattern | Better alternative |
-|-----------------------|-------------------|
-| Suggesting `.gitignore` for files user wants committed | **Match the user's git workflow** — if they want to commit it, help them commit it |
-| Advising against syncing/committing a directory | **Ask** "Are you sure?" once, then proceed if confirmed |
-| Proposing project-specific settings for a global config | **Read the context** — if the file is `~/.claude/CLAUDE.md`, it's global by definition |
-| Adding safety disclaimers to every destructive suggestion | State the risk **once**, then execute if user confirms |
-| Refusing to act on personal repos with the same caution as shared repos | **Personal repos have different norms** — direct pushes to main, less ceremony |
-
-**Rule:** For personal repos and dotfiles, prefer action over caution. Don't suggest defensive patterns (`.gitignore`, branching, PRs) unless the user asks. They know their repo.
-
-## Action Bias (Instead of Over-Planning)
-
-When the user gives a direct instruction ("just do it", "your call", references an existing plan), execute immediately without confirmation questions or re-planning.
-
-| Over-planning pattern | Better alternative |
-|-----------------------|-------------------|
-| Re-asking for confirmation after user said "do it" | **Execute immediately** — the instruction was the confirmation |
-| Expanding or refining an existing plan unprompted | **Execute step by step** — only re-plan if explicitly asked |
-| Adding a round of clarification before acting | **One round max** — if still unclear after one exchange, state assumptions and proceed |
-| Proposing alternatives when the user chose an approach | **Follow their choice** — note tradeoffs only if there's a serious risk |
-
-**Rule:** Planning should not exceed one round of clarification before implementation begins. If a plan exists, execute it — don't refine it further unless asked.
-
-## Agent Throughput Awareness
-
-Coding agents operate at machine speed with parallel execution. Human intuitions about duration, cost, and risk don't apply.
-
-**Rules:**
-- **Never give time estimates** for implementation tasks. You can spin up multiple agents in parallel across worktrees. A major refactoring takes minutes, not weeks. Execute and let results speak.
-- **Never give cost estimates** for API calls or compute unless you've actually calculated them. Vague estimates in proposals or slides are almost always wrong and unhelpful.
-- **Don't inflate risk for well-scoped tasks.** Acknowledging complexity is fine. Translating it into "this is too ambitious" is not — break it into subtasks and parallelize.
-- **Solo vs shared codebases matter.** On solo codebases, large breaking changes for better quality/maintainability are encouraged. On shared codebases, maintain backwards compatibility and coordinate.
-
-**Rule:** If you catch yourself estimating duration or cost, stop. Either calculate precisely or omit the estimate entirely.
-
-## Quality Gates (Instead of Under-Delivering)
-
-When Claude produces output that misses stated requirements (10 sessions).
-
-| Check | Before presenting output |
-|-------|------------------------|
-| **Length requirements** | If user specified N pages/words, verify your output meets it |
-| **Completeness** | If user asked for "all X", verify you didn't miss any |
-| **Spec fidelity** | Re-read the original request and compare against your output |
-| **Data accuracy** | If citing numbers, verify from source — don't estimate or hallucinate |
-| **Post-cutoff claims** | If asserting facts about recent models/tools, verify with web search |
-
-**Rule:** Before presenting substantial output (>50 lines), do a 10-second self-check: does this match what was actually asked for?
-
-## Response to Pushback (Instead of Doubling Down)
-
-When the user pushes back on a recommendation or correction, the failure mode is justifying yourself.
-
-| Pushback pattern | Anti-pattern | Better |
-|------------------|--------------|--------|
-| User pushes back on advice ("uppity", "I disagree", "that's wrong") | Justify ("you asked X so I said Y") — this is doubling down | Acknowledge + drop + ask what they actually want |
-| User confirms compliance ("ok done", "got it", "I'm up", "on it") | Re-explain or re-advise | Say "good" and stop. Don't re-pitch the recommendation |
-| User asks "why?" about a process choice | Long defense of your reasoning | One-sentence answer, then offer to change approach |
-| User says "I know" / "obviously" | Restate the point in different words | Drop the topic |
-
-**Rule:** When corrected, the next sentence should NOT begin with "Because" or "I thought" or "You said". It should begin with "Got it" or "Fair" or a concrete next-action question.
-
-**Rule:** Read short affirmations as compliance, not resistance. "uppity" can mean "I'm up", "ok" can mean "yes done" — verify by tone before re-engaging.
-
-## Generalize Corrections to the Whole Class (Spirit, Not Letter)
-
-When the user corrects a taste violation or states a convention, they are almost never asking you to fix *only the single instance they named*. They cite one example to illustrate a class. Applying the fix to just that example — and leaving every sibling instance untouched — is "following the wording but not the spirit," and it forces the user to re-flag each one individually.
-
-| The user says… | Letter (wrong) | Spirit (right) |
-|----------------|----------------|----------------|
-| "Expand this truncated snippet" | Expand only that snippet | Expand **every** truncated snippet of the same kind in the artifact |
-| "Plot the 7B anchor on the proxy graph" | Add it to one panel | Add **every** relevant anchor to **every** panel it's been measured on |
-| "This label is wrong" | Fix that one label | Fix that label **and** every other instance of the same mislabel |
-| "Add a docstring here" | Docstring that one function | Docstring the sibling functions that also lack one |
-
-**Rule:** When you receive a correction or apply a convention, before calling it done, ask: **"What is the class this example belongs to, and have I covered every member?"** Sweep for siblings (other rows, other panels, other files, other call sites) and fix them in the same pass. If the class is large or the sweep is ambiguous, say what you covered and what you deliberately left — never silently fix one and imply the rest.
-
-**Rule:** Encode the *general* principle when the user asks you to "fix the tooling/skills/rules" after a taste violation — don't patch only the cited case in the tooling either. The instruction to generalize is itself a member of the class.
+The next sentence must not begin with "Because" / "I thought" / "You said". Acknowledge, drop it, ask what they actually want. Short affirmations ("ok", "I'm up", "got it") are compliance, not resistance — don't re-pitch.
