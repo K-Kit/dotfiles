@@ -80,7 +80,7 @@ def rows_for(vs, *, tombstones=0, live=0, tombstone_dirs=0, elsewhere=0, under=N
     return out
 
 
-def make_sync_root(vs, monkeypatch, tmp_path, rows, *, wal=False, local_rows=()):
+def make_sync_root(vs, monkeypatch, tmp_path, rows, *, wal=False, local_rows=(), excluded=()):
     """A SYNC_ROOT the shipped find_state_dir()/copy_state_db() can walk for real.
 
     `wal=True` leaves the inserts uncheckpointed in state.db-wal by holding the
@@ -91,7 +91,8 @@ def make_sync_root(vs, monkeypatch, tmp_path, rows, *, wal=False, local_rows=())
     state = root / "vault-abc123"
     state.mkdir(parents=True)
     (state / "config.json").write_text(
-        json.dumps({vs.EXCLUSION_KEY: [], "allowTypes": ["image", "pdf"], "encryptionKey": "x"})
+        json.dumps({vs.EXCLUSION_KEY: list(excluded),
+                    "allowTypes": ["image", "pdf"], "encryptionKey": "x"})
     )
 
     db = sqlite3.connect(state / "state.db")
@@ -204,22 +205,74 @@ def test_sibling_live_rows_do_not_block_a_clean_target(vs, monkeypatch, tmp_path
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("value", ['"0"', '"no"', "{}", "[]", '"false"', "0", "null"])
-def test_truthy_junk_is_not_a_tombstone(vs, monkeypatch, tmp_path, value):
-    """Anything that is not literally `true` counts as LIVE, so ambiguity blocks.
+# Every case here pairs the ambiguous rows with REAL tombstones. Without that
+# pairing the folder has zero tombstones, so `exclusion_blocker` stops on its
+# "no rows at all" branch and the test passes no matter what the predicate does
+# to the ambiguous rows -- which is exactly how the three-valued-logic defect
+# below survived a green suite. With a real tombstone present, the live count is
+# the only thing that can block, so these tests bind the predicate itself.
+AMBIGUOUS = [
+    pytest.param('{"deleted":%s,"folder":false}' % v, id=f"deleted={v}")
+    for v in ['"0"', '"no"', "{}", "[]", '"false"', "0", "null", "1", '"true"']
+] + [
+    pytest.param('{"folder":false}', id="key-absent"),
+    pytest.param("not valid json at all", id="malformed-json"),
+    pytest.param("", id="empty-string"),
+    pytest.param(None, id="NULL-blob"),
+]
 
-    Broad truthiness fails open here: a `"deleted":"0"` row is plainly not
-    deleted, yet a COALESCE(...) NOT IN (0,'false') test read it as one.
+
+@pytest.mark.parametrize("data", AMBIGUOUS)
+def test_ambiguous_rows_block_even_beside_real_tombstones(vs, monkeypatch, tmp_path, data):
+    """Anything not unambiguously JSON `true` counts as LIVE, so ambiguity blocks.
+
+    Covers three distinct ways a row used to escape classification:
+      * broad truthiness -- `"deleted":"0"` read as deleted;
+      * SQL three-valued logic -- an absent key made both IS_TOMBSTONE and
+        NOT(IS_TOMBSTONE) evaluate to NULL, so the row matched NEITHER count and
+        vanished, leaving `tombstones > 0, live == 0` and an unlocked gate;
+      * `{"deleted":1}` / `{"deleted":"true"}` -- indistinguishable from a real
+        `true` under json_extract, so classification now uses json_type.
     """
-    rows = [(f"{vs.EXCLUDED_FOLDER}/x{i}.js", '{"deleted":%s,"folder":false}' % value)
-            for i in range(30)]
+    rows = [(f"{vs.EXCLUDED_FOLDER}/real{i}.js", TOMBSTONE) for i in range(30)]
+    rows += [(f"{vs.EXCLUDED_FOLDER}/amb{i}.js", data) for i in range(5)]
     make_sync_root(vs, monkeypatch, tmp_path, rows)
     with pytest.raises(SystemExit):
         verify(vs)
 
 
-def test_missing_deleted_key_counts_as_live(vs, monkeypatch, tmp_path):
-    rows = [(f"{vs.EXCLUDED_FOLDER}/x{i}.js", '{"folder":false}') for i in range(30)]
+def test_row_accounting_covers_every_row_under_the_target(vs, monkeypatch, tmp_path):
+    """tombstones + live must equal the rows examined -- no row falls through.
+
+    The structural backstop. Each gate defect so far was some row not being
+    counted where it belonged; the counts still looked plausible, so nothing
+    caught it. Asserting the classifier is total catches that class directly.
+    """
+    rows = [(f"{vs.EXCLUDED_FOLDER}/t{i}.js", TOMBSTONE) for i in range(10)]
+    rows += [(f"{vs.EXCLUDED_FOLDER}/l{i}.js", LIVE) for i in range(4)]
+    rows += [(f"{vs.EXCLUDED_FOLDER}/weird{i}.js", d)
+             for i, d in enumerate(['{"folder":false}', "bad json", None, '{"deleted":1}'])]
+    state = make_sync_root(vs, monkeypatch, tmp_path, rows)
+
+    conn = vs.open_ro(state / "state.db")
+    counted = vs.count_target_rows(conn)
+    examined = vs.scalar(
+        conn,
+        "SELECT COUNT(*) FROM server_files WHERE %s" % vs.under_target(vs.EXCLUDED_FOLDER)[0],
+        vs.under_target(vs.EXCLUDED_FOLDER)[1],
+    )
+    conn.close()
+
+    assert examined == len(rows)
+    assert counted.tombstones + counted.live == examined
+    assert counted.tombstones == 10          # only the literal `true` rows
+    assert counted.live == len(rows) - 10    # everything else, ambiguity included
+
+
+def test_null_path_rows_stop_the_tool(vs, monkeypatch, tmp_path):
+    """A NULL path matches no prefix test, so it can never be attributed."""
+    rows = [(f"{vs.EXCLUDED_FOLDER}/t{i}.js", TOMBSTONE) for i in range(30)]
+    rows += [(None, LIVE)]
     make_sync_root(vs, monkeypatch, tmp_path, rows)
     with pytest.raises(SystemExit):
         verify(vs)
@@ -228,6 +281,28 @@ def test_missing_deleted_key_counts_as_live(vs, monkeypatch, tmp_path):
 # --------------------------------------------------------------------------
 # The states that legitimately pass, and the empty one that does not
 # --------------------------------------------------------------------------
+
+
+def test_existing_exclusions_are_re_listed_not_dropped(vs, monkeypatch, tmp_path, capsys):
+    """--excluded-folders assigns the whole list, so omitting one un-excludes it.
+
+    `ob sync-config --help`: "Folders to exclude, comma-separated (empty string
+    to clear)". Passing only our own folder would silently un-exclude everything
+    else already there, and a post-condition that merely asked "is our folder
+    present?" would still report success.
+    """
+    make_sync_root(
+        vs, monkeypatch, tmp_path,
+        rows_for(vs, tombstones=24041, tombstone_dirs=2943),
+        excluded=["some/other/folder", "a/third/one"],
+    )
+    assert filters(vs) == 0
+    printed = capsys.readouterr().out
+    sent = [ln for ln in printed.splitlines() if "--excluded-folders" in ln]
+    assert sent, "expected the composed ob command to be logged"
+    assert "some/other/folder" in sent[0]
+    assert "a/third/one" in sent[0]
+    assert vs.EXCLUDED_FOLDER in sent[0]
 
 
 def test_fully_synced_deletions_unlock_the_gate(vs, monkeypatch, tmp_path):

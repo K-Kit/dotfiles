@@ -135,20 +135,42 @@ MB = 1024 * 1024
 # reading that table is structurally always zero (the QR-6 defect).
 HAS_DELETED_KEY = "json_type(data, '$.deleted') IS NOT NULL"
 
-# Only a literal JSON `true` counts as deleted -- json_extract yields the
-# integer 1 for it, or the text 'true' if the value was stored as a string.
-# The previous form, COALESCE(...) NOT IN (0, 'false'), was broad truthiness:
-# the strings "0" and "no", and the containers {} and [], all read as
-# tombstones. Looseness here points the wrong way, because a spurious tombstone
-# is precisely what unlocks the irreversible filter change.
-IS_TOMBSTONE = "json_extract(data, '$.deleted') IN (1, 'true')"
+# Only a literal JSON `true` counts as deleted.
+#
+# `json_type` rather than `json_extract`, because json_extract cannot tell the
+# two apart: it yields the integer 1 for both `{"deleted":true}` and
+# `{"deleted":1}`. json_type yields 'true' for the first and 'integer' for the
+# second. Looseness here points the wrong way -- a spurious tombstone is
+# precisely what unlocks the irreversible filter change -- so anything that is
+# not unambiguously a JSON true is treated as live and blocks.
+#
+# The predicate must also be TOTAL: exactly 0 or 1 for every row, never NULL and
+# never an error. Two ways it previously failed that, both of which made rows
+# vanish from BOTH counts and so unlocked the gate:
+#
+#   * SQL three-valued logic. A row with no `deleted` key made json_extract
+#     return NULL, so `... IN (1,'true')` was NULL, and `NOT (NULL)` was also
+#     NULL. Neither COUNT matched it. Three rows in, one accounted for -- and
+#     `tombstones > 0 and live == 0` then read as "safe to exclude".
+#   * A malformed `data` blob made json_extract raise "malformed JSON", which
+#     aborted the counting query outright.
+#
+# CASE guards the extraction behind json_valid (SQLite evaluates only the taken
+# branch), and COALESCE collapses a missing key to 0. Verified against literal
+# true/1/"true"/false/null/0, a non-JSON blob, and a NULL blob.
+IS_TOMBSTONE = (
+    "COALESCE(CASE WHEN json_valid(data) "
+    "THEN json_type(data, '$.deleted') = 'true' END, 0)"
+)
 
 # Deliberately the complement of IS_TOMBSTONE, not a positive test for
 # `deleted:false`. A row we cannot confidently call deleted must count as LIVE,
 # because live rows are what block the exclusion -- ambiguity has to fail closed.
+# Total because IS_TOMBSTONE is total, so tombstones + live == rows examined;
+# count_target_rows() asserts exactly that.
 IS_LIVE = f"NOT ({IS_TOMBSTONE})"
 
-IS_FOLDER = "json_extract(data, '$.folder') IN (1, 'true')"
+IS_FOLDER = "COALESCE(CASE WHEN json_valid(data) THEN json_type(data, '$.folder') = 'true' END, 0)"
 
 
 def under_target(folder: str) -> tuple[str, tuple]:
@@ -313,13 +335,37 @@ def count_target_rows(conn: sqlite3.Connection, folder: str = EXCLUDED_FOLDER) -
     twice, the two copies were free to drift, and a reviewer had to check both
     to know what the gate actually did.
     """
+    # A NULL path is invisible to any prefix test -- `path = ?` and
+    # `substr(path, ...)` are both NULL for it, so it can never appear under the
+    # target no matter what it really is. There is no way to classify such a row,
+    # so refuse to reason about the database at all rather than report counts
+    # that silently omit it.
+    orphans = scalar(conn, "SELECT COUNT(*) FROM server_files WHERE path IS NULL")
+    if orphans:
+        die(f"{orphans:,} rows in server_files have a NULL path -- they cannot be "
+            "attributed to any folder, so the counts below would be incomplete")
+
     where, params = under_target(folder)
     q = f"SELECT COUNT(*) FROM server_files WHERE {{}} AND {where}"
-    return TargetRows(
+    rows = TargetRows(
         tombstones=scalar(conn, q.format(IS_TOMBSTONE), params),
         tombstone_folders=scalar(conn, q.format(f"{IS_TOMBSTONE} AND {IS_FOLDER}"), params),
         live=scalar(conn, q.format(IS_LIVE), params),
     )
+
+    # Structural backstop, not a redundant assertion. Every defect this gate has
+    # had was some row failing to be counted where it should have been -- wrong
+    # table, wrong prefix, wrong threshold, and then a predicate that returned
+    # NULL so rows fell out of both buckets at once. Each was invisible because
+    # the counts still looked plausible. Tombstones and live are complements by
+    # construction, so they MUST sum to the number of rows examined; if a future
+    # edit breaks that, this stops the tool instead of quietly unlocking it.
+    examined = scalar(conn, f"SELECT COUNT(*) FROM server_files WHERE {where}", params)
+    if rows.tombstones + rows.live != examined:
+        die(f"row accounting failed under {folder}: {rows.tombstones:,} tombstoned + "
+            f"{rows.live:,} live != {examined:,} examined. The classifier is leaking "
+            "rows; refusing to act on these counts")
+    return rows
 
 
 def exclusion_blocker(rows: TargetRows, folder: str = EXCLUDED_FOLDER) -> str | None:
@@ -374,12 +420,17 @@ def cmd_gate(args: argparse.Namespace) -> int:
         # (c) positive control: same machinery, predicate inverted, scoped to the
         #     node_modules prefix. If this returns 0 the JSON extraction is broken
         #     and check (d)'s zero would be meaningless.
-        prefix = (EXCLUDED_FOLDER, EXCLUDED_FOLDER + "/%")
+        # under_target(), not `path LIKE folder || '/%'`: the same LIKE that had
+        # to be removed from the gate was still here. A positive control that
+        # over-matches is worse than useless -- it is meant to prove the JSON
+        # extraction works, so counting rows from `node-modules/` or
+        # `NODE_MODULES/` could report a healthy non-zero while the real prefix
+        # holds nothing.
+        nm_where, nm_params = under_target(EXCLUDED_FOLDER)
         c = scalar(
             conn,
-            f"SELECT COUNT(*) FROM server_files "
-            f"WHERE (path = ? OR path LIKE ?) AND NOT {IS_TOMBSTONE}",
-            prefix,
+            f"SELECT COUNT(*) FROM server_files WHERE {nm_where} AND {IS_LIVE}",
+            nm_params,
         )
         # (d) the counter itself.
         d = scalar(conn, f"SELECT COUNT(*) FROM server_files WHERE {IS_TOMBSTONE}")
@@ -887,6 +938,20 @@ def cmd_filters(args: argparse.Namespace) -> int:
     log(f"  approved by : {args.approved_by}")
     log(f"  note        : {args.approval_note}")
 
+    # --excluded-folders is whole-list ASSIGNMENT, not "add one": `ob sync-config
+    # --help` documents it as "Folders to exclude, comma-separated (empty string
+    # to clear)". Passing EXCLUDED_FOLDER alone therefore silently un-excludes
+    # every other folder already in the list, and the post-condition below would
+    # still pass because it only asked whether our own folder was present.
+    # Re-list what is already there, plus ours. (At time of writing ignoreFolders
+    # is null, so this is latent rather than live -- but anything excluded via the
+    # Obsidian UI between now and EX-7 would otherwise be dropped without a word.)
+    existing = [f for f in (cfg.get(EXCLUSION_KEY) or []) if isinstance(f, str) and f]
+    want_excluded = existing + ([EXCLUDED_FOLDER] if EXCLUDED_FOLDER not in existing else [])
+    if any("," in f for f in want_excluded):
+        die(f"an existing excluded folder contains a comma, which is the list "
+            f"separator: {[f for f in want_excluded if ',' in f]!r}")
+
     cmd = [
         resolve_ob(),
         "sync-config",
@@ -895,7 +960,7 @@ def cmd_filters(args: argparse.Namespace) -> int:
         "--file-types",
         FILE_TYPES,
         "--excluded-folders",
-        EXCLUDED_FOLDER,
+        ",".join(want_excluded),
     ]
     log()
     log(f"  $ {' '.join(cmd)}")
@@ -916,9 +981,13 @@ def cmd_filters(args: argparse.Namespace) -> int:
 
     # Post-condition checks run after the mutation, so clean=False: the config
     # write has already landed and the operator must not be told otherwise.
+    # Assert the whole set, not just our own entry. Checking only for
+    # EXCLUDED_FOLDER would pass while every previously-excluded folder had been
+    # dropped -- the exact failure the whole-list assignment above guards against.
     excluded = cfg_after.get(EXCLUSION_KEY) or []
-    if EXCLUDED_FOLDER not in excluded:
-        die(f"exclusion did not take: {EXCLUSION_KEY} is {excluded!r}", clean=False)
+    if sorted(excluded) != sorted(want_excluded):
+        die(f"exclusion did not take as intended: {EXCLUSION_KEY} is {excluded!r}, "
+            f"expected {want_excluded!r}", clean=False)
 
     # EC-5 requires both halves verified, not just the exclusion.
     want_types = sorted(t.strip() for t in FILE_TYPES.split(","))
