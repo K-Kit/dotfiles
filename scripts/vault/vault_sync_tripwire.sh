@@ -18,13 +18,31 @@ TOOL="${VAULT_SYNC_TOOL:-$HOME/code/dotfiles/scripts/vault/vault_sync.py}"
 LOG_DIR="${VAULT_SYNC_LOG_DIR:-$HOME/.local/state/vault-sync}"
 ENV_FILE="${VAULT_SYNC_TELEGRAM_ENV:-$HOME/.claude/channels/telegram/tripwire.env}"
 
+# systemd user units (and cron) run with a minimal PATH that omits ~/.local/bin,
+# which is where uv lives -- so an interactively-working wrapper dies at exit 127
+# every night without ever looking at the vault. Verified against this box:
+# `systemctl --user show-environment` yields PATH=/usr/local/sbin:...:/snap/bin,
+# with no ~/.local/bin, while uv resolves to $HOME/.local/bin/uv.
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) PATH="$HOME/.local/bin:$PATH" ;;
+esac
+export PATH
+
+UV="${VAULT_SYNC_UV:-$(command -v uv 2>/dev/null || true)}"
+if [ -z "$UV" ]; then
+  # Fail loudly rather than writing an empty report that reads as "all clear".
+  echo "vault-sync tripwire: uv not found (PATH=$PATH); detector did NOT run" >&2
+  exit 127
+fi
+
 mkdir -p "$LOG_DIR"
 # Reports quote vault paths; keep them readable only by their owner.
 chmod 700 "$LOG_DIR" 2>/dev/null || true
 stamp=$(date -u +%Y-%m-%d_%H-%M-%S)
 report="$LOG_DIR/tripwire-$stamp.txt"
 
-uv run "$TOOL" tripwire "$@" >"$report" 2>&1
+"$UV" run "$TOOL" tripwire "$@" >"$report" 2>&1
 status=$?
 
 ln -sfn "$report" "$LOG_DIR/latest.txt"
@@ -51,15 +69,22 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
   [ -n "$body" ] || body="(exit 2, but no summary line matched -- read the report)"
   # The URL carries the bot token, and argv is world-readable via ps(1).
   # -K - takes the URL from stdin instead, keeping the token out of argv.
-  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \
-    | curl -sS --max-time 30 -K - \
+  # --fail-with-body: without --fail, curl exits 0 on HTTP 400/401/429 (bad chat
+  # id, revoked token, rate limit), so the failure branch never runs and the unit
+  # reports success while no alert was ever delivered -- a silent-failure shape
+  # identical to the exit-127 one above. Keep the body: it carries Telegram's
+  # JSON description of what was wrong.
+  if ! tg_out=$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \
+    | curl -sS --fail-with-body --max-time 30 -K - \
       -d "chat_id=${TELEGRAM_CHAT_ID}" \
       --data-urlencode "text=vault sync tripwire found something:
 
 ${body}
 
-full report: ${report}" >/dev/null \
-    || echo "tripwire: telegram delivery failed; report at $report" >&2
+full report: ${report}" 2>&1); then
+    # Never echo the URL: it carries the bot token. curl's own error text is safe.
+    echo "tripwire: telegram delivery FAILED (${tg_out}); report at $report" >&2
+  fi
 else
   echo "tripwire: findings recorded at $report (no telegram token configured)" >&2
 fi

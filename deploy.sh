@@ -925,13 +925,28 @@ if [[ "$DEPLOY_PUEUE" == "true" ]] && is_linux; then
         fi
 
         # Deploy remaining service/timer units verbatim
-        for unit in reset-failed.service reset-failed.timer; do
+        for unit in reset-failed.service reset-failed.timer \
+                    vault-sync-tripwire.service vault-sync-tripwire.timer; do
             local unit_src="$DOT_DIR/config/systemd-user/$unit"
-            [[ -f "$unit_src" ]] && cp "$unit_src" "$systemd_user_dir/$unit"
+            # -f: installed units are copies, not symlinks into the repo, so a
+            # redeploy must overwrite the stale one rather than silently keep it.
+            [[ -f "$unit_src" ]] && cp -f "$unit_src" "$systemd_user_dir/$unit"
         done
 
         systemctl --user daemon-reload
         log_success "systemd user units deployed"
+
+        # EX-9 vault sync tripwire. Enabled here rather than in the pueue branch
+        # below: it has no pueue dependency, and gating it there would leave it
+        # installed-but-unscheduled on any box without pueue -- a monitor that
+        # reports success while never running is worse than no monitor.
+        if [[ -f "$systemd_user_dir/vault-sync-tripwire.timer" ]]; then
+            if systemctl --user enable --now vault-sync-tripwire.timer 2>/dev/null; then
+                log_success "vault-sync tripwire timer enabled"
+            else
+                log_warning "could not enable vault-sync-tripwire.timer"
+            fi
+        fi
 
         # Check cgroup delegation
         local uid; uid=$(id -u)

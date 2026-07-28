@@ -172,6 +172,30 @@ def die(msg: str, clean: bool = True) -> None:
     raise SystemExit(1)
 
 
+def resolve_ob() -> str:
+    """Absolute path to the `ob` CLI, or abort with a legible message.
+
+    `ob` is a bun global shim (`~/.bun/bin/ob` -> obsidian-headless/cli.js), and
+    ~/.bun/bin is absent from the minimal PATH that systemd user units and cron
+    inherit -- the same gap that left the EX-9 tripwire dead at exit 127. Bare
+    `subprocess.run(["ob", ...])` would raise a raw FileNotFoundError traceback,
+    and in `sync` that lands *after* the EX-4 move, leaving the vault staged but
+    unsynced with no explanation of why. Resolve up front and say so plainly.
+    """
+    found = shutil.which("ob")
+    if found:
+        return found
+    fallback = Path.home() / ".bun" / "bin" / "ob"
+    if fallback.exists():
+        return str(fallback)
+    die(
+        f"`ob` not found on PATH ({os.environ.get('PATH', '')!r}) and not at "
+        f"{fallback}. Install obsidian-headless, or run from a shell whose PATH "
+        "includes ~/.bun/bin."
+    )
+    raise AssertionError("unreachable")  # die() never returns; keeps type checkers happy
+
+
 # --------------------------------------------------------------------------
 # sync state discovery
 # --------------------------------------------------------------------------
@@ -502,22 +526,43 @@ def cmd_stage(args: argparse.Namespace) -> int:
     # summary, not the only copy.
     journal_path = holding / "manifest.jsonl"
 
-    def record(entry: dict) -> None:
-        manifest.append(entry)
+    def journal(entry: dict) -> None:
+        # fsync: the record has to survive a power loss between this write and
+        # the move, not merely a Python-level crash.
         with journal_path.open("a") as fh:
             fh.write(json.dumps(entry) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+
+    def do_move(entry: dict, move) -> None:
+        """Journal intent, move, journal completion.
+
+        The ordering is load-bearing. Recording *after* the move means an ENOSPC
+        on the journal write, or a SIGINT landing between the two statements,
+        leaves the file already outside the vault with nothing naming where it
+        went -- which is precisely the crash-recovery guarantee this journal
+        exists to provide. Intent-first can only ever over-record: an intent
+        with no matching "done" means "look for this one in the holding dir",
+        which is recoverable. The reverse is not.
+        """
+        journal({**entry, "state": "intent"})
+        dest = move()
+        done = {**entry, "to": str(dest), "state": "done"}
+        journal(done)
+        manifest.append(done)
 
     if do_runs:
         for c in plan.eligible:
-            dest = move_out(c.path, holding / "runs", RUNS_DIR)
-            record(
+            do_move(
                 {
                     "kind": "runs-duplicate",
                     "from": str(c.path),
-                    "to": str(dest),
                     "twin": str(c.twin),
                     "size": c.size,
-                }
+                },
+                # Bind c per-iteration; a bare closure would capture the loop
+                # variable and move the last candidate every time.
+                lambda c=c: move_out(c.path, holding / "runs", RUNS_DIR),
             )
             moved_bytes += c.size
         log(f"  moved {len(plan.eligible)} run files")
@@ -526,10 +571,11 @@ def cmd_stage(args: argparse.Namespace) -> int:
         dest = holding / "node_modules"
         if dest.exists() or dest.is_symlink():
             die(f"refusing to move onto an existing path: {dest}")
-        shutil.move(str(NODE_MODULES), str(dest))
-        record(
-            {"kind": "node-modules", "from": str(NODE_MODULES), "to": str(dest), "size": nm_bytes}
-        )
+        def move_nm() -> Path:
+            shutil.move(str(NODE_MODULES), str(dest))
+            return dest
+
+        do_move({"kind": "node-modules", "from": str(NODE_MODULES), "size": nm_bytes}, move_nm)
         moved_bytes += nm_bytes
         log(f"  moved node_modules ({fmt_mb(nm_bytes)})")
 
@@ -569,7 +615,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     else:
         die(f"syncMode is {mode!r}; deletions would not propagate. Fix before syncing.")
 
-    cmd = ["ob", "sync", "--path", str(VAULT)]
+    cmd = [resolve_ob(), "sync", "--path", str(VAULT)]
     log(f"  $ {' '.join(cmd)}")
     if args.dry_run:
         log("  Dry run, not executing.")
@@ -581,7 +627,15 @@ def cmd_sync(args: argparse.Namespace) -> int:
     proc = subprocess.run(cmd, cwd=str(VAULT))
     log()
     if proc.returncode != 0:
-        die(f"ob sync exited {proc.returncode}")
+        # Not clean: a sync that fails partway (quota, network) may already have
+        # uploaded or deleted entries and updated state.db. Claiming "no change"
+        # here would be a lie at the exact moment the operator needs the truth.
+        die(
+            f"ob sync exited {proc.returncode}. It may have applied some deletions "
+            "before failing -- re-run `verify` to read the actual tombstone state "
+            "before retrying.",
+            clean=False,
+        )
     log("  Sync completed. Next: `verify`.")
     return 0
 
@@ -633,15 +687,27 @@ def cmd_verify(args: argparse.Namespace) -> int:
     log(f"    total       : {under_nm:>8,}")
     log(f"  elsewhere in the vault    : {total - under_nm:>8,}")
 
-    if total == 0:
+    # The gate must be scoped to the folder about to be excluded, not vault-wide.
+    # `stage --what runs` tombstones 25 runs/ files; those alone make the total
+    # nonzero while every node_modules row is still live. A vault-wide test would
+    # then pass, EX-7 would tighten a non-retroactive exclusion, and ~285 MB of
+    # remote node_modules would strand with no way to reclaim it. Same class as
+    # the original QR-6 defect -- right table, wrong scope.
+    if under_nm == 0:
         log()
-        log("  Zero tombstones. The deletions did not reach the server.")
+        log(f"  Zero tombstones under {EXCLUDED_FOLDER}.")
+        if total:
+            log(f"  ({total:,} tombstones exist elsewhere in the vault -- most likely the")
+            log("   runs/ deletions. They do NOT license the exclusion: excluding a folder")
+            log("   whose remote rows are still live strands those bytes permanently.)")
+        log("  The node_modules deletions did not reach the server.")
         log("  Tightening the filters now would strand the remote copies permanently,")
         log("  because exclusion is not retroactive.")
-        die("EX-6 hard stop: tombstone count is zero, no filter change made")
+        die(f"EX-6 hard stop: zero tombstones under {EXCLUDED_FOLDER}, no filter change made")
 
     log()
-    log("  Tombstones present. The deletions reached the server.")
+    log(f"  {under_nm:,} tombstones under {EXCLUDED_FOLDER}.")
+    log("  The node_modules deletions reached the server.")
     log()
     log("  STOP. EX-11 requires Yulong's explicit approval of this split")
     log("  before `filters` may run. Pass it through:")
@@ -672,21 +738,36 @@ def cmd_filters(args: argparse.Namespace) -> int:
     # Re-read the count here so the EX-6 -> EX-7 ordering is a code invariant.
     with tempfile.TemporaryDirectory(prefix="vault-sync-filters-") as tmp:
         conn = open_ro(copy_state_db(state_dir, Path(tmp)))
-        tombstones = scalar(conn, f"SELECT COUNT(*) FROM server_files WHERE {IS_TOMBSTONE}")
+        # Scoped to the folder being excluded, matching cmd_verify. A vault-wide
+        # count is unlocked by any unrelated deletion (the runs/ files), which
+        # would let the non-retroactive exclusion land while the remote
+        # node_modules rows are still live -- stranding them for good.
+        prefix = (EXCLUDED_FOLDER, EXCLUDED_FOLDER + "/%")
+        tombstones = scalar(
+            conn,
+            f"SELECT COUNT(*) FROM server_files "
+            f"WHERE {IS_TOMBSTONE} AND (path = ? OR path LIKE ?)",
+            prefix,
+        )
+        total = scalar(conn, f"SELECT COUNT(*) FROM server_files WHERE {IS_TOMBSTONE}")
         conn.close()
     log()
-    log(f"  EX-6 re-check, tombstones in server_files: {tombstones:,}")
+    log(f"  EX-6 re-check, tombstones under {EXCLUDED_FOLDER}: {tombstones:,}")
+    log(f"  (vault-wide tombstones, for context only: {total:,})")
     if tombstones == 0:
         log("  Exclusion is not retroactive: tightening now would strand the")
         log("  remote copies with no way to reclaim the quota they hold.")
-        die("EX-6 hard stop: zero tombstones, refusing to tighten filters")
+        die(
+            f"EX-6 hard stop: zero tombstones under {EXCLUDED_FOLDER}, "
+            "refusing to tighten filters"
+        )
 
     log()
     log(f"  approved by : {args.approved_by}")
     log(f"  note        : {args.approval_note}")
 
     cmd = [
-        "ob",
+        resolve_ob(),
         "sync-config",
         "--path",
         str(VAULT),
