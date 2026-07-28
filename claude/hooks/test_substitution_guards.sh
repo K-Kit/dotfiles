@@ -154,6 +154,21 @@ run "no hyperparams" nudge_hyperparam_provenance.py \
     "$(pre_write /repo/train.py "total = 5")" silent
 run "hyperparams in test" nudge_hyperparam_provenance.py \
     "$(pre_write /repo/test_train.py "learning_rate = 3e-4")" silent
+# Round-6 adversarial-review regressions: exemption applies to the match's own
+# argument segment (not the whole line), annotations and paren-wrapped/TS
+# prompts still count, and comments/strings never fire.
+run "mixed cfg call still flags literal" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "run_eval(model=cfg.model, n_rollouts=16)")" fire
+run "typed annotation" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "n_rollouts: int = 16")" fire
+run "commented-out param" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "# n_rollouts = 16")" silent
+run "param inside string literal" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "print(\"fallback n_samples=10\")")" silent
+run "TS judge_prompt literal" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.ts "const judge_prompt: string = \"Rate 1-10\"")" fire
+run "paren-wrapped judge_prompt" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "judge_prompt = (\"Rate the response 1-10\"")" fire
 
 # --- F4: nudge_number_provenance.py (Stop hook) ------------------------------
 echo "=== F4: number provenance (Stop) ==="
@@ -185,6 +200,7 @@ transcript "$TMP/t_unit.jsonl"  "The file is about 4200 tokens."
 transcript "$TMP/t_approx.jsonl" "It takes ~40 seconds to run."
 transcript "$TMP/t_tool.jsonl"  "That cut it by 43% overall." 1
 transcript "$TMP/t_clean.jsonl" "Done — the hook is wired and the suite passes."
+# shellcheck disable=SC2016  # the backticked flag is a literal fixture string
 transcript "$TMP/t_code.jsonl"  'Set it with `--limit 50%` in the config.'
 transcript "$TMP/t_ver.jsonl"   "Requires uv 0.11.16 or newer."
 

@@ -36,23 +36,56 @@ HYPERPARAMS = (
     "n_seeds|num_seeds|n_rollouts|num_rollouts|n_trajectories|num_trajectories|"
     "n_trials|num_trials|n_samples|num_samples|max_turns|max_messages"
 )
+# Optional type annotation (`n_rollouts: int = 16`, TS `max_turns: number = 5`)
+# between the name and the assignment.
 ASSIGN_RE = re.compile(
-    rf"(?<![\w.])({HYPERPARAMS})\s*[:=]\s*(-?\d+\.?\d*(?:[eE][-+]?\d+)?)\b"
+    rf"(?<![\w.])({HYPERPARAMS})\s*(?::\s*[A-Za-z_][\w.\[\], ]*?)?\s*[:=]\s*"
+    rf"(-?\d+\.?\d*(?:[eE][-+]?\d+)?)\b"
 )
 
 # Judge/monitor/scorer prompts inlined as string literals: for evals the prompt
 # IS a hyperparameter — it should come from a versioned file or config, not be
-# typed in ad hoc where nothing records which version scored the run.
+# typed in ad hoc where nothing records which version scored the run. Allows a
+# type annotation, a wrapping paren, and f/r/b string prefixes.
 PROMPT_ASSIGN_RE = re.compile(
-    r"(?<![\w.])((?:judge|monitor|grader|scorer)_prompt)(?:\s*:\s*str)?\s*[:=]\s*[\"']"
+    r"(?<![\w.])((?:judge|monitor|grader|scorer)_prompt)"
+    r"(?:\s*:\s*\w+)?\s*[:=]\s*\(?\s*[frbuFRBU]*[\"']"
 )
 
-# Lines already routing the value through configuration — not a substitution.
-EXEMPT_LINE_RE = re.compile(
+# The matched value is already routed through configuration — not a
+# substitution. Checked against the match's own argument segment, not the
+# whole line: `run_eval(model=cfg.model, n_rollouts=16)` still hardcodes 16.
+EXEMPT_RE = re.compile(
     r"add_argument|Field\(|default\s*=|os\.environ|getenv|"
     r"\bcfg\.|\bconfig\.|\bargs\.|\bhparams\b|BaseSettings|@dataclass",
     re.I,
 )
+
+
+def strip_comment(line: str) -> str:
+    """Drop `#`/`//` comments so commented-out params don't fire. Quote parity
+    keeps `#` inside string literals (and `//` in quoted URLs) intact."""
+    for i, ch in enumerate(line):
+        if ch == "#" or (ch == "/" and line[i : i + 2] == "//"):
+            before = line[:i]
+            if before.count('"') % 2 == 0 and before.count("'") % 2 == 0:
+                return line[:i]
+    return line
+
+
+def in_string(line: str, pos: int) -> bool:
+    """True when pos sits inside a quoted literal (odd quotes before it) —
+    `print("fallback n_samples=10")` is prose, not an assignment."""
+    before = line[:pos]
+    return before.count('"') % 2 == 1 or before.count("'") % 2 == 1
+
+
+def exempt(line: str, start: int, end: int) -> bool:
+    """Check the match's argument segment (nearest `,`/`(` boundaries)."""
+    left = max(line.rfind(",", 0, start), line.rfind("(", 0, start)) + 1
+    stops = [p for p in (line.find(",", end), line.find(")", end)) if p != -1]
+    right = min(stops) if stops else len(line)
+    return bool(EXEMPT_RE.search(line[left:right]))
 
 
 def extract(data: object) -> tuple[str, str]:
@@ -86,15 +119,18 @@ def main() -> None:
         sys.exit(0)
 
     found = []
-    for line in content.splitlines():
-        if EXEMPT_LINE_RE.search(line):
-            continue
-        for name, value in ASSIGN_RE.findall(line):
-            item = f"{name}={value}"
+    for raw in content.splitlines():
+        line = strip_comment(raw)
+        for m in ASSIGN_RE.finditer(line):
+            if in_string(line, m.start(2)) or exempt(line, m.start(), m.end()):
+                continue
+            item = f"{m.group(1)}={m.group(2)}"
             if item not in found:
                 found.append(item)
-        for name in PROMPT_ASSIGN_RE.findall(line):
-            item = f"{name}=<inline literal>"
+        for m in PROMPT_ASSIGN_RE.finditer(line):
+            if in_string(line, m.start(1)):
+                continue
+            item = f"{m.group(1)}=<inline literal>"
             if item not in found:
                 found.append(item)
 

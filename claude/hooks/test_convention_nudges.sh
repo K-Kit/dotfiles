@@ -62,6 +62,18 @@ print(json.dumps({'tool_name': tool, 'tool_input': {'file_path': path, key: valu
 post_write() { tool_json Write "$1" content "$2"; }
 post_edit()  { tool_json Edit "$1" new_string "$2"; }
 
+# post_edits2 <path> <frag_a> <frag_b> — Edit with an edits[] array of two
+# independent replacements (they must NOT be scanned as adjacent lines).
+post_edits2() {
+    python3 -c "
+import json, sys
+path, a, b = sys.argv[1:4]
+print(json.dumps({'tool_name': 'Edit', 'tool_input': {'file_path': path,
+    'edits': [{'old_string': 'x', 'new_string': a},
+              {'old_string': 'y', 'new_string': b}]}}))
+" "$1" "$2" "$3"
+}
+
 # --- nudge_lint.sh -----------------------------------------------------------
 # The hook lints the file ON DISK, so positive/negative fixtures are real files.
 echo "=== lint nudge ==="
@@ -89,6 +101,25 @@ run "missing file silent"   nudge_lint.sh "$(post_write "$TMP/never_written.py" 
 run "non-lintable .md"      nudge_lint.sh "$(post_write "$TMP/notes.md" "hi")"        silent
 run "no file_path"          nudge_lint.sh '{"tool_name":"Write","tool_input":{}}'     silent
 run "vendored path skipped" nudge_lint.sh "$(post_write /repo/node_modules/a.py "import os")" silent
+
+# Round-6 adversarial-review regression: a hanging linter must not breach the
+# fail-open contract — the hook's own watchdog (not GNU timeout, absent on
+# stock macOS) must return exit 0 well before the external hook deadline.
+mkdir -p "$TMP/bin"
+printf '#!/bin/sh\nsleep 30\n' > "$TMP/bin/ruff"
+chmod +x "$TMP/bin/ruff"
+printf 'x = 1\n' > "$TMP/hang.py"
+START=$SECONDS
+rc=0
+out=$(printf '%s' "$(post_write "$TMP/hang.py" "x = 1")" \
+      | PATH="$TMP/bin:$PATH" bash "$DIR/nudge_lint.sh" 2>/dev/null) || rc=$?
+ELAPSED=$((SECONDS - START))
+if [ "$rc" -eq 0 ] && [ "$ELAPSED" -lt 8 ] && [ -z "$out" ]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+    printf 'FAIL: hanging linter stays fail-open (rc=%d, elapsed=%ss)\n' "$rc" "$ELAPSED"
+fi
 
 # --- nudge_md_hardwrap.py ----------------------------------------------------
 echo "=== markdown hard-wrap nudge ==="
@@ -122,6 +153,47 @@ TABLE='| a long table cell that could look like prose to a naive check, |
 | another row starting with a pipe so it is clearly a table |'
 run "table rows" nudge_md_hardwrap.py \
     "$(post_write /repo/notes.md "$TABLE")" silent
+
+# Round-6 adversarial-review regressions ------------------------------------
+
+# Edit whose fragment sits inside a pre-existing fence: with the file on disk
+# the hook must see the fence context and stay silent.
+printf '%s\n' '# Doc' '' '```' \
+    'first fenced line that is quite long and ends with a trailing comma,' \
+    'continuing lowercase exactly as shell output legitimately does' \
+    '```' > "$TMP/fenced_ctx.md"
+INNER='first fenced line that is quite long and ends with a trailing comma,
+continuing lowercase exactly as shell output legitimately does'
+run "edit inside existing fence" nudge_md_hardwrap.py \
+    "$(post_edit "$TMP/fenced_ctx.md" "$INNER")" silent
+
+# Same disk-context path, but the edit genuinely IS wrapped prose → fire.
+printf '%s\n' "$WRAPPED" > "$TMP/wrapped_ctx.md"
+run "edit wrapped prose on disk" nudge_md_hardwrap.py \
+    "$(post_edit "$TMP/wrapped_ctx.md" "$WRAPPED")" fire
+
+# Two separate edits[] fragments must not be scanned as adjacent lines
+# (unreadable path → per-fragment fallback).
+run "separate edits not adjacent" nudge_md_hardwrap.py \
+    "$(post_edits2 /repo/notes.md \
+        "This first edit is long enough to look like prose and ends with a comma," \
+        "another edit that starts lowercase but belongs somewhere else entirely")" silent
+
+# GFM table rows written without outer pipes are still a table, not prose.
+NOPIPE='Ada Lovelace | wrote the first published algorithm and was a visionary,
+her colleague | designed the analytical engine she wrote about at length'
+run "pipe-less table rows" nudge_md_hardwrap.py \
+    "$(post_write /repo/notes.md "$NOPIPE")" silent
+
+# ``` inside a ````-fence must not toggle fence state.
+QUADFENCE='````markdown
+```
+inner text long enough to resemble wrapped prose ending with a comma,
+continuing lowercase inside the nested example fence
+```
+````'
+run "nested 4-backtick fence" nudge_md_hardwrap.py \
+    "$(post_write /repo/notes.md "$QUADFENCE")" silent
 
 run "non-md path" nudge_md_hardwrap.py \
     "$(post_write /repo/notes.txt "$WRAPPED")" silent

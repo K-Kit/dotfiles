@@ -3,8 +3,10 @@
 one line" at write time.
 
 PostToolUse(Write|Edit) on `.md` files: flag prose paragraphs broken by hard
-newlines. Only the written fragment is scanned (Write content / Edit
-new_string), so editing near pre-existing hard wraps doesn't re-flag them.
+newlines. The scan runs over the post-edit document (Write content, or the
+file on disk for Edit) so fence state is known even when the edited fragment
+starts mid-fence; hits are then filtered to lines the tool actually wrote, so
+editing near pre-existing hard wraps doesn't re-flag them.
 
 The heuristic is deliberately conservative — a line that ends mid-sentence
 (lowercase letter or comma) followed by a line starting lowercase, outside
@@ -19,51 +21,71 @@ import re
 import sys
 
 SKIP_PATH_RE = re.compile(r"(^|/)(node_modules|\.venv|\.git|archive)(/|$)")
+MAX_DOC_BYTES = 1_000_000
 
 # Lines that are not flowing prose: headings, list items, quotes, tables,
-# fences, HTML, footnotes/link defs, YAML-ish keys, indented code.
+# HTML, footnotes/link defs, YAML-ish keys, indented code. (Fences are
+# handled separately with char/length tracking.)
 NON_PROSE_RE = re.compile(
-    r"^\s*(#|[-*+]\s|\d+[.)]\s|>|\||```|~~~|<|\[\^|\[[^\]]+\]:|\S+:\s|    )"
+    r"^\s*(#|[-*+]\s|\d+[.)]\s|>|\||<|\[\^|\[[^\]]+\]:|\S+:\s|    )"
 )
+# ```-style fence: a closing marker must match the opening char and be at
+# least as long, so ``` inside a ````-fenced block doesn't toggle state.
+FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 ENDS_MID_SENTENCE_RE = re.compile(r"[a-z,]$")
 STARTS_LOWER_RE = re.compile(r"^[a-z(\"'`]")
 
 
-def extract(data: object) -> tuple[str, str]:
+def extract(data: object) -> tuple[str, str, list[str]]:
+    """Return (path, whole-document content or '', written fragments)."""
     if not isinstance(data, dict):
-        return "", ""
+        return "", "", []
     inp = data.get("tool_input", data)
     if not isinstance(inp, dict):
-        return "", ""
+        return "", "", []
     path = inp.get("file_path", "") or ""
-    content = inp.get("content") or inp.get("new_string") or ""
-    if not content and isinstance(inp.get("edits"), list):
-        content = "\n".join(
-            e.get("new_string", "") for e in inp["edits"] if isinstance(e, dict)
-        )
-    return path, content
+    doc = inp.get("content") or ""
+    frags = []
+    if not doc:
+        if inp.get("new_string"):
+            frags = [inp["new_string"]]
+        elif isinstance(inp.get("edits"), list):
+            frags = [
+                e.get("new_string", "")
+                for e in inp["edits"]
+                if isinstance(e, dict) and e.get("new_string")
+            ]
+    return path, doc, frags
+
+
+def _is_prose(line: str) -> bool:
+    # Interior ` | ` catches GFM table rows written without outer pipes.
+    return not NON_PROSE_RE.match(line) and " | " not in line
 
 
 def find_hard_wraps(content: str) -> list[str]:
     hits = []
-    in_fence = False
+    fence = None  # (marker char, length) of the open fence, or None
     lines = content.splitlines()
     for line, nxt in zip(lines, lines[1:]):
-        if re.match(r"^\s*(```|~~~)", line):
-            in_fence = not in_fence
+        m = FENCE_RE.match(line)
+        if m:
+            tick = m.group(1)
+            if fence is None:
+                fence = (tick[0], len(tick))
+            elif tick[0] == fence[0] and len(tick) >= fence[1]:
+                fence = None
             continue
-        if in_fence:
+        if fence:
             continue
-        if NON_PROSE_RE.match(line) or not nxt.strip():
-            continue
-        if NON_PROSE_RE.match(nxt):
+        if not _is_prose(line) or not nxt.strip() or not _is_prose(nxt):
             continue
         if (
             len(line.strip()) > 40
             and ENDS_MID_SENTENCE_RE.search(line.rstrip())
             and STARTS_LOWER_RE.match(nxt.strip())
         ):
-            hits.append(line.strip()[:60])
+            hits.append(line.strip())
     return hits
 
 
@@ -73,13 +95,32 @@ def main() -> None:
     except Exception:
         sys.exit(0)
 
-    path, content = extract(data)
-    if not path or not content or not path.endswith(".md"):
+    path, doc, frags = extract(data)
+    if not path or not path.endswith(".md") or not (doc or frags):
         sys.exit(0)
     if SKIP_PATH_RE.search(path):
         sys.exit(0)
 
-    hits = find_hard_wraps(content)
+    if doc:  # Write: the content IS the document
+        hits = find_hard_wraps(doc)
+    else:  # Edit: scan the post-edit file so fence context is real
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                on_disk = f.read(MAX_DOC_BYTES)
+            written = {
+                ln.strip() for f_ in frags for ln in f_.splitlines() if ln.strip()
+            }
+            hits = [h for h in find_hard_wraps(on_disk) if h in written]
+        except OSError:
+            # No document context: scan each fragment independently, skipping
+            # any whose fence state is unknowable.
+            hits = [
+                h
+                for f_ in frags
+                if not any(FENCE_RE.match(ln) for ln in f_.splitlines())
+                for h in find_hard_wraps(f_)
+            ]
+
     if not hits:
         sys.exit(0)
 
@@ -87,7 +128,7 @@ def main() -> None:
     print(json.dumps({
         "systemMessage": (
             f"NUDGE: hard-wrapped paragraph(s) in {path.rsplit('/', 1)[-1]}, "
-            f"e.g. “{hits[0]}…”{more}. One paragraph = one line "
+            f"e.g. “{hits[0][:60]}…”{more}. One paragraph = one line "
             "— join the lines; blank lines separate paragraphs "
             "(markdown-style.md)."
         )

@@ -29,13 +29,20 @@ case "$FILE_PATH" in
     */node_modules/*|*/.venv/*|*/__pycache__/*|*/.git/*) exit 0 ;;
 esac
 
-# Bound linter runtime; hook timeout is the backstop, this keeps us under it.
+# Bound linter runtime below the external hook timeout. GNU `timeout` is absent
+# on stock macOS (coreutils installs it as `gtimeout`), and an unbounded linter
+# would be killed by the harness with a visible status-124 error — so the
+# watchdog is python3, which this hook already requires.
 run_lint() {
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 4 "$@" 2>/dev/null
-    else
-        "$@" 2>/dev/null
-    fi
+    python3 -c '
+import subprocess, sys
+try:
+    r = subprocess.run(sys.argv[1:], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, text=True, timeout=4)
+    sys.stdout.write(r.stdout or "")
+except Exception:
+    pass
+' "$@"
 }
 
 FINDINGS=""
