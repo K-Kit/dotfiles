@@ -263,7 +263,22 @@ def find_state_dir() -> Path:
             "multiple vault state directories found, refusing to guess: "
             + ", ".join(d.name for d in candidates)
         )
-    return candidates[0]
+    state_dir = candidates[0]
+
+    # "Exactly one state.db exists" does NOT mean "that state.db is this vault's".
+    # Every count the EX-6 gate turns on comes from this database, so if it ever
+    # describes a different vault the gate would be answering a question about
+    # somewhere else -- reporting zero live rows under node_modules simply because
+    # that vault has no such folder, and unlocking the irreversible filter change.
+    # config.json records vaultPath; require it to be the vault we operate on.
+    declared = (read_config(state_dir) or {}).get("vaultPath")
+    if not declared:
+        die(f"{state_dir/'config.json'} declares no vaultPath, so it cannot be "
+            f"confirmed to describe {VAULT}")
+    if Path(declared).expanduser().resolve() != VAULT.resolve():
+        die(f"sync state at {state_dir} describes {declared}, not {VAULT} -- "
+            "refusing to read counts for a different vault")
+    return state_dir
 
 
 def read_config(state_dir: Path) -> dict:

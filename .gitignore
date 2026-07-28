@@ -569,3 +569,6 @@ claude/.last-update-result.json
 
 # Stray scratch files
 Untitled.md
+
+# pytest falls back to a repo-local basetemp because $TMPDIR is read-only here
+pytest-of-*/

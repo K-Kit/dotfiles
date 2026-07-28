@@ -80,20 +80,31 @@ def rows_for(vs, *, tombstones=0, live=0, tombstone_dirs=0, elsewhere=0, under=N
     return out
 
 
-def make_sync_root(vs, monkeypatch, tmp_path, rows, *, wal=False, local_rows=(), excluded=()):
+DEFAULT_VAULT_PATH = object()  # sentinel: `vault_path=None` must mean "key absent"
+
+
+def make_sync_root(vs, monkeypatch, tmp_path, rows, *, wal=False, local_rows=(),
+                   excluded=(), vault_path=DEFAULT_VAULT_PATH):
     """A SYNC_ROOT the shipped find_state_dir()/copy_state_db() can walk for real.
 
     `wal=True` leaves the inserts uncheckpointed in state.db-wal by holding the
     writer open, reproducing the state a SIGTERM'd sync leaves behind. Reading
     state.db alone would then see none of them.
+
+    `vault_path` is what config.json declares this sync state describes: the
+    sentinel writes the real VAULT, a string writes that string, and None omits
+    the key entirely.
     """
     root = tmp_path / "sync"
     state = root / "vault-abc123"
     state.mkdir(parents=True)
-    (state / "config.json").write_text(
-        json.dumps({vs.EXCLUSION_KEY: list(excluded),
-                    "allowTypes": ["image", "pdf"], "encryptionKey": "x"})
-    )
+    cfg = {vs.EXCLUSION_KEY: list(excluded),
+           "allowTypes": ["image", "pdf"], "encryptionKey": "x"}
+    if vault_path is DEFAULT_VAULT_PATH:
+        cfg["vaultPath"] = str(vs.VAULT)
+    elif vault_path is not None:
+        cfg["vaultPath"] = vault_path
+    (state / "config.json").write_text(json.dumps(cfg))
 
     db = sqlite3.connect(state / "state.db")
     if wal:
@@ -269,6 +280,20 @@ def test_row_accounting_covers_every_row_under_the_target(vs, monkeypatch, tmp_p
     assert counted.live == len(rows) - 10    # everything else, ambiguity included
 
 
+@pytest.mark.parametrize("declared", ["/home/yulong/some-other-vault", None])
+def test_state_db_for_a_different_vault_is_refused(vs, monkeypatch, tmp_path, declared):
+    """One state.db existing does not make it THIS vault's state.db.
+
+    Every gate count comes from this database. A state dir describing another
+    vault would report zero live rows under node_modules simply because that
+    vault has no such folder -- and zero live rows is what unlocks EX-7.
+    """
+    rows = [(f"{vs.EXCLUDED_FOLDER}/t{i}.js", TOMBSTONE) for i in range(30)]
+    make_sync_root(vs, monkeypatch, tmp_path, rows, vault_path=declared)
+    with pytest.raises(SystemExit):
+        verify(vs)
+
+
 def test_null_path_rows_stop_the_tool(vs, monkeypatch, tmp_path):
     """A NULL path matches no prefix test, so it can never be attributed."""
     rows = [(f"{vs.EXCLUDED_FOLDER}/t{i}.js", TOMBSTONE) for i in range(30)]
@@ -402,9 +427,11 @@ def test_tripwire_refuses_to_report_clean_when_a_subtree_is_unreadable(vs, monke
 
 
 def test_tripwire_reports_clean_on_a_genuinely_clean_vault(vs, monkeypatch, tmp_path):
-    make_sync_root(vs, monkeypatch, tmp_path, [])
     vault = tmp_path / "vault"
     (vault / "notes").mkdir(parents=True)
     (vault / "notes" / "a.md").write_text("hello")
+    # Before make_sync_root: the fixture stamps the *current* VAULT into
+    # config.json's vaultPath, which find_state_dir now insists must match.
     monkeypatch.setattr(vs, "VAULT", vault)
+    make_sync_root(vs, monkeypatch, tmp_path, [])
     assert vs.cmd_tripwire(argparse.Namespace(max_file_mb=vs.DEFAULT_MAX_FILE_MB)) == 0
