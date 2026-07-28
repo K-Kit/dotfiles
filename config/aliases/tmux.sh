@@ -31,8 +31,7 @@ alias tdel="tmux kill-session -t"
 # tauto [topic] — opt this window in. Defaults to prefixing the current name.
 tauto () {
   [ -n "$TMUX" ] || { echo "tauto: not inside tmux" >&2; return 1; }
-  local cur; cur="$(tmux display-message -p '#{window_name}')"
-  local topic="${1:-$cur}"
+  local topic="${1:-$(tmux display-message -p '#{window_name}')}"
   case "$topic" in auto-*) ;; *) topic="auto-$topic" ;; esac
   tmux rename-window "$topic" && echo "opted in: $topic"
 }
