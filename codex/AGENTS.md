@@ -1,11 +1,8 @@
 # Global AGENTS.md
 
-Authoritative instructions for Codex CLI agents on this machine. Follow these in every repo unless the user overrides them. However, always refer to the `CLAUDE.md` in the repo by default. That is usually the source of truth, and is updated periodically.
+Authoritative instructions for Codex CLI agents on this machine. `CLAUDE.md` — global (`~/.claude/CLAUDE.md`) and at the repo root — is the source of truth and is updated more often; defer to it on any conflict with this file.
 
-## Mission & Scope
-- Act as an experienced peer: solve the task end-to-end, question assumptions, surface trade-offs.
-- Prioritize correctness, safety, and reproducibility over speed. If blocked, explain the issue instead of fabricating results.
-- When documentation is needed: (1) try Context7 MCP for popular libraries, (2) use GitHub CLI (`gh api`) for specific files, (3) explore locally installed libraries with Glob/Grep/Read, (4) use WebSearch as last resort.
+For library/API documentation, in order: Context7 MCP → `gh api` for specific files → read the locally installed library → WebSearch last.
 
 # ---------------------------------------------------------------------
 # CODEX-ONLY SECTION (do not overwrite from CLAUDE.md syncs)
@@ -17,87 +14,38 @@ You MUST refer to instructions in global `CLAUDE.md` at `~/.claude/CLAUDE.md`, a
 - When listing completed work, use short, clear bullet points suitable for a coworker or manager; avoid run-on sentences.
 - Codex runtime files (e.g., `codex/cache/`, `codex/state_*.sqlite`) may change during normal use and around commits/hooks; keep them gitignored to avoid commit churn.
 
-## Default Execution Rules
-### Shell & Tooling
-- All shell commands must have an explicit `workdir` (no relying on `cd`).
-- Prefer `rg`/`rg --files` for searches. Fall back only if unavailable.
-- Honor sandboxing: work within the workspace unless escalation is explicitly approved. Never assume network access.
-- When approvals are required (`approval_policy=on-request`), rerun only the failing command with `with_escalated_permissions=true` plus a one-sentence justification.
+# ---------------------------------------------------------------------
+# END CODEX-ONLY SECTION
+# ---------------------------------------------------------------------
 
-### File Safety & Git Hygiene
-- Never revert or overwrite user changes you did not make. Treat a dirty tree as intentional.
+## Safety
+- Never revert or overwrite user changes you did not make. Treat a dirty tree as intentional — uncommitted work is unrecoverable.
 - Avoid destructive commands (`git reset --hard`, `rm -rf`, etc.) unless the user demands it.
-- Do not create new files unless required; prefer editing existing files. If a new file is necessary, explain why.
-- Respect repository conventions (e.g., helper scripts in `scripts/`, config in `config/`). Keep edits ASCII unless the file already uses other encodings.
+- Never commit secrets, API keys, or tokens.
 
-## Coding & Editing Standards
+## Editing
+- Prefer editing existing files over creating new ones, documentation included. If a new file is necessary, explain why.
+- Respect repo conventions (helper scripts in `scripts/`, config in `config/`).
 - Start shell scripts with `#!/bin/bash` and `set -euo pipefail`; match existing option-parsing patterns.
-- Keep comments concise and only where they clarify non-obvious logic. Avoid restating code.
-- Use `apply_patch` for focused edits when practical. Skip it for generated files, bulk replacements, or when tooling output is needed instead.
-- Run linters/tests relevant to your change when feasible. If you cannot run them (time, sandbox limits), say so explicitly in the final message with suggested follow-ups.
-- When touching documentation, edit the current file rather than creating new markdown unless the user explicitly asks.
+- Comment only non-obvious logic; don't restate code.
+- Run the linters/tests relevant to your change. If you can't (time, sandbox), say so explicitly and suggest follow-ups.
 
-## Planning & Task Management
-- Create a plan (≥2 steps) for any task that is not trivial. Skip planning only for the simplest 25% of tasks.
-- Update the plan via the planning tool after completing each step. Only one step may be `in_progress` at a time.
-- Break work into logically independent steps (e.g., inspect files → implement fix → test) and keep the plan synchronized with your progress.
-
-## Communication & Reporting
-### During Work
-- Ask clarifying questions only when needed; otherwise act on the most reasonable interpretation.
-- Show command results when informative (errors, key metrics) rather than narrating without evidence.
-
-### Final Response Format
-- Be concise, friendly, and factual. No filler such as “Summary:”.
-- Start with the outcome/explanation of changes; include file references using clickable paths (`path/to/file:line`). Avoid ranges.
-- Mention tests/linters you ran (`Tests: …`). If none, state why.
-- Suggest natural next steps (numbered list) only when they exist.
-- Follow the CLI styling: optional short headers, `-` bullets, inline code for commands/paths, fenced code blocks with info strings for multi-line snippets.
-- When listing completed work, use short, clear bullet points suitable for a coworker or manager; avoid run-on sentences.
+## Reporting
+- Concise, friendly, factual. No filler like "Summary:". Lead with the outcome.
+- Cite files as clickable `path/to/file:line` — never a line range.
+- Name the tests/linters you ran (`Tests: …`); if none, say why.
+- Summarize the key lines of command output rather than pasting it whole.
+- Keep the response self-contained; the user should not need to scroll back.
 
 ## Agent Throughput Awareness
-- **Never give time estimates** — you operate at machine speed. A major refactoring takes minutes, not weeks. Don't say "this would take days/weeks."
-- **Never estimate costs** unless you've actually calculated them. Vague API cost projections are almost always wrong.
-- **Complexity ≠ duration** — it's fine to acknowledge complexity and break work into subtasks. Don't translate complexity into human-scale time estimates.
-- **Solo vs shared codebases** — on solo codebases, large breaking changes for quality/maintainability are encouraged. On shared codebases, maintain backwards compatibility.
+- Never give time estimates — you operate at machine speed, so "days/weeks" is wrong. Never state a cost you haven't actually calculated. Naming complexity is fine; translating it into human-scale duration is not.
+- On solo codebases, large breaking changes for quality are encouraged. On shared codebases, keep backwards compatibility.
 
-## Additional Expectations
-- Run commands the user explicitly requests when safe (e.g., `date`). Provide the relevant result rather than saying you ran it.
-- Never expose full command output when unnecessary; summarize key lines instead.
-- Maintain confidentiality: never commit secrets, API keys, or tokens.
-- Keep responses self-contained so the user need not scroll back for context.
+## Tool Mapping for Skills
+Skills under `~/.codex/skills` are written for Claude Code and name its tools. Substitute:
+- `TodoWrite` → `update_plan`
+- `Task` / subagents → your own subagents (`multi_agent`; verified enabled 2026-07-27 — recheck with `codex features list`)
+- `Skill` tool references → apply the discovered skill's instructions directly
+- `Read`, `Write`, `Edit`, `Bash` → your native equivalents
 
-<EXTREMELY_IMPORTANT>
-You have superpowers.
-
-**Skill loading mechanism:**
-- Use native Codex skill discovery via `~/.agents/skills/superpowers` (no launcher command).
-
-**Tool Mapping for Codex:**
-When skills reference tools you don't have, substitute your equivalent tools:
-- `TodoWrite` → `update_plan` (your planning/task tracking tool)
-- `Task` tool with subagents → delegate to your own subagents. The `multi_agent` feature is enabled on this install; do not tell the user subagents are unavailable. Re-check with `codex features list`.
-- `Skill` tool references → load/apply the skill instructions directly from discovered skills
-- `Read`, `Write`, `Edit`, `Bash` → Use your native tools with similar functions
-
-**Skills naming:**
-- Superpowers skills: `superpowers:skill-name` (from ~/.codex/superpowers/skills/)
-- Personal skills: `skill-name` (from ~/.codex/skills/)
-- Personal skills override superpowers skills when names match
-
-**Critical Rules:**
-- Before ANY task, review the skills list (shown below)
-- If a relevant skill exists, you MUST use it via native skill discovery (no bootstrap command)
-- Announce: "I've read the [Skill Name] skill and I'm using it to [purpose]"
-- Skills with checklists require `update_plan` todos for each item
-- NEVER skip mandatory workflows (brainstorming before coding, TDD, systematic debugging)
-
-**Skills location:**
-- Superpowers skills: ~/.codex/superpowers/skills/
-- Personal skills: ~/.codex/skills/ (override superpowers when names match)
-
-IF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.
-</EXTREMELY_IMPORTANT>
-
-
-Adhering to this document ensures consistent, auditable behavior for all Codex agents on this machine.
+**If a skill applies to the task, use it** — and say which one you're using and why.
