@@ -134,6 +134,20 @@ run "via pydantic Field" nudge_hyperparam_provenance.py \
     "$(pre_write /repo/conf.py "learning_rate: float = Field(3e-4)")" silent
 run "read from config" nudge_hyperparam_provenance.py \
     "$(pre_write /repo/train.py "batch_size = cfg.batch_size")" silent
+run "eval n_rollouts" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "n_rollouts = 16")" fire
+run "eval num_seeds" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "num_seeds = 3")" fire
+run "eval max_turns" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "max_turns = 30")" fire
+run "inline judge_prompt literal" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "judge_prompt = 'Rate the response 1-10'")" fire
+run "inline monitor_prompt literal" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "monitor_prompt: str = \"Watch for deception\"")" fire
+run "judge_prompt from file" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "judge_prompt = load_prompt(path)")" silent
+run "judge_prompt from config" nudge_hyperparam_provenance.py \
+    "$(pre_write /repo/eval.py "judge_prompt = cfg.judge_prompt")" silent
 run "seed excluded" nudge_hyperparam_provenance.py \
     "$(pre_write /repo/train.py "seed = 42")" silent
 run "no hyperparams" nudge_hyperparam_provenance.py \

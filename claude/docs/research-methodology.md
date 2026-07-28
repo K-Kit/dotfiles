@@ -163,7 +163,7 @@ Karpathy-style: fewer files, each with one clear job, no ceremony.
 **LOG.md in-flight entry format**: each in-flight entry carries an owning session identifier
 so a joining session can tell whether it's still live — `owner: claude-session/<id>` (same ID
 as the `Claude-Session:` commit trailer) or `owner: codex-job/<id>` (codex-companion job id),
-plus `since: <ISO-8601 UTC>`. Unlike `.agent-claims/` (PID + `kill -0` liveness check, dead
+plus `since: <ISO-8601 UTC>`. Unlike the retired `.agent-claims/` scheme (PID + `kill -0` liveness check, dead
 entries reaped by deletion), vault sessions aren't same-machine live processes and `LOG.md` is
 a permanent audit trail, not an ephemeral claim file — so staleness is judged by elapsed time,
 not process liveness, and a stale entry is *closed* with an appended line, never deleted.
@@ -185,10 +185,11 @@ original entry.
    if none was opened) noting completion. Rewrite (don't append to) `README.md` if the current
    focus genuinely changed.
 
-No `.agent-claims/`-style claim *file* needed for a vault topic dir: collision-free run naming
+No `.agent-claims/`-style claim *file* needed for a vault topic dir (that scheme is retired
+repo-wide — worktree isolation covers same-repo parallelism): collision-free run naming
 plus git (each topic dir should be its own git-backed repo with a remote) already cover the
 failure modes such a file would exist to catch. The `owner:`/`since:` fields above borrow
-`.agent-claims/`'s ownership idea for the one gap that scheme doesn't cover — knowing whether
+`.agent-claims/`'s ownership idea for the one gap that scheme didn't cover — knowing whether
 an *in-flight, not-yet-run* thread of work is still being worked on — without needing a
 separate claims file.
 

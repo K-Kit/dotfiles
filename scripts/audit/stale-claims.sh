@@ -144,9 +144,9 @@ check_read_threshold() {
     fi
 }
 
-# --- claude/rules/fable-second-opinion.md: a non-Opus/Sonnet model family exists
+# --- claude/rules/second-opinions.md: the Fable channel's model family exists
 check_fable_model() {
-    local loc="claude/rules/fable-second-opinion.md: Fable family available" bin n
+    local loc="claude/rules/second-opinions.md: Fable family available" bin n
     if ! bin="$(claude_binary)"; then
         skip "$loc" "Claude Code binary not found"
         return
@@ -158,7 +158,7 @@ check_fable_model() {
     if [[ "$n" -gt 0 ]]; then
         ok "$loc" "claude-fable-5 present ($n hits)"
     else
-        drift "$loc" "claude-fable-5 gone — the rule has nothing to point at; DELETE it rather than renaming the model"
+        drift "$loc" "claude-fable-5 gone — drop the Fable channel from the rule (codex-companion may still stand); do not rename the model"
     fi
 }
 
@@ -270,23 +270,6 @@ check_clean_skill_dupes() {
     fi
 }
 
-# --- claude/rules/multi-agent-coordination.md: the .agent-claims practice is live.
-# Its liveness rests on the harness auto-approving claim-file operations; without that
-# every claim prompts, nobody keeps doing it, and the rule is aspiration, not practice.
-check_agent_claims() {
-    local loc="claude/rules/multi-agent-coordination.md: .agent-claims practice" hook
-    hook="$DOT_DIR/claude/hooks/auto_classify.py"
-    if [[ ! -f "$hook" ]]; then
-        skip "$loc" "auto_classify.py not found"
-        return
-    fi
-    if rg -q 'agent-claims' "$hook"; then
-        ok "$loc" "claim-file operations still auto-approved"
-    else
-        drift "$loc" "auto-approval for .agent-claims is gone — the practice is retired; DELETE the rule rather than rewording it"
-    fi
-}
-
 # --- Counts must never be asserted in the auto-loaded tier (spec R10, AC9).
 # A lint, not a fact check: it catches count-shaped claims being (re-)introduced.
 # Deliberately narrow — it targets counts of things that change WITHOUT anyone
@@ -322,7 +305,6 @@ check_issue_21342
 check_fzf_version
 check_context_profiles
 check_clean_skill_dupes
-check_agent_claims
 check_no_counts
 
 log "=== Audit complete: $drift_found drifted claim(s) ==="

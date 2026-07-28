@@ -24,16 +24,27 @@ SKIP_PATH_RE = re.compile(
 SCAN_EXT_RE = re.compile(r"\.(py|ts|tsx|js|mjs|rs|ipynb)$")
 
 # Deliberately ML/experiment-specific. `seed` is excluded: seed=42 is ubiquitous
-# and its provenance genuinely does not matter.
+# and its provenance genuinely does not matter — but the *number* of seeds,
+# rollouts, or trials sets statistical power, so those are covered.
 HYPERPARAMS = (
     "learning_rate|lr|batch_size|micro_batch_size|n_epochs|num_epochs|epochs|"
     "weight_decay|warmup_steps|warmup_ratio|max_steps|grad_accum|"
     "gradient_accumulation_steps|temperature|top_p|top_k|max_tokens|"
     "max_new_tokens|num_layers|n_layers|hidden_dim|hidden_size|n_heads|"
-    "num_heads|dropout|beta1|beta2|clip_grad|max_grad_norm|lora_rank|lora_alpha"
+    "num_heads|dropout|beta1|beta2|clip_grad|max_grad_norm|lora_rank|lora_alpha|"
+    # Eval-run parameters (LLM / AI-safety evals)
+    "n_seeds|num_seeds|n_rollouts|num_rollouts|n_trajectories|num_trajectories|"
+    "n_trials|num_trials|n_samples|num_samples|max_turns|max_messages"
 )
 ASSIGN_RE = re.compile(
     rf"(?<![\w.])({HYPERPARAMS})\s*[:=]\s*(-?\d+\.?\d*(?:[eE][-+]?\d+)?)\b"
+)
+
+# Judge/monitor/scorer prompts inlined as string literals: for evals the prompt
+# IS a hyperparameter — it should come from a versioned file or config, not be
+# typed in ad hoc where nothing records which version scored the run.
+PROMPT_ASSIGN_RE = re.compile(
+    r"(?<![\w.])((?:judge|monitor|grader|scorer)_prompt)(?:\s*:\s*str)?\s*[:=]\s*[\"']"
 )
 
 # Lines already routing the value through configuration — not a substitution.
@@ -80,6 +91,10 @@ def main() -> None:
             continue
         for name, value in ASSIGN_RE.findall(line):
             item = f"{name}={value}"
+            if item not in found:
+                found.append(item)
+        for name in PROMPT_ASSIGN_RE.findall(line):
+            item = f"{name}=<inline literal>"
             if item not in found:
                 found.append(item)
 

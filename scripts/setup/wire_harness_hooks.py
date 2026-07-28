@@ -112,6 +112,8 @@ WIRINGS = [
     ("PreToolUse", "Write", "guard_existing_code.sh", 5, None),
     ("PostToolUse", "Write|Edit", "nudge_synthetic_data.py", 5, None),
     ("PostToolUse", "Write|Edit", "nudge_hyperparam_provenance.py", 5, None),
+    ("PostToolUse", "Write|Edit", "nudge_lint.sh", 5, None),
+    ("PostToolUse", "Write|Edit", "nudge_md_hardwrap.py", 5, None),
     ("Stop", None, "nudge_number_provenance.py", 5, None),
 ]
 
