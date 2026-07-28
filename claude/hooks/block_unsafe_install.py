@@ -19,8 +19,11 @@ index/registry/mirror flags (a custom index is a real vector but is NOT one of
 the four named gates — keeping the gate precise avoids blocking
 `pip install -i <mirror> pkg`).
 
-Each block names the approval path, because all four are overridable by the user
-saying so explicitly — the hook stops the *unilateral* action, not the action.
+Each block names the recourse. The hook itself blocks UNCONDITIONALLY — there
+is no in-hook approval bypass, deliberately: an approval marker or retry token
+would be a new injectable surface on a security boundary. The override is the
+user running the command themselves (`! <cmd>` in the prompt runs it in-session)
+or removing the hook from settings.json.
 
 DESIGN: fail CLOSED on ambiguity, and never trust a *representation* of the
 command in place of the command. Four separate fail-open bugs all came from that
@@ -56,7 +59,7 @@ Cost note: gate logic scans by INDEX, never by suffix slice. Retained `tokens[i:
 copies made a benign 8,000-token command cost ~259 MB, and a hook that gets
 OOM-killed is a silent permit.
 
-Over-blocking prints a message naming the approval path; under-blocking is
+Over-blocking prints a message naming the recourse; under-blocking is
 silent permission. When in doubt, block.
 
 KNOWN LIMITATION (accepted): the hook sees the command BEFORE shell expansion,
@@ -195,10 +198,10 @@ NODE_INSTALLERS = {"npm", "pnpm", "yarn", "bun"}
 INSTALL_SUBCMDS = {"install", "i", "add"}
 
 
-def block(title: str, detail: str, approval: str) -> None:
+def block(title: str, detail: str, recourse: str) -> None:
     print(f"BLOCKED: {title}", file=sys.stderr)
     print(detail, file=sys.stderr)
-    print(f"To proceed: {approval}", file=sys.stderr)
+    print(f"To proceed: {recourse}", file=sys.stderr)
     sys.exit(2)
 
 
@@ -227,7 +230,7 @@ def candidate_starts(tokens: list[str]) -> list[int]:
     list is a skip table under another name, and one wrong entry reopens a
     bypass, which is how three of the four fail-opens in the module docstring
     happened. The costs are asymmetric: over-blocking a literal `echo` of an
-    install command is a low-frequency annoyance that prints an approval path,
+    install command is a low-frequency annoyance that prints a recourse,
     while a missed wrapper is silent permission. Recorded here as a live design
     decision for the user, not as a settled question.
     """
@@ -390,7 +393,7 @@ def check_install_args(tokens: list[str], start: int, installer: str) -> None:
                     "A remote requirements/constraints/editable target installs "
                     "unreviewed code, bypassing the registry, quarantine, and "
                     "OSV checks.",
-                    "download and review it locally first, or get explicit user approval.",
+                    "download and review it locally first, or ask the user to run this themselves.",
                 )
             continue
         if is_remote_pkg(tok, installer):
@@ -398,7 +401,7 @@ def check_install_args(tokens: list[str], start: int, installer: str) -> None:
                 f"install from an arbitrary URL or git repo (`{tok}`).",
                 "Packages from URLs/git bypass the registry, the 7-day "
                 "min-release-age quarantine, and OSV malware checks.",
-                "get explicit user approval, or install the published "
+                "ask the user to run it themselves, or install the published "
                 "registry package instead.",
             )
 
@@ -428,7 +431,7 @@ def check_ignore_scripts(tokens: list[str]) -> None:
                 "re-enabling package lifecycle scripts.",
                 "Global ~/.npmrc sets ignore-scripts=true as a supply-chain defense; "
                 "postinstall scripts are the main npm attack vector.",
-                "get explicit user confirmation for this specific package.",
+                "ask the user to run it themselves for this specific package.",
             )
 
 
@@ -495,14 +498,14 @@ def check_segment(tokens: list[str], depth: int) -> None:
                         f"`{positional[1]}`.",
                         "An explicit remote overrides where the tap's code is fetched "
                         "from, so an official-looking tap name guarantees nothing.",
-                        "get explicit user approval before adding any tap.",
+                        "ask the user to add the tap themselves.",
                     )
                 if not OFFICIAL_TAP_RE.match(positional[0]):
                     block(
                         f"third-party Homebrew tap `{positional[0]}`.",
                         "Only official core formulae/casks and Mac App Store apps are allowed; "
                         "a tap is unreviewed third-party code.",
-                        "get explicit user approval before adding any tap.",
+                        "ask the user to add the tap themselves.",
                     )
             if sub in ("install", "reinstall", "upgrade"):
                 # `positional` already excludes flags, so --cask needs no special
@@ -513,7 +516,7 @@ def check_segment(tokens: list[str], depth: int) -> None:
                         block(
                             f"install from a third-party tap (`{t}`).",
                             "An owner/repo/formula reference installs from an unreviewed tap.",
-                            "get explicit user approval, or use the official core formula.",
+                            "ask the user to run it themselves, or use the official core formula.",
                         )
 
         # --- Gate 2: arbitrary URL / git installs ---
