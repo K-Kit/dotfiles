@@ -224,7 +224,27 @@ print -r -- "11. a remembered app is never probed again"
 run --only Bear
 check_eq "no second probe"        "$(cat "$STUB_AX_LOG" 2>/dev/null)" ""
 check    "straight to keystrokes" "$(cat "$STUB_KEY_LOG" 2>/dev/null)" "keystroke"
-check_eq "recorded exactly once"  "$(grep -c '^Bear$' "$AXCAP")" "1"
+check_eq "recorded exactly once"  "$(grep -c $'^Bear\t' "$AXCAP")" "1"
+
+# The record is only consulted when there IS one, so without expiry nothing would
+# ever revisit it: an app that gained a close button in an update would be typed
+# at for the rest of the machine's life. A stale record must therefore re-probe.
+print -r -- "11b. a record older than the TTL is probed again, and refreshed"
+STALE_STAMP=$(( $(date +%s) - 40 * 86400 ))
+print -r -- "Bear"$'\t'"$STALE_STAMP" > "$AXCAP"
+run --only Bear
+check    "the click is attempted again" "$(cat "$STUB_AX_LOG" 2>/dev/null)" "AXCloseButton"
+check_eq "still exactly one record"     "$(grep -c $'^Bear\t' "$AXCAP")"   "1"
+check_not "and the stale stamp is gone" "$(cat "$AXCAP")"                  "$STALE_STAMP"
+
+# The format gained a timestamp column, so every record written before this
+# change has none. Trusting those forever would exempt precisely the apps that
+# have been branded longest - the ones most likely to have been updated since.
+print -r -- "11c. a record with no timestamp is treated as expired"
+print -r -- "Bear" > "$AXCAP"
+run --only Bear
+check "the legacy record does not suppress the probe" "$(cat "$STUB_AX_LOG" 2>/dev/null)" "AXCloseButton"
+check "and it is rewritten with a stamp"              "$(cat "$AXCAP")"                    "Bear	"
 
 # Criterion 20: a probe that fails for want of a window says nothing about
 # whether the app supports clicking, so a windowless app must not be probed at

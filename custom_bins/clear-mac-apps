@@ -130,15 +130,42 @@ slow_quit_and_wait() {
 # keystroke path agree on. Lives beside the idle job's state - one system.
 AX_CAPABILITY_FILE="${HOME}/.cache/hide-idle-apps/ax-capability"
 
+# How long a "cannot be closed by clicking" verdict is trusted. The record used to
+# be permanent, so an app that GAINED a close button in an update was typed at for
+# the rest of the machine's life - the probe is only ever run when there is no
+# record, so nothing would ever have revisited it. A month of trust costs one
+# extra click attempt per app per month and lets an update correct the verdict.
+AX_CAPABILITY_TTL_DAYS="${AX_CAPABILITY_TTL_DAYS:-30}"
+
+# Lines are `name<TAB>epoch`. A line with no epoch was written by the version that
+# had no expiry; it is treated as due for a re-probe rather than trusted forever,
+# which is the whole point of adding expiry.
 ax_close_unsupported() {
     [[ -f "$AX_CAPABILITY_FILE" ]] || return 1
-    grep -qxF -- "$1" "$AX_CAPABILITY_FILE" 2>/dev/null
+    local cutoff=$(( $(date +%s) - AX_CAPABILITY_TTL_DAYS * 86400 ))
+    local name= stamp=
+    while IFS=$'\t' read -r name stamp; do
+        [[ "$name" == "$1" ]] || continue
+        [[ -n "$stamp" ]] && (( stamp > cutoff )) && return 0
+        return 1
+    done < "$AX_CAPABILITY_FILE"
+    return 1
 }
 
+# Rewrites rather than appends: a re-probed app must refresh its stamp in place,
+# not accumulate one line per probe until the file is a log.
 record_ax_unsupported() {
-    ax_close_unsupported "$1" && return 0
     mkdir -p "${AX_CAPABILITY_FILE:h}"
-    print -r -- "$1" >> "$AX_CAPABILITY_FILE"
+    local tmp="${AX_CAPABILITY_FILE}.tmp.$$"
+    local name= stamp=
+    : > "$tmp"
+    if [[ -f "$AX_CAPABILITY_FILE" ]]; then
+        while IFS=$'\t' read -r name stamp; do
+            [[ -n "$name" && "$name" != "$1" ]] && print -r -- "$name"$'\t'"$stamp" >> "$tmp"
+        done < "$AX_CAPABILITY_FILE"
+    fi
+    print -r -- "$1"$'\t'"$(date +%s)" >> "$tmp"
+    mv "$tmp" "$AX_CAPABILITY_FILE"
 }
 
 count_app_windows() {
