@@ -117,7 +117,14 @@ main() {
     # Uninstall Claude Code cleanup
     if [[ -f "$(dirname "${BASH_SOURCE[0]}")/setup_claude_cleanup.sh" ]]; then
         "$(dirname "${BASH_SOURCE[0]}")/setup_claude_cleanup.sh" --uninstall
-    fi    echo ""
+    fi
+
+    # Uninstall Claude plugin-cache cleanup
+    if [[ -f "$(dirname "${BASH_SOURCE[0]}")/setup_cache_clean.sh" ]]; then
+        "$(dirname "${BASH_SOURCE[0]}")/setup_cache_clean.sh" --uninstall
+    fi
+
+    echo ""
     log_info "You can still run it manually anytime."
 }
 

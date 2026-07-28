@@ -29,6 +29,10 @@ source "$DOT_DIR/config.sh"
 source "$DOT_DIR/scripts/shared/helpers.sh"
 source "$DOT_DIR/scripts/helpers/dotfiles_secrets.sh"
 
+# Abort if DOT_DIR is a worktree rather than the main checkout (--allow-worktree
+# overrides). Must run before parse_args so a mistake can't reach any component.
+guard_not_worktree "$0" "$@"
+
 # ─── Help ─────────────────────────────────────────────────────────────────────
 
 show_help() {
@@ -93,10 +97,19 @@ COMPONENTS:
     --append          Append to existing configs instead of overwrite
     --ascii=FILE      ASCII art file for shell startup
     --no-<component>  Disable a component (e.g., --no-editor)
+    --allow-worktree  Deploy even though DOT_DIR is a git worktree. Refused by
+                      default: it repoints ~/.claude and ~20 other user symlinks
+                      at a directory cwrm/cwclean will delete.
     --non-interactive Skip the component menu and deploy the default set. The
                       menu is the script's only prompt; everything after it
                       already runs with safe defaults (git conflicts keep
                       existing values).
+    --allow-worktree-deploy
+                      Deploy even though this copy of the script lives in a git
+                      worktree. Refused by default: DOT_DIR follows the script,
+                      so global symlinks (~/.claude, ~/.codex, ...) would be
+                      repointed at an ephemeral worktree. ~/.claude would lose
+                      its credentials and session backlog in the process.
 
 EXAMPLES:
     ./deploy.sh                           # Use defaults from config.sh
@@ -110,6 +123,47 @@ EOF
 
 # Parse CLI arguments (overrides config.sh)
 parse_args "$@"
+
+# ─── Worktree guard ───────────────────────────────────────────────────────────
+# DOT_DIR is derived from this script's own location (see top of file), and most
+# components symlink GLOBAL config at "$DOT_DIR/<thing>" — ~/.claude, ~/.codex,
+# ~/.serena, ~/.config/zed, and so on. Run from a git worktree, that repoints
+# global config at a directory that is ephemeral by design.
+#
+# The ~/.claude case is the damaging one. The `-L` branch of the Claude
+# component rm's the existing symlink and relinks it, and unlike the `-d`
+# branch it restores NO runtime files — so the new target starts with an empty
+# projects/, jobs/, and no .credentials.json. That reads as a logout, and the
+# entire session backlog goes invisible until the symlink is pointed back.
+# Observed 2026-07-27: ~/.claude repointed at a worktree, credentials gone,
+# 163 jobs replaced by 7.
+#
+# Override with --allow-worktree-deploy (or ALLOW_WORKTREE_DEPLOY=1) when you
+# genuinely mean to deploy from a worktree.
+if [[ "${ALLOW_WORKTREE_DEPLOY:-${DEPLOY_ALLOW_WORKTREE_DEPLOY:-false}}" != "true" \
+   && "${ALLOW_WORKTREE_DEPLOY:-0}" != "1" ]]; then
+    _git_dir="$(git -C "$DOT_DIR" rev-parse --git-dir 2>/dev/null || true)"
+    if [[ "$_git_dir" == */worktrees/* || "$DOT_DIR" == */.claude/worktrees/* ]]; then
+        _main_dir="$(git -C "$DOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+        _main_dir="${_main_dir:+$(dirname "$_main_dir")/deploy.sh}"
+        cat >&2 <<EOF
+Error: refusing to deploy from a git worktree.
+
+  DOT_DIR: $DOT_DIR
+
+Deploying from here would repoint global config (~/.claude, ~/.codex, ~/.serena,
+...) at this worktree. ~/.claude in particular would lose its credentials and
+its whole session backlog, which presents as being logged out.
+
+Run the main checkout's copy instead:
+  ${_main_dir:-<main-checkout>/deploy.sh} $*
+
+Or, if this is deliberate:
+  ./deploy.sh --allow-worktree-deploy $*
+EOF
+        exit 1
+    fi
+fi
 
 # Make custom_bins (claude-tools) discoverable, then fetch a prebuilt
 # claude-tools matching this platform so the component menu works before the
@@ -1018,54 +1072,57 @@ fi
 
 # ─── Scheduled Tasks (parallel — independent launchd/cron jobs) ──────────────
 
+# Queue a setup script, warning if it is missing. Every one of these is tracked
+# in the repo, so an absent script means a partial checkout or an unmerged
+# branch — skipping silently reads as a successful deploy that installed nothing.
+queue_scheduled_job() {
+    local job_id="$1" script="$2"
+    if [[ -f "$script" ]]; then
+        scheduled_jobs+=("$job_id|$script")
+    else
+        log_warning "Scheduled task '$job_id' skipped: $script not found"
+    fi
+}
+
 {
     local scheduled_jobs=()
 
     if [[ "$DEPLOY_CLAUDE_CLEANUP" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_claude_cleanup.sh" ]] && \
-            scheduled_jobs+=("claude-cleanup|$DOT_DIR/scripts/cleanup/setup_claude_cleanup.sh")
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_claude_tmpdir_cleanup.sh" ]] && \
-            scheduled_jobs+=("tmpdir-cleanup|$DOT_DIR/scripts/cleanup/setup_claude_tmpdir_cleanup.sh")
+        queue_scheduled_job claude-cleanup "$DOT_DIR/scripts/cleanup/setup_claude_cleanup.sh"
+        queue_scheduled_job tmpdir-cleanup "$DOT_DIR/scripts/cleanup/setup_claude_tmpdir_cleanup.sh"
+        queue_scheduled_job cache-clean "$DOT_DIR/scripts/cleanup/setup_cache_clean.sh"
     fi
 
     if [[ "$DEPLOY_AI_UPDATE" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_ai_update.sh" ]] && \
-            scheduled_jobs+=("ai-update|$DOT_DIR/scripts/cleanup/setup_ai_update.sh")
+        queue_scheduled_job ai-update "$DOT_DIR/scripts/cleanup/setup_ai_update.sh"
     fi
 
     if [[ "$DEPLOY_MCP_SYNC" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_mcp_sync.sh" ]] && \
-            scheduled_jobs+=("mcp-sync|$DOT_DIR/scripts/cleanup/setup_mcp_sync.sh")
+        queue_scheduled_job mcp-sync "$DOT_DIR/scripts/cleanup/setup_mcp_sync.sh"
     fi
 
     if [[ "$DEPLOY_USAGE_PING" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_usage_ping.sh" ]] && \
-            scheduled_jobs+=("usage-ping|$DOT_DIR/scripts/cleanup/setup_usage_ping.sh")
+        queue_scheduled_job usage-ping "$DOT_DIR/scripts/cleanup/setup_usage_ping.sh"
     fi
 
     if [[ "$DEPLOY_TMUX_RESUME" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_tmux_resume.sh" ]] && \
-            scheduled_jobs+=("tmux-resume|$DOT_DIR/scripts/cleanup/setup_tmux_resume.sh")
+        queue_scheduled_job tmux-resume "$DOT_DIR/scripts/cleanup/setup_tmux_resume.sh"
     fi
 
     if [[ "$DEPLOY_BREW_UPDATE" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_brew_update.sh" ]] && \
-            scheduled_jobs+=("brew-update|$DOT_DIR/scripts/cleanup/setup_brew_update.sh")
+        queue_scheduled_job brew-update "$DOT_DIR/scripts/cleanup/setup_brew_update.sh"
     fi
 
     if [[ "$DEPLOY_DEP_AUDIT" == "true" ]]; then
-        [[ -f "$DOT_DIR/scripts/security/setup_dep_audit.sh" ]] && \
-            scheduled_jobs+=("dep-audit|$DOT_DIR/scripts/security/setup_dep_audit.sh")
+        queue_scheduled_job dep-audit "$DOT_DIR/scripts/security/setup_dep_audit.sh"
     fi
 
     if [[ "$DEPLOY_KEYBOARD" == "true" ]] && is_macos; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_keyboard_repeat.sh" ]] && \
-            scheduled_jobs+=("keyboard-repeat|$DOT_DIR/scripts/cleanup/setup_keyboard_repeat.sh")
+        queue_scheduled_job keyboard-repeat "$DOT_DIR/scripts/cleanup/setup_keyboard_repeat.sh"
     fi
 
     if [[ "$DEPLOY_HIDE_IDLE_APPS" == "true" ]] && is_macos; then
-        [[ -f "$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh" ]] && \
-            scheduled_jobs+=("hide-idle-apps|$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh")
+        queue_scheduled_job hide-idle-apps "$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh"
     fi
 
     if (( ${#scheduled_jobs[@]} > 0 )); then
@@ -1353,3 +1410,18 @@ log_success "Deployment complete!"
 echo ""
 echo "Next steps:"
 echo "  Restart your terminal or run: source $RC_FILE"
+
+# ssh-agent: sandboxed Claude Code sessions authenticate over the agent socket, so
+# the key never has to be read from disk (~/.ssh/id_* stays deny-read). If nothing
+# is loaded, every sandboxed `git push` falls back to the key file and fails.
+if cmd_exists ssh-add; then
+    ssh_add_status=0
+    ssh-add -l >/dev/null 2>&1 || ssh_add_status=$?
+    if [[ "$ssh_add_status" -eq 1 ]]; then
+        echo "  ssh-agent has no keys loaded — run: ssh-add ~/.ssh/id_ed25519"
+        echo "    (without this, git push from a sandboxed Claude Code session fails)"
+    elif [[ "$ssh_add_status" -ne 0 ]]; then
+        echo "  Cannot reach ssh-agent — run: eval \"\$(ssh-agent -s)\" && ssh-add ~/.ssh/id_ed25519"
+        echo "    (without this, git push from a sandboxed Claude Code session fails)"
+    fi
+fi

@@ -1,1 +1,1 @@
-/home/yulong/.claude/skills/reply.md
+../reply.md

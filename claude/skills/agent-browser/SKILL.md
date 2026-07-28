@@ -1,1 +1,1 @@
-/home/yulong/.claude/skills/agent-browser.md
+../agent-browser.md

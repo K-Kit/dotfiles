@@ -15,8 +15,7 @@ If you're an AI agent (Claude Code, Codex, etc.) working in this repo, read this
 **Top rules:**
 - **Direct pushes to main are allowed** — personal repo, no PR overhead. Use `cwmerge` from worktrees (note: `cwmerge` only recognises branches with the `worktree-` prefix; for branches like `claude/<name>` merge manually with `git -C <main-tree> merge --ff-only <branch>`).
 - **Flags are ADDITIVE** to defaults unless `--minimal` is used. See [Flag Behavior](#flag-behavior-critical).
-- **Sandbox blocks `git pull/merge/stash`** on `config/` and `claude/settings.json` even though git is in `excludedCommands` — pass `dangerouslyDisableSandbox: true`. Also in global `~/.claude/rules/safety-and-git.md`.
-- **`codex exec` crashes inside sandbox on macOS** (`SCDynamicStoreCreate NULL` panic). Same workaround. Also in global `~/.claude/rules/agents-and-delegation.md`.
+- **Sandbox blocks `git pull/merge/stash`** here, and `codex exec` crashes on macOS inside it — both need `dangerouslyDisableSandbox: true`. Details in the always-loaded `~/.claude/rules/safety-and-git.md` and `agents-and-delegation.md`.
 - **`claude/settings.json` is the global source of truth** (symlinked to `~/.claude/settings.json`). Before staging it, verify it has `statusLine`, `hooks`, `permissions` keys — see [`.claude/rules/dotfiles-settings.md`](.claude/rules/dotfiles-settings.md).
 - **Secrets are NOT globally exported** (supply chain defense). Use `setup-envrc` per-project via direnv. Edit secrets via `secrets-edit`.
 - **Plot with Anthropic style by default** — `from anthro_colors import use_anthropic_defaults`. See [Plotting with Anthropic Style](#plotting-with-anthropic-style).
@@ -32,7 +31,7 @@ If you're an AI agent (Claude Code, Codex, etc.) working in this repo, read this
 | Add an encrypted secret | `secrets-edit` (interactive dotenv editor) |
 | Run an experiment with resource caps | `jexp uv run python -m ...` (Linux: needs pueue + systemd user session) |
 | Commit / commit + push + PR | `/commit` skill or `/commit-push-sync` |
-| Switch active plugin context | `claude-tools context <profile>` (composable: `code python frontend`) |
+| Switch active plugin context | `claude-tools context <profile>` (composable: `code python rust`; `claude-tools context --list` for the current set) |
 | Merge worktree → parent branch | `cwmerge` (or `git merge <branch>` from parent if branch isn't `worktree-` prefixed) |
 | Pre-deploy verification | See [Claude Code Verification Planning](#claude-code-verification-planning) |
 
@@ -110,192 +109,31 @@ private repo is the only real privacy boundary.
 
 ### Claude Code Verification Planning
 
-**Use EnterPlanMode for verification activities, not just implementation:**
-
-Verification is a design problem—you need to plan *how* you'll verify before you start verifying.
-
-| Activity | Trigger EnterPlanMode | Why |
-|----------|----------------------|-----|
-| Implementing a feature | ✅ Yes | Need to decide implementation approach |
-| Verifying it works | ✅ Yes | Need to decide validation strategy |
-| Running an experiment | ✅ Yes | Need to plan test design |
-| Analyzing results | ✅ Yes | Need to plan statistical approach |
-| Fixing a bug | ✅ Yes | Need to decide debugging strategy |
-| Confirming the fix | ✅ Yes | Need to plan regression/validation testing |
-
-**Verification activities that need planning:**
-- Reproducibility checks (rerun, validate numbers match, check for hidden bugs)
-- Data validation (schema checks, contamination detection, canary verification)
-- Statistical analysis (which metrics, confidence intervals, significance tests, N requirements)
-- Integration testing (which scenarios to cover, edge cases)
-- Error handling (what could break, how to test failures)
-- Regression testing (what could be affected by this change)
-
-**Red flag**: If you think "let me figure out how to verify this," that's EnterPlanMode.
+Verification is a design problem — plan *how* you'll verify before you start. Full trigger table and checklist: [`.claude/skills/verification-planning/SKILL.md`](.claude/skills/verification-planning/SKILL.md). **Red flag**: if you think "let me figure out how to verify this," that's EnterPlanMode.
 
 ### Deployment Components
 
-Each component in `deploy.sh` is deployed with inline logic or helper functions:
-- ZSH configuration - Main shell setup
-- Tmux configuration - Shell multiplexer config + TPM plugins (resurrect, continuum) for session persistence
-- Gist sync - Bidirectional sync of SSH config and git identity with GitHub gist, automated daily at 8 AM
-- Git config - Smart conflict resolution with user prompts
-- VSCode/Cursor/Antigravity settings - Merges with existing settings
-- Finicky - Browser routing (macOS only, symlinked)
-- Ghostty - Terminal emulator configuration (symlinked to platform-specific path)
-- Zed - Editor config (settings + keymap, symlinked to ~/.config/zed/)
-- gitui - Theme (symlinked to ~/.config/gitui/theme.ron). Theme-reactive: uses named ANSI colors so gitui inherits whichever Ghostty theme the active window uses (default, g0-g9, SSH themes). Fixes gitui's default `disabled_fg: DarkGray`, which is unreadable on Catppuccin Mocha and similar dark backgrounds.
-- Claude Code - AI assistant configuration (symlinked)
-- Codex - CLI tool configuration (symlinked)
-- Serena - MCP server configuration (symlinked, dashboard auto-open disabled)
-- Mouseless - Keyboard-driven mouse control (macOS only, copied not symlinked)
-- Alfred prefs repair - Fixes Dropbox-synced Alfred breakage (macOS only): strips `com.apple.quarantine` xattrs that block workflow scripts (`posix_spawn: error 1`), restores lost script `+x` bits, and seeds the per-machine summon hotkey from a golden snapshot. Runs `custom_bins/alfred-fix`; capture a new golden hotkey with `alfred-fix --capture`. Clipboard history is intentionally local-only and never syncs (Alfred design) — it starts fresh on each machine.
-- Bear CLI symlink - `/Applications/Bear.app/Contents/MacOS/bearcli` → `/usr/local/bin/bearcli` (macOS only, so `bearcli` works in cron/scripts where shell aliases don't apply)
-- Text replacements - Bidirectional sync with macOS + Alfred snippets (daily 9 AM, requires Full Disk Access for terminal app). macOS uses raw shortcuts; Alfred applies collection prefix at runtime (e.g., `fm.hi`)
-- Encrypted secrets (BWS) - Stores API keys via Bitwarden Secrets Manager. Run `secrets-init bws` to configure.
-- File cleanup - Downloads/Screenshots cleanup (macOS only, launchd)
-- Claude Code cleanup - No-output-for-24h session cleanup (tmux preserved, launchd/cron)
-- AI tools auto-update - Daily update of Claude Code, Codex CLI, OpenCode, Antigravity CLI (6 AM, launchd/cron)
-- Usage ping - Hourly minimal Haiku message (subscription/OAuth only, API key unset) to keep the Claude 5-hour usage window warm so capacity isn't wasted. `custom_bins/usage-ping`, scheduled at :00 (launchd/cron). Toggle with `--no-usage-ping`.
-- Tmux resume - Hourly scan of all tmux panes; on a rate-limit prompt (Claude Code / Codex) sends configured keystrokes to resume. Detection anchors on durable rate-limit-state strings; the action (default `1 Enter ; continue`) is the fragile part — re-verify with `tmux-resume --dry-run` after CLI upgrades. Patterns in `config/tmux-resume-patterns.conf`. Scheduled at :05. Toggle with `--no-tmux-resume`.
-- Hide idle apps (macOS only) - Polls every 60s (launchd `StartInterval`); hides (Cmd+H equivalent, via System Events `visible`) every running app that hasn't been frontmost for `HIDE_IDLE_MINUTES` (default 5), except apps listed in `config/clear_mac_apps.conf`'s `[hide-idle-exclude]` section. `[hide-idle-exclude]` is opt-out (hide-by-default) and orthogonal to `[no-touch]` (which only means "don't close/quit"); a small OS-chrome set (Finder, Dock, SystemUIServer, loginwindow, WindowServer) is hardcoded-excluded in `custom_bins/hide-idle-apps`, not user-configurable. Per-app idle state tracked in `~/.cache/hide-idle-apps/state`. Toggle with `--no-hide-idle-apps`.
-- Developer config files - EditorConfig, curlrc, inputrc, .hushlogin (deployed with --editor flag)
-- Global gitattributes - Binary file handling + line endings (deployed with --git-config flag)
-- File associations - Set default editor for coding file types and default terminal for `.command`/`.tool` (macOS only, reads `config/macos_default_apps.conf`)
-- Pueue + resource slices - Local job queue with cgroup-enforced CPU/memory limits (Linux only, systemd user slices, `j*` aliases)
-- Package auto-update - Weekly upgrade + cleanup (Sunday 5 AM, brew/apt/dnf/pacman, launchd/cron)
-- Package manager configs - Global npmrc, bunfig.toml, pnpm rc, uv.toml with 7-day min-release-age + ignore-scripts (symlinked)
-- Dependency audit - Weekly scan for known-bad packages across all repos (Sunday 10 AM, launchd/cron)
+Full list of every `deploy.sh` component with its rationale: [`docs/deploy-components.md`](docs/deploy-components.md). Per-component gotchas are tabulated under [Important Behaviors](#important-behaviors) below.
 
 ## Architecture
 
-### Core Scripts
-
-- `install.sh` - Dependency installation (OS-specific, uses feature flags)
-- `deploy.sh` - Configuration deployment (uses helper functions, supports --append/--backup)
-- `config/macos_settings.sh` - macOS system defaults (run automatically on macOS)
-- `scripts/cleanup/` - Automatic cleanup system (launchd/cron scheduled jobs)
-- `scripts/security/` - Supply chain defense (dependency audit, known-bad package IOC registry)
-
 ### Configuration Structure
 
-```
-config/
-├── zshrc.sh              # Main ZSH config, sources all other configs
-├── aliases.sh            # General aliases
-├── aliases_*.sh          # Environment-specific aliases (optional)
-├── tmux.conf             # Tmux configuration
-├── p10k.zsh              # Powerlevel10k theme
-├── vimrc                 # Vim configuration
-├── vscode_settings.json  # VSCode/Cursor/Antigravity settings (merged, not overwritten)
-├── vscode_extensions.txt # Auto-installed extensions (38 curated, categorized)
-├── zed/                      # Zed editor config (symlinked to ~/.config/zed/)
-│   ├── settings.json         # Zed settings (JSONC, feature parity with Cursor)
-│   └── keymap.json           # Custom keybindings (Cmd+K = inline AI edit)
-├── finicky.js            # Browser routing (macOS, symlinked)
-├── ghostty               # Ghostty terminal config (symlinked to platform-specific path)
-├── htop/htoprc           # htop config (symlinked, uses dynamic CPU meters)
-├── gitui/theme.ron       # gitui theme (symlinked to ~/.config/gitui/, theme-reactive named ANSI)
-├── serena/serena_config.yml  # Serena MCP config (symlinked, dashboard auto-open disabled)
-├── mouseless/config.yaml # Mouseless keyboard mouse config (macOS only, copied not symlinked)
-├── alfred/local-golden/  # Golden Alfred summon hotkey, seeded onto new Macs by alfred-fix
-├── key_bindings.sh       # ZSH key bindings (sourced by zshrc.sh)
-├── macos_default_apps.conf   # Default editor + file type associations (single source of truth)
-├── gitconfig             # Git config template
-├── ignore/                   # Ignore pattern management
-│   ├── gitignore_base        # Universal patterns — deployed to git AND search tools
-│   ├── gitignore_research    # Research dirs — deployed to git ONLY (search tools skip)
-│   └── patterns              # Pattern definitions for `claude-tools ignore apply` TUI
-├── user.conf.example     # User-specific git settings template
-├── editorconfig          # EditorConfig formatting defaults (symlinked to ~/.editorconfig)
-├── curlrc                # curl defaults: follow redirects, show errors (symlinked to ~/.curlrc)
-├── inputrc               # Readline config for bash/python/node REPLs (symlinked to ~/.inputrc)
-├── gitattributes_global  # Binary file handling + line endings (symlinked to ~/.gitattributes)
-├── machines.conf.example # Machine registry template (machine-id → name + emoji, for prompt/statusline). Real `machines.conf` is gitignored / lives in the private dotfiles-personal repo
-├── npmrc                 # Global npm config: ignore-scripts + 7-day min-release-age (symlinked)
-├── bunfig.toml           # Global bun config: 7-day min-release-age (symlinked)
-├── pnpmrc                # Global pnpm config: 7-day min-release-age (symlinked)
-├── uv.toml               # Global uv config: 7-day exclude-newer (symlinked)
-├── resources.conf        # Resource partitioning for Pueue job management (CPU, memory, parallelism)
-├── pueue.yml             # Pueue daemon config (symlinked to ~/.config/pueue/)
-└── systemd-user/         # systemd user units (slices, pueued service, reset-failed timer)
+Browse the layout with `eza --tree -L2 config claude custom_bins tools lib` — filenames are self-describing. Only the non-obvious relationships are recorded here:
 
-claude/                   # Symlinked to ~/.claude/
-├── CLAUDE.md             # Global AI instructions (slim ~120 lines, identity + pointers)
-├── settings.json         # Claude Code settings
-├── output-styles/        # Custom output styles (10x-mentor: 4-track growth coaching)
-├── rules/                # Auto-loaded behavioral rules (safety, workflow, conventions)
-├── agents/               # Personal agents (llm-billing)
-├── skills/               # Personal skills (commit, anthropic-style, jobs, etc.)
-├── ai-safety-plugins -> ~/code/marketplaces/ai-safety-plugins  # Symlink to marketplace repo
-├── plugins/              # Plugin runtime (cache, installed_plugins.json)
-├── docs/                 # On-demand knowledge (research, async, tmux, agent teams, etc.)
-├── ai_docs -> docs       # Permanent backwards-compat symlink
-├── hooks/                # Personal hook scripts (agent_spawned.sh, pre_session_start.sh)
-├── templates/            # Templates for specs, reports, context profiles
-│   └── contexts/         # profiles.yaml (plugin registry + profile definitions)
-├── projects/             # Project-specific settings overrides
-└── (runtime dirs)        # cache/, logs/, history.jsonl, todos/, etc.
-
-plans/                    # Per-project implementation plans (via plansDirectory setting)
-specs/                    # Specifications and requirements
-
-codex/                    # Codex CLI configuration (symlinked to ~/.codex/)
-
-.secrets                  # Legacy decrypted secrets file (gitignored, no longer the primary runtime path)
-
-# Private dotfiles runtime secrets (BWS token) live outside this repo:
-#   $BWS_TOKEN_FILE (default: ~/.config/bws/token)
-
-custom_bins/              # Custom utilities (added to PATH)
-├── utc_date              # Outputs YYYY-MM-DD in UTC
-├── utc_timestamp         # Outputs YYYY-MM-DD_HH-MM-SS in UTC
-├── machine-name          # Machine name for prompt/statusline (registry → SSH config → hostname)
-├── machine-register      # Register/list/remove machines in config/machines.conf
-├── claude-cache-clean    # Remove stale plugin cache versions
-├── any2md                # Universal content-to-markdown converter (files, URLs, arxiv, dirs)
-├── jguard                # Memory pressure monitor for Pueue workloads (PSI-based)
-├── dotfiles-secrets      # Private dotfiles secrets helper (paths, key listing, shell exports)
-├── setup-envrc           # Per-project secret picker + .envrc generator (fzf, drift detection, eval-based exports)
-└── alfred-fix            # Repair Dropbox-synced Alfred prefs (de-quarantine, +x, hotkey seed); --capture saves golden hotkey
-
-lib/plotting/             # Python plotting library (deployed to ~/.local/lib/plotting/)
-├── anthro_colors.py      # Anthropic brand colors (ground truth)
-└── petriplot.py          # Petri helpers (imports anthro_colors)
-
-config/matplotlib/        # Matplotlib style files (.mplstyle only)
-├── anthropic.mplstyle    # Anthropic brand (white bg, PRETTY_CYCLE)
-├── deepmind.mplstyle     # DeepMind (Google colors, white bg)
-└── petri.mplstyle        # Petri (ivory bg, editorial aesthetic)
-
-tools/
-├── claude-tools/         # Rust binary (statusline, context, ignore, setup)
-└── set-default-app/      # Swift CLI (macOS file type associations)
-```
+- **`config/ignore/` is a deliberate two-way split.** `gitignore_base` is deployed to git AND to search tools (ripgrep/fd); `gitignore_research` is deployed to **git only**, so `data/`/`archive/` stay invisible to git but searchable. `patterns` drives the `claude-tools ignore apply` TUI.
+- **`config/macos_default_apps.conf` is the single source of truth** for both file-type associations and `$EDITOR`/`$VISUAL`.
+- **Plotting is split by deployment method**: `lib/plotting/*.py` is **copied** to `~/.local/lib/plotting/` (so it needs a re-deploy to update), while `config/matplotlib/*.mplstyle` is **symlinked** (live). `anthro_colors.py` is the colour ground truth.
+- **`claude/ai_docs -> docs`** is a permanent backwards-compat symlink; **`claude/ai-safety-plugins`** symlinks out to `~/code/marketplaces/ai-safety-plugins`.
+- **`config/machines.conf.example` is the only tracked copy** — the real `machines.conf` is gitignored and lives in the private `dotfiles-personal` repo.
+- **`.secrets` is legacy** and no longer the runtime path; the BWS token lives outside this repo at `$BWS_TOKEN_FILE` (default `~/.config/bws/token`).
+- **`tools/` holds compiled code**, not config: `claude-tools/` (Rust: statusline, context, ignore, setup) and `set-default-app/` (Swift: macOS file associations).
 
 ### Directory Environment Variables
 
-Standard directory locations can be customized via environment variables:
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `CODE_DIR` | `~/code` | Primary code projects and repositories |
-| `WRITING_DIR` | `~/writing` | Writing projects (papers, drafts, notes) |
-| `SCRATCH_DIR` | `~/scratch` | Temporary experimentation and testing |
-| `PROJECTS_DIR` | `~/projects` | General projects |
-| `DOT_DIR` | (auto-detected) | Dotfiles repository location |
-| `DOTFILES_SECRETS_DIR` | `~/.config/dotfiles-secrets` | Private repo/path for dotfiles runtime secrets |
-
-**Customization:**
-```bash
-# In ~/.zshenv (loaded before zshrc, recommended)
-export CODE_DIR="$HOME/work/projects"
-export WRITING_DIR="$HOME/Documents/writing"
-```
+`CODE_DIR`, `WRITING_DIR`, `SCRATCH_DIR`, `PROJECTS_DIR`, `DOT_DIR`, `DOTFILES_SECRETS_DIR` override the standard locations — defaults and the `code`/`writing`/`scratch`/`projects`/`dotfiles` aliases are defined in `config/zshrc.sh`. Override in `~/.zshenv`, which loads before zshrc.
 
 **Cloud environments:** The standard directory structure works transparently on RunPod/cloud via symlinks created by `scripts/cloud/setup.sh`. `setup.sh` runs the lean **`cloud` profile** (`install.sh --profile=cloud` / `deploy.sh --profile=cloud`) — `server` minus pueue, zotero MCP, Rust extras, and Docker; keeps modern CLI tools, uv, gh, claude, codex. It provisions the **`main` branch by default**; pin another with `--branch <name>` (env `DOTFILES_BRANCH`), e.g. `curl … | bash -s -- --branch yulong`. `setup.sh` is **always fetched from `main`** (one canonical bootstrap URL); `--branch` only chooses which branch is cloned on the box. `provision.py --branch yulong` likewise fetches `setup.sh` from main and passes `--branch yulong` through to the clone. The active branch is printed in the setup banner. gh is installed current (Linux: official `cli.github.com` apt repo with sudo, else release binary), not jammy's 2.4.0, so `gh auth login --git-protocol ssh` works.
-
-**Related aliases:** `code`, `writing`, `scratch`, `projects`, `dotfiles`
 
 ### Important Behaviors
 
@@ -316,32 +154,7 @@ Subtleties worth knowing per deploy component. Full mechanics live in the matchi
 
 ## Plotting with Anthropic Style
 
-**ALWAYS use Anthropic style as default** for all plots created by Claude Code:
-
-```python
-from anthro_colors import use_anthropic_defaults
-use_anthropic_defaults()
-
-# Now all plots use anthropic style (white background, PRETTY_CYCLE colors)
-import matplotlib.pyplot as plt
-fig, ax = plt.subplots()
-# ... your plotting code
-```
-
-**Why:** Ensures consistent, professional appearance across all Claude-generated plots.
-
-**Absolute path to styles:** `~/.config/matplotlib/stylelib/anthropic.mplstyle`
-
-**Available styles:**
-- `anthropic` - Default, white background, Anthropic brand colors (use this)
-- `petri` - Ivory background, warm editorial aesthetic (use for specific Petri-paper style)
-- `deepmind` - Google/DeepMind colors (use for DeepMind-related work)
-
-**Importing colors:**
-```python
-from anthro_colors import CLAY, SKY, CACTUS, IVORY, SLATE, PRETTY_CYCLE
-import petriplot as pp  # For Petri-specific plotting helpers
-```
+**ALWAYS use Anthropic style as default** — `from anthro_colors import use_anthropic_defaults; use_anthropic_defaults()`. Colour constants, the `petri`/`deepmind` alternatives, and the full API are in the `anthropic-style` skill (`~/.claude/skills/anthropic-style/`); the copy-vs-symlink deploy split is under [Important Behaviors](#important-behaviors) above.
 
 ## Development Patterns
 
@@ -369,11 +182,7 @@ import petriplot as pp  # For Petri-specific plotting helpers
 
 ### Code Style
 
-- Use functions for reusability
-- Consistent indentation (2 spaces for shell scripts)
-- Validate prerequisites before operations
-- Provide clear user feedback for important operations
-- Use `backup_file()` helper for destructive operations
+2-space indentation in shell scripts. Use the `backup_file()` helper for anything destructive. General language conventions live in `~/.claude/rules/coding-conventions.md`.
 
 ## Important Gotchas
 

@@ -27,7 +27,7 @@ If multiple threads, lead with the most recent or most action-requiring. Cap at 
    - Gmail: `search_threads` with `from:<name>` or `<name>` and `newer_than:60d`
    - Slack: `slack_search_public_and_private` with `from:<name>` or the name as keyword
    - Granola (if they're likely an internal contact): `query_granola_meetings` for the name
-2. If multiple people match the name, pick based on recency. If ambiguous, note all candidates briefly and ask for disambiguation.
+2. If multiple people match the name, pick based on recency. If genuinely ambiguous, return **all** candidates briefly, each with its distinguishing signal (org, last-contact date, channel), and lead your response with `AMBIGUOUS:` so the caller disambiguates. Do **not** try to ask the user yourself — `AskUserQuestion` is not in your tool list, so a question you write is text your caller reads, not a prompt anyone sees. The caller owns the question; you own the candidate list.
 3. For the top thread, optionally fetch full content only if the snippet is insufficient.
 4. Synthesize the summary in the format above.
 
