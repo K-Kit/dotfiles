@@ -1,0 +1,6 @@
+[Unit]
+Description=Vault sync tripwire (EX-9): unexcluded regenerable dirs and oversized files
+
+[Service]
+Type=oneshot
+ExecStart=/home/yulong/code/dotfiles/scripts/vault/vault_sync_tripwire.sh
