@@ -104,6 +104,12 @@ COMPONENTS:
                       menu is the script's only prompt; everything after it
                       already runs with safe defaults (git conflicts keep
                       existing values).
+    --allow-worktree-deploy
+                      Deploy even though this copy of the script lives in a git
+                      worktree. Refused by default: DOT_DIR follows the script,
+                      so global symlinks (~/.claude, ~/.codex, ...) would be
+                      repointed at an ephemeral worktree. ~/.claude would lose
+                      its credentials and session backlog in the process.
 
 EXAMPLES:
     ./deploy.sh                           # Use defaults from config.sh
@@ -117,6 +123,47 @@ EOF
 
 # Parse CLI arguments (overrides config.sh)
 parse_args "$@"
+
+# ─── Worktree guard ───────────────────────────────────────────────────────────
+# DOT_DIR is derived from this script's own location (see top of file), and most
+# components symlink GLOBAL config at "$DOT_DIR/<thing>" — ~/.claude, ~/.codex,
+# ~/.serena, ~/.config/zed, and so on. Run from a git worktree, that repoints
+# global config at a directory that is ephemeral by design.
+#
+# The ~/.claude case is the damaging one. The `-L` branch of the Claude
+# component rm's the existing symlink and relinks it, and unlike the `-d`
+# branch it restores NO runtime files — so the new target starts with an empty
+# projects/, jobs/, and no .credentials.json. That reads as a logout, and the
+# entire session backlog goes invisible until the symlink is pointed back.
+# Observed 2026-07-27: ~/.claude repointed at a worktree, credentials gone,
+# 163 jobs replaced by 7.
+#
+# Override with --allow-worktree-deploy (or ALLOW_WORKTREE_DEPLOY=1) when you
+# genuinely mean to deploy from a worktree.
+if [[ "${ALLOW_WORKTREE_DEPLOY:-${DEPLOY_ALLOW_WORKTREE_DEPLOY:-false}}" != "true" \
+   && "${ALLOW_WORKTREE_DEPLOY:-0}" != "1" ]]; then
+    _git_dir="$(git -C "$DOT_DIR" rev-parse --git-dir 2>/dev/null || true)"
+    if [[ "$_git_dir" == */worktrees/* || "$DOT_DIR" == */.claude/worktrees/* ]]; then
+        _main_dir="$(git -C "$DOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+        _main_dir="${_main_dir:+$(dirname "$_main_dir")/deploy.sh}"
+        cat >&2 <<EOF
+Error: refusing to deploy from a git worktree.
+
+  DOT_DIR: $DOT_DIR
+
+Deploying from here would repoint global config (~/.claude, ~/.codex, ~/.serena,
+...) at this worktree. ~/.claude in particular would lose its credentials and
+its whole session backlog, which presents as being logged out.
+
+Run the main checkout's copy instead:
+  ${_main_dir:-<main-checkout>/deploy.sh} $*
+
+Or, if this is deliberate:
+  ./deploy.sh --allow-worktree-deploy $*
+EOF
+        exit 1
+    fi
+fi
 
 # Make custom_bins (claude-tools) discoverable, then fetch a prebuilt
 # claude-tools matching this platform so the component menu works before the
