@@ -19,6 +19,8 @@ LOG_DIR="${VAULT_SYNC_LOG_DIR:-$HOME/.local/state/vault-sync}"
 ENV_FILE="${VAULT_SYNC_TELEGRAM_ENV:-$HOME/.claude/channels/telegram/tripwire.env}"
 
 mkdir -p "$LOG_DIR"
+# Reports quote vault paths; keep them readable only by their owner.
+chmod 700 "$LOG_DIR" 2>/dev/null || true
 stamp=$(date -u +%Y-%m-%d_%H-%M-%S)
 report="$LOG_DIR/tripwire-$stamp.txt"
 
@@ -44,10 +46,15 @@ fi
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
   # Telegram caps messages at 4096 chars; the summary lines are what matter.
   body=$(grep -E "REGENERABLE|OVER THE|regenerable dir" "$report" | head -20)
-  curl -sS --max-time 30 \
-    -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-    -d "chat_id=${TELEGRAM_CHAT_ID}" \
-    --data-urlencode "text=vault sync tripwire found something:
+  # Never send an empty body: Telegram rejects a blank `text` and the message
+  # would be lost even though the run did find something.
+  [ -n "$body" ] || body="(exit 2, but no summary line matched -- read the report)"
+  # The URL carries the bot token, and argv is world-readable via ps(1).
+  # -K - takes the URL from stdin instead, keeping the token out of argv.
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" \
+    | curl -sS --max-time 30 -K - \
+      -d "chat_id=${TELEGRAM_CHAT_ID}" \
+      --data-urlencode "text=vault sync tripwire found something:
 
 ${body}
 

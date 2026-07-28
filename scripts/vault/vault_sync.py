@@ -72,18 +72,29 @@ SAFE_CONFIG_KEYS = frozenset(
     {
         "vaultId",
         "vaultName",
-        "localPath",
+        "vaultPath",
         "deviceName",
         "conflictStrategy",
         "allowTypes",
-        "excludedFolders",
+        "allowSpecialFiles",
+        "ignoreFolders",
         "syncConfigs",
         "configDir",
         "syncMode",
+        "host",
+        "encryptionVersion",
         "version",
-        "keyhash",
     }
 )
+
+# The CLI flag is --excluded-folders, but the key persisted to config.json and
+# read back by the runtime matcher is `ignoreFolders`:
+#     t.ignoreFolders = s.excludedFolders.split(",").map(n => n.trim())
+#     _allowSyncFile(e, t) { for (let r of this.ignoreFolders) ... }
+# Reading `excludedFolders` back always yields nothing, which would make the
+# EX-7 post-condition fail on a successful write and leave the EX-9 tripwire
+# permanently blind. Verified against obsidian-headless/cli.js on 2026-07-28.
+EXCLUSION_KEY = "ignoreFolders"
 
 # EX-2 baseline, measured 2026-07-27 against the untouched state.db.
 BASELINE = {
@@ -144,16 +155,20 @@ def fmt_mb(n_bytes: int) -> str:
     return f"{n_bytes / MB:.2f} MB"
 
 
-class Abort(SystemExit):
-    def __init__(self, msg: str) -> None:
-        super().__init__(1)
-        self.msg = msg
+def die(msg: str, clean: bool = True) -> None:
+    """Abort. `clean=False` when a mutating call may already have landed.
 
-
-def die(msg: str) -> None:
+    The reassurance must be a parameter, never a constant: a post-condition
+    check runs *after* its mutation, so hardcoding "nothing changed" there
+    tells the operator the opposite of the truth at the one moment it matters.
+    """
     log()
     log(f"ABORT: {msg}")
-    log("No filesystem change was made by this step.")
+    if clean:
+        log("No filesystem change was made by this step.")
+    else:
+        log("WARNING: a mutating call already ran -- do NOT assume this step "
+            "was a no-op. Inspect the live state before retrying.")
     raise SystemExit(1)
 
 
@@ -375,6 +390,21 @@ def compute_runs_plan() -> StagePlan:
         if not twin.is_file():
             plan.ineligible.append(Candidate(path, size, reason="no twin in out/"))
             continue
+        # A symlinked or hardlinked "twin" is not an independent second copy.
+        # A symlink pointing back into the vault would compare byte-identical
+        # against itself, and moving the target would leave a dangling link and
+        # no surviving copy at all. Reject both; Decision 2's "two copies on the
+        # same disk" premise requires two real ones.
+        if twin.is_symlink():
+            plan.ineligible.append(
+                Candidate(path, size, twin, "twin is a symlink, not an independent copy")
+            )
+            continue
+        if path.samefile(twin):
+            plan.ineligible.append(
+                Candidate(path, size, twin, "twin is the same inode (hardlink), not a second copy")
+            )
+            continue
         if not identical(path, twin):
             plan.ineligible.append(Candidate(path, size, twin, "twin differs in content"))
             continue
@@ -387,6 +417,11 @@ def move_out(path: Path, holding: Path, base: Path) -> Path:
     """EX-4: mv, never rm. Structure is preserved so the move is reversible."""
     dest = holding / path.relative_to(base)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # shutil.move onto an existing file silently renames over it on POSIX, and
+    # onto an existing directory moves the source *inside* it -- either way the
+    # manifest would then record a destination that does not describe reality.
+    if dest.exists() or dest.is_symlink():
+        die(f"refusing to move onto an existing path: {dest}")
     shutil.move(str(path), str(dest))
     return dest
 
@@ -394,9 +429,12 @@ def move_out(path: Path, holding: Path, base: Path) -> Path:
 def cmd_stage(args: argparse.Namespace) -> int:
     rule("EX-3  deletion set, computed live")
 
-    plan = compute_runs_plan()
     do_runs = args.what in ("runs", "both")
     do_nm = args.what in ("node-modules", "both")
+    # Only hash when the runs/ scope is actually selected -- otherwise
+    # `--what node-modules` pays ~126 MB of hashing on both sides for nothing,
+    # and dies if OUT_DIR happens to be absent.
+    plan = compute_runs_plan() if do_runs else StagePlan()
 
     if do_runs:
         log(f"  runs/ scanned under {RUNS_DIR}")
@@ -442,16 +480,37 @@ def cmd_stage(args: argparse.Namespace) -> int:
 
     rule("EX-4  move out of the vault")
     holding = Path(args.holding) if args.holding else DEFAULT_HOLDING_ROOT / f"vault-sync-holding-{utc_stamp()}"
+    holding = holding.resolve()
+
+    # EX-4 says "outside the vault". A holding dir inside it would satisfy "the
+    # files moved" while defeating the entire point: nothing leaves the sync
+    # scope, the sync emits no deletions, and verify hard-stops on zero.
+    if holding == VAULT or VAULT in holding.parents:
+        die(f"holding directory must be outside the vault, got {holding}")
+    # Requiring a fresh directory closes the whole destination-collision class
+    # in one line, rather than defending each move site separately.
+    if holding.exists() and any(holding.iterdir()):
+        die(f"holding directory already exists and is not empty: {holding}")
     holding.mkdir(parents=True, exist_ok=True)
     log(f"  holding: {holding}")
 
     manifest: list[dict] = []
     moved_bytes = 0
 
+    # Append-as-we-go, so a crash mid-move (ENOSPC, SIGINT) still leaves a
+    # record of every file already moved. manifest.json at the end is the
+    # summary, not the only copy.
+    journal_path = holding / "manifest.jsonl"
+
+    def record(entry: dict) -> None:
+        manifest.append(entry)
+        with journal_path.open("a") as fh:
+            fh.write(json.dumps(entry) + "\n")
+
     if do_runs:
         for c in plan.eligible:
             dest = move_out(c.path, holding / "runs", RUNS_DIR)
-            manifest.append(
+            record(
                 {
                     "kind": "runs-duplicate",
                     "from": str(c.path),
@@ -465,8 +524,10 @@ def cmd_stage(args: argparse.Namespace) -> int:
 
     if do_nm:
         dest = holding / "node_modules"
+        if dest.exists() or dest.is_symlink():
+            die(f"refusing to move onto an existing path: {dest}")
         shutil.move(str(NODE_MODULES), str(dest))
-        manifest.append(
+        record(
             {"kind": "node-modules", "from": str(NODE_MODULES), "to": str(dest), "size": nm_bytes}
         )
         moved_bytes += nm_bytes
@@ -548,6 +609,16 @@ def cmd_verify(args: argparse.Namespace) -> int:
             f"WHERE {IS_TOMBSTONE} AND (path = ? OR path LIKE ?)",
             prefix,
         )
+        # EX-6 quotes 24,041 files + 2,943 folders *under the prefix*. Report
+        # that split too: the runs/ deletions shift the vault-wide totals, so
+        # without this the operator sees neither expected number and may abort
+        # a run that is in fact correct.
+        under_nm_folders = scalar(
+            conn,
+            f"SELECT COUNT(*) FROM server_files "
+            f"WHERE {IS_TOMBSTONE} AND {IS_FOLDER} AND (path = ? OR path LIKE ?)",
+            prefix,
+        )
         conn.close()
 
     files = total - folders
@@ -555,7 +626,12 @@ def cmd_verify(args: argparse.Namespace) -> int:
     log(f"  tombstones, file rows   : {files:>8,}")
     log(f"  tombstones, folder rows : {folders:>8,}")
     log(f"  tombstones, total       : {total:>8,}")
-    log(f"    of which under node_modules: {under_nm:,}")
+    log()
+    log(f"  under {EXCLUDED_FOLDER}:")
+    log(f"    file rows   : {under_nm - under_nm_folders:>8,}   (EX-6 expects ~24,041)")
+    log(f"    folder rows : {under_nm_folders:>8,}   (EX-6 expects ~2,943)")
+    log(f"    total       : {under_nm:>8,}")
+    log(f"  elsewhere in the vault    : {total - under_nm:>8,}")
 
     if total == 0:
         log()
@@ -589,6 +665,22 @@ def cmd_filters(args: argparse.Namespace) -> int:
     if not FILE_TYPES:
         die("refusing to pass an empty --file-types; it falls back to a wider default")
 
+    # EX-6's hard stop belongs to the tool, not to operator discipline. Gating
+    # only on --approved-by would let `filters` run without `verify` ever having
+    # been executed, tightening the exclusion while the deletions are still only
+    # local -- which strands the remote copies permanently, with no undo.
+    # Re-read the count here so the EX-6 -> EX-7 ordering is a code invariant.
+    with tempfile.TemporaryDirectory(prefix="vault-sync-filters-") as tmp:
+        conn = open_ro(copy_state_db(state_dir, Path(tmp)))
+        tombstones = scalar(conn, f"SELECT COUNT(*) FROM server_files WHERE {IS_TOMBSTONE}")
+        conn.close()
+    log()
+    log(f"  EX-6 re-check, tombstones in server_files: {tombstones:,}")
+    if tombstones == 0:
+        log("  Exclusion is not retroactive: tightening now would strand the")
+        log("  remote copies with no way to reclaim the quota they hold.")
+        die("EX-6 hard stop: zero tombstones, refusing to tighten filters")
+
     log()
     log(f"  approved by : {args.approved_by}")
     log(f"  note        : {args.approval_note}")
@@ -620,11 +712,22 @@ def cmd_filters(args: argparse.Namespace) -> int:
     log("  Config after (non-secret keys only):")
     print_config_safely(cfg_after)
 
-    excluded = cfg_after.get("excludedFolders") or []
+    # Post-condition checks run after the mutation, so clean=False: the config
+    # write has already landed and the operator must not be told otherwise.
+    excluded = cfg_after.get(EXCLUSION_KEY) or []
     if EXCLUDED_FOLDER not in excluded:
-        die(f"exclusion did not take: excludedFolders is {excluded!r}")
+        die(f"exclusion did not take: {EXCLUSION_KEY} is {excluded!r}", clean=False)
+
+    # EC-5 requires both halves verified, not just the exclusion.
+    want_types = sorted(t.strip() for t in FILE_TYPES.split(","))
+    got_types = sorted(cfg_after.get("allowTypes") or [])
+    if got_types != want_types:
+        die(f"file types did not take: allowTypes is {got_types!r}, expected {want_types!r}",
+            clean=False)
+
     log()
-    log("  Exclusion confirmed in config.json.")
+    log(f"  Exclusion confirmed in config.json ({EXCLUSION_KEY}).")
+    log(f"  File types confirmed: {got_types!r}")
     return 0
 
 
@@ -636,7 +739,7 @@ def cmd_filters(args: argparse.Namespace) -> int:
 def cmd_tripwire(args: argparse.Namespace) -> int:
     state_dir = find_state_dir()
     cfg = read_config(state_dir)
-    excluded = list(cfg.get("excludedFolders") or [])
+    excluded = list(cfg.get(EXCLUSION_KEY) or [])
 
     def is_excluded(rel: str) -> bool:
         # Mirrors the ob matcher exactly: vault-relative, segment-safe, case-sensitive.
@@ -659,11 +762,15 @@ def cmd_tripwire(args: argparse.Namespace) -> int:
         for name in list(dirnames):
             rel = f"{rel_dir}/{name}" if rel_dir else name
             if name in REGENERABLE_DIRS and not is_excluded(rel):
-                size = sum(
-                    p.stat().st_size
-                    for p in (Path(dirpath) / name).rglob("*")
-                    if p.is_file() and not p.is_symlink()
-                )
+                # These trees churn (a build can unlink an entry mid-walk); a
+                # vanished file must not kill the unattended daily run.
+                size = 0
+                for p in (Path(dirpath) / name).rglob("*"):
+                    try:
+                        if p.is_file() and not p.is_symlink():
+                            size += p.stat().st_size
+                    except OSError:
+                        continue
                 regenerable.append((rel, size))
                 dirnames.remove(name)
 
