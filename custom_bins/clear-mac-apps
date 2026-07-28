@@ -137,6 +137,12 @@ AX_CAPABILITY_FILE="${HOME}/.cache/hide-idle-apps/ax-capability"
 # extra click attempt per app per month and lets an update correct the verdict.
 AX_CAPABILITY_TTL_DAYS="${AX_CAPABILITY_TTL_DAYS:-30}"
 
+# Checked here rather than in app-lifecycle-config's DEFAULT_KEYS, which validates
+# every other tunable in this feature, for the same reason HIDE_IDLE_POLL_SECONDS
+# and REQUIRED_STREAK are not config keys either: this is not a policy about apps.
+# It describes how long a cached probe result stays believable, so it belongs to
+# the close mechanism, not to the file that says what may be done to which app.
+#
 # A non-numeric value would otherwise blow up inside $(( )) on the first lookup.
 # Unlike HIDE_IDLE_MIN_VISIBLE_PERCENT, which refuses to act on a bad value, the
 # safe direction here is to trust nothing: every record then counts as expired,
