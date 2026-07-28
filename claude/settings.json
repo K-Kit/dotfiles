@@ -524,6 +524,12 @@
           },
           {
             "type": "command",
+            "command": "$HOME/.claude/hooks/block_secret_expansion.sh",
+            "timeout": 5,
+            "statusMessage": "Checking for secret expansion"
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/hooks/block_email_send.sh",
             "if": "Bash(*gws*gmail*)",
             "timeout": 5,

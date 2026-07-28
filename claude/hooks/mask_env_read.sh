@@ -30,21 +30,34 @@ elif [[ "$TOOL_NAME" == "Bash" ]]; then
     CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null) || exit 0
     [[ -z "$CMD" ]] && exit 0
 
-    # Skip piped commands — only intercept simple file reads
-    [[ "$CMD" == *"|"* ]] && exit 0
-
-    # Extract the first word (command name)
-    CMD_NAME=$(printf '%s' "$CMD" | awk '{print $1}')
-    case "$CMD_NAME" in
-        cat|head|tail|bat|less|more|grep)
-            # Extract file paths that look like env files from the command args
-            FILE_PATH=$(printf '%s' "$CMD" | grep -oE '[^[:space:]]+/(\.env[^[:space:]]*|\.envrc)|[[:space:]](\.env[^[:space:]]*|\.envrc)' | tr -d ' ' | tail -1) || true
-            # Also try: command operates on a bare .env in cwd
-            if [[ -z "$FILE_PATH" ]]; then
-                FILE_PATH=$(printf '%s' "$CMD" | grep -oE '\b\.env[a-zA-Z._]*\b|\b\.envrc\b' | tail -1) || true
-            fi
-            ;;
-    esac
+    # Check EVERY shell segment, not just the whole command's first word.
+    # A pipeline is not an exemption: `cat .env | head` leaks exactly as much
+    # as `cat .env`, and `ls && cat .env` hides the read behind an innocuous
+    # first word. Splitting on ||, &&, ; and | closes both.
+    #
+    # BEHAVIOR NOTE: this deliberately changes results for pipelines that used
+    # to run unguarded — `cat .env | wc -l` now returns the masked-content
+    # denial instead of a line count. The count is recoverable from the masked
+    # output; a raw value in the transcript is not recoverable at all.
+    #
+    # If a command reads more than one env file, only the FIRST match is
+    # reported; the rest are suppressed along with the whole command.
+    while IFS= read -r SEGMENT; do
+        [[ -z "${SEGMENT// /}" ]] && continue
+        CMD_NAME=$(printf '%s' "$SEGMENT" | awk '{print $1}')
+        case "$CMD_NAME" in
+            cat|head|tail|bat|less|more|grep) ;;
+            */cat|*/head|*/tail|*/bat|*/less|*/more|*/grep) ;;
+            *) continue ;;
+        esac
+        # Extract file paths that look like env files from the segment's args
+        FILE_PATH=$(printf '%s' "$SEGMENT" | grep -oE '[^[:space:]]+/(\.env[^[:space:]]*|\.envrc)|[[:space:]](\.env[^[:space:]]*|\.envrc)' | tr -d ' ' | tail -1) || true
+        # Also try: command operates on a bare .env in cwd
+        if [[ -z "$FILE_PATH" ]]; then
+            FILE_PATH=$(printf '%s' "$SEGMENT" | grep -oE '\b\.env[a-zA-Z._]*\b|\b\.envrc\b' | tail -1) || true
+        fi
+        [[ -n "$FILE_PATH" ]] && break
+    done < <(printf '%s' "$CMD" | awk '{gsub(/\|\||&&|[;|]/, "\n"); print}')
 fi
 
 # No env file detected — allow
