@@ -18,6 +18,7 @@ NEVER blocks. It only ever emits a systemMessage and exits 0 — it must not set
 import json
 import re
 import sys
+from collections import deque
 
 MAX_LINES = 400  # bounded tail of the transcript
 
@@ -42,7 +43,9 @@ NOISE_RES = [
     re.compile(r"`[^`\n]*`"),                  # inline code (incl. file:line refs)
     re.compile(r"https?://\S+"),               # URLs
     re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),      # ISO dates
-    re.compile(r"\bv?\d+\.\d+(\.\d+)*\b"),     # version numbers
+    # Version numbers: v-prefixed, or ≥3 components. A bare two-part decimal
+    # ("3.5") is NOT scrubbed — it may be the number of a claim like "3.5%".
+    re.compile(r"\bv\d+\.\d+(\.\d+)*\b|\b\d+\.\d+(\.\d+)+\b"),
     re.compile(r"\S+\.\w{1,5}:\d+"),           # path.py:123
     re.compile(r"#\d+"),                       # PR/issue refs
 ]
@@ -78,7 +81,9 @@ def main() -> None:
 
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
-            lines = fh.readlines()[-MAX_LINES:]
+            # deque(maxlen=...) keeps only the tail; readlines() would
+            # materialize the entire transcript before slicing.
+            lines = deque(fh, maxlen=MAX_LINES)
     except Exception:
         sys.exit(0)
 

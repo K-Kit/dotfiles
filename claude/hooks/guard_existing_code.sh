@@ -39,9 +39,15 @@ except Exception:
 
 BASE=$(basename "$FILE_PATH")
 
-cat <<HOOK_EOF
-{
-  "systemMessage": "NUDGE: creating a new source file ($BASE). Before writing it, confirm no existing code already does this — Grep for the core verb/noun in the repo. For experiments, use the existing validated pipeline with correct hyperparams and full data rather than a fresh ad-hoc script; ad-hoc is for dry runs only."
-}
-HOOK_EOF
+# The filename is passed via argv and JSON-encoded, never interpolated into the
+# JSON source — a quote or backslash in the name would otherwise emit invalid JSON.
+python3 -c "
+import json, sys
+print(json.dumps({'systemMessage':
+    f'NUDGE: creating a new source file ({sys.argv[1]}). Before writing it, '
+    'confirm no existing code already does this — Grep for the core verb/noun '
+    'in the repo. For experiments, use the existing validated pipeline with '
+    'correct hyperparams and full data rather than a fresh ad-hoc script; '
+    'ad-hoc is for dry runs only.'}))
+" "$BASE"
 exit 0

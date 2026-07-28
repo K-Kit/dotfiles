@@ -13,7 +13,7 @@ Blocks:
                                     of its flag, negation, and env spellings
   4. `--no-quarantine`            — disabling Gatekeeper on a cask
 
-Allows: `--help`, `--dry-run`, local paths, editable installs, a LOCAL
+Allows: `--help`, `--dry-run`, local paths, local editable installs, a LOCAL
 `-r requirements.txt`, official `homebrew/*` taps and formulae, and
 index/registry/mirror flags (a custom index is a real vector but is NOT one of
 the four named gates — keeping the gate precise avoids blocking
@@ -58,6 +58,12 @@ OOM-killed is a silent permit.
 
 Over-blocking prints a message naming the approval path; under-blocking is
 silent permission. When in doubt, block.
+
+KNOWN LIMITATION (accepted): the hook sees the command BEFORE shell expansion,
+so a URL smuggled through a variable (`U=git+https://…; pip install "$U"`) is
+invisible at this layer. The only fix — blocking any variable use in install
+commands — is mass over-blocking; the 7-day quarantine and OSV check remain
+the downstream defenses on that path.
 
 Exit 0 = allow, exit 2 = block.
 """
@@ -128,22 +134,39 @@ INSTALLER_FAMILY = {
     "pip": "pip", "npm": "node", "pnpm": "node", "bun": "node", "yarn": "node",
 }
 
-# Flags taking a path value that MUST still be checked: a remote requirements or
-# constraints file is precisely the arbitrary-URL-install vector.
-CHECKED_VALUE_FLAGS = {"-r", "--requirement", "-c", "--constraint"}
+# Flags whose VALUE must still be checked: a remote requirements/constraints
+# file or editable target is precisely the arbitrary-URL-install vector, and
+# `uv run`/`uvx` `--with`/`--from` specs are installs by another name.
+CHECKED_VALUE_FLAGS = {
+    "-r", "--requirement", "-c", "--constraint", "-e", "--editable",
+    "--with", "--with-requirements", "--from",
+}
 
 REMOTE_PKG_RE = re.compile(
-    r"^(git\+|github:|gitlab:|bitbucket:|gist:|https?://|git://|ssh://|file://)",
+    r"^((git|hg|svn|bzr)\+|github:|gitlab:|bitbucket:|gist:|https?://|git://|ssh://|file://)",
     re.IGNORECASE,
 )
 ARCHIVE_URL_RE = re.compile(r"^https?://.*\.(tgz|tar\.gz|whl|zip)$", re.IGNORECASE)
+# PEP 508 direct references (`pip install "demo @ https://host/demo.whl"`) put
+# the URL after `@` INSIDE one token, where the anchored regex never sees it.
+# Scoped npm names (`@types/node`) don't match: the `@` must be followed by a
+# scheme, not a name.
+EMBEDDED_REMOTE_RE = re.compile(
+    r"@\s*((git|hg|svn|bzr)\+|(https?|git|ssh|file)://)", re.IGNORECASE
+)
+# `uv run` / `uvx` positionals are the tool's OWN argv — `uv run fetch.py
+# https://api.example.com/data` is a benign data URL, not a package spec — so
+# they are matched only against unambiguous package forms (VCS schemes,
+# archives); --with/--from values still get checked via CHECKED_VALUE_FLAGS.
+UV_RUN_POSITIONAL_RE = re.compile(r"^((git|hg|svn|bzr)\+|git://|ssh://)", re.IGNORECASE)
 
 # npm accepts git dependencies in spellings that carry no URL scheme at all.
-# `npm i foo/bar` is documented GitHub shorthand; `git@host:path` is an scp-style
-# git URL; `alias@github:owner/repo` embeds the host after the alias separator.
+# `npm i foo/bar` is documented GitHub shorthand (optionally pinning a
+# committish: `foo/bar#branch`); `git@host:path` is an scp-style git URL;
+# `alias@github:owner/repo` embeds the host after the alias separator.
 NPM_HOST_ALIAS_RE = re.compile(r"(^|@)(github|gitlab|bitbucket|gist):", re.IGNORECASE)
 NPM_SCP_GIT_RE = re.compile(r"^[\w.-]+@[\w.-]+:[^/].*$")
-NPM_SHORTHAND_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+NPM_SHORTHAND_RE = re.compile(r"^[\w.-]+/[\w.-]+(#\S+)?$")
 
 # owner/repo/formula — a tapped formula reference
 TAP_FORMULA_RE = re.compile(r"^[\w.-]+/[\w.-]+/[\w.@+-]+$")
@@ -280,10 +303,18 @@ def installer_of(tokens: list[str], start: int) -> str | None:
         if tokens[k + 1 : k + 2] == ["pip"] and find_from(tokens, k + 2, "install") is not None:
             return "pip"
         return None
+    if head == "uvx":
+        # uvx IS `uv tool run`: it resolves and fetches its target package, so
+        # `uvx --from git+…` is an install in every way that matters.
+        return "uv-run"
     if head == "uv":
-        # `uv pip install`, `uv add`, and `uv tool install` all fetch packages.
+        # `uv pip install`, `uv add`, and `uv tool install` all fetch packages —
+        # and so do `uv run` / `uv tool run` (remote --with/--from specs), with
+        # the narrowed positional matcher (see UV_RUN_POSITIONAL_RE).
         if find_from(tokens, lo, "install") is not None or find_from(tokens, lo, "add") is not None:
             return "pip"
+        if find_from(tokens, lo, "run") is not None:
+            return "uv-run"
         return None
     if head in NODE_INSTALLERS:
         hit = any(tokens[i] in INSTALL_SUBCMDS for i in range(lo, len(tokens)))
@@ -292,7 +323,19 @@ def installer_of(tokens: list[str], start: int) -> str | None:
 
 
 def is_remote_pkg(tok: str, installer: str) -> bool:
-    if REMOTE_PKG_RE.match(tok) or ARCHIVE_URL_RE.match(tok):
+    if installer == "uv-run":
+        # Positionals here are the invoked tool's own argv; only unambiguous
+        # package forms count, so a plain https:// data URL stays allowed.
+        return bool(
+            UV_RUN_POSITIONAL_RE.match(tok)
+            or ARCHIVE_URL_RE.match(tok)
+            or EMBEDDED_REMOTE_RE.search(tok)
+        )
+    if (
+        REMOTE_PKG_RE.match(tok)
+        or ARCHIVE_URL_RE.match(tok)
+        or EMBEDDED_REMOTE_RE.search(tok)
+    ):
         return True
     # Keyed on the FAMILY, not the concrete tool: the scheme-less spellings below
     # are shared by npm/pnpm/yarn/bun. Comparing against "node" directly here
@@ -333,15 +376,20 @@ def check_install_args(tokens: list[str], start: int, installer: str) -> None:
             check_next = True
             continue
         elif tok.startswith("-"):
-            # --requirement=URL / --index-url=URL inline forms
+            # --requirement=URL / --editable=URL inline forms, and pip's
+            # attached short spelling: `-rURL` is the same instruction as
+            # `-r URL` and was invisible to the token-level check.
             name, sep, value = tok.partition("=")
-            if sep and name in CHECKED_VALUE_FLAGS and (
+            if not sep and len(tok) > 2 and tok[:2] in CHECKED_VALUE_FLAGS:
+                name, value = tok[:2], tok[2:]
+            if value and name in CHECKED_VALUE_FLAGS and (
                 REMOTE_PKG_RE.match(value) or ARCHIVE_URL_RE.match(value)
             ):
                 block(
-                    f"install from a remote requirements/constraints file (`{value}`).",
-                    "A remote requirements file installs unreviewed pinned packages, "
-                    "bypassing the registry, quarantine, and OSV checks.",
+                    f"install from a remote source via `{name}` (`{value}`).",
+                    "A remote requirements/constraints/editable target installs "
+                    "unreviewed code, bypassing the registry, quarantine, and "
+                    "OSV checks.",
                     "download and review it locally first, or get explicit user approval.",
                 )
             continue
@@ -399,7 +447,15 @@ def check_segment(tokens: list[str], depth: int) -> None:
         return
 
     # --- Gate 4: Gatekeeper bypass (applies to any command) ---
-    if any(t == "--no-quarantine" or t.startswith("--no-quarantine=") for t in tokens):
+    # HOMEBREW_CASK_OPTS=--no-quarantine is the env spelling of the same
+    # instruction; quoting collapses in the lexer, so a substring test on the
+    # assignment token covers `HOMEBREW_CASK_OPTS="--no-quarantine --foo"` too.
+    if any(
+        t == "--no-quarantine"
+        or t.startswith("--no-quarantine=")
+        or (t.startswith("HOMEBREW_CASK_OPTS=") and "--no-quarantine" in t)
+        for t in tokens
+    ):
         block(
             "`--no-quarantine` disables Gatekeeper.",
             "Notarization + quarantine are the defense against a malicious cask.",

@@ -30,7 +30,7 @@ MARKERS = [
      "a mock/dummy/synthetic data identifier"),
     (re.compile(r"\bnp\.random\.|numpy\.random\.|torch\.rand(n|int|_like)?\(|tf\.random\."),
      "a random-number generator producing data values"),
-    (re.compile(r"\brandom\.(uniform|gauss|normal|randint|choice|sample)\("),
+    (re.compile(r"\brandom\.(random|uniform|gauss|normal|randint|choice|sample)\("),
      "a random-number generator producing data values"),
     (re.compile(r"#\s*(TODO|FIXME|XXX)[^\n]*\b(real data|actual data|replace .*data)\b", re.I),
      "a TODO admitting the data is a stand-in"),

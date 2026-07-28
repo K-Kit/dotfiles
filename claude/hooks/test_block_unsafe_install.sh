@@ -340,6 +340,36 @@ run_test "yarn scheme-less shorthand still caught" "yarn add foo/bar" "block"
 # scheme-less check ever loosens to "any token with a /", local installs break.
 run_test "local relative path is not a git spec" "npm install ./local/path" "allow"
 
+echo "=== Regression: Codex full-PR review (2026-07-28) ==="
+# uv run / uvx fetch packages exactly as uv add does; positionals use the
+# narrowed matcher so plain https data args stay allowed.
+run_test "uvx --from git+" "uvx --from git+https://github.com/foo/bar sometool" "block"
+run_test "uvx --from= inline git+" "uvx --from=git+https://github.com/foo/bar sometool" "block"
+run_test "uv run --with git+" "uv run --with git+https://github.com/foo/bar script.py" "block"
+run_test "uv tool run remote" "uv tool run git+https://github.com/foo/bar" "block"
+run_test "uvx registry tool still allowed" "uvx ruff check ." "allow"
+run_test "uv run local script still allowed" "uv run script.py" "allow"
+run_test "uv run plain https data arg still allowed" "uv run fetch.py https://example.com/data.json" "allow"
+# Attached short values: -rURL is the same instruction as -r URL.
+run_test "pip -r attached url" "pip install -rhttps://example.com/reqs.txt" "block"
+run_test "pip -r attached local still allowed" "pip install -rrequirements.txt" "allow"
+# Inline --editable=: the separate-token spelling was caught, the = form not.
+run_test "pip --editable= git+" "pip install --editable=git+https://github.com/foo/bar" "block"
+run_test "pip -e local still allowed" "pip install -e ." "allow"
+# PEP 508 direct reference embeds the URL inside one token after @.
+run_test "pip PEP508 direct url" "pip install 'demo @ https://example.com/demo.whl'" "block"
+run_test "pip PEP508 no-space form" "pip install 'demo@git+https://github.com/foo/bar'" "block"
+run_test "npm scoped package still allowed" "npm install @types/node" "allow"
+# hg+/svn+/bzr+ are pip VCS schemes exactly as git+ is.
+run_test "pip hg+ scheme" "pip install hg+https://example.com/repo" "block"
+run_test "pip svn+ scheme" "pip install svn+https://example.com/repo" "block"
+run_test "pip bzr+ scheme" "pip install bzr+https://example.com/repo" "block"
+# npm shorthand with a committish: owner/repo#branch is still a git spec.
+run_test "npm shorthand #ref" "npm install foo/bar#main" "block"
+run_test "npm shorthand #semver" "npm install foo/bar#semver:^1.0" "block"
+# Gatekeeper bypass via environment, not flag.
+run_test "HOMEBREW_CASK_OPTS env bypass" "HOMEBREW_CASK_OPTS=--no-quarantine brew install --cask someapp" "block"
+
 echo "=== Regression: gate cost must not be quadratic in token count ==="
 # Review 3, P2. candidate_starts() built `tokens[i:]` per token and retained
 # every copy, so a BENIGN 8,000-token command cost ~259 MB. A hook that is
