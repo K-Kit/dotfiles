@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Functional test for tmux-resume's detect-only cooldown state machine and the
-# send-sequence parser. Self-contained: builds its own fixtures under a temp dir.
+# Functional test for tmux-resume's detect-only cooldown state machine, its
+# opt-in send gate, and the send-sequence parser. Self-contained: builds its own
+# fixtures under a temp dir.
 #
 #   bash scripts/tests/test-tmux-resume.sh
 #
@@ -58,7 +59,10 @@ cat > "$T/home/.local/bin/tmux" <<'STUB'
 # Stub tmux. Drops the leading "-S <socket>" that tmux-resume always passes.
 shift 2
 case "$1" in
-  list-panes)   echo "fake:0.0" ;;
+  # tmux-resume asks for "target<TAB>window_name". Emit both, tab-separated —
+  # a single field would leave the window name empty, which the opt-in gate
+  # reads as "not opted in" and every send assertion below would fail.
+  list-panes)   printf '%s\t%s\n' "${FAKE_TARGET:-fake:0.0}" "${FAKE_WINDOW:-auto-test}" ;;
   capture-pane) cat "$FAKE_CAPTURE" ;;
   send-keys)    shift; echo "SEND: $*" >> "$FAKE_SENDLOG" ;;
 esac
@@ -91,6 +95,9 @@ export TMUX_RESUME_PATTERNS="$REPO/config/tmux-resume-patterns.conf"
 export TMUX_RESUME_STATE_DIR="$T/state"
 export FAKE_CAPTURE="$T/capture.txt"
 export FAKE_SENDLOG="$T/sends.log"
+# Opted in by default so the cooldown/parser cases below exercise the send path.
+# The gate itself is tested explicitly further down, both ways.
+export FAKE_WINDOW="auto-test"
 : > "$T/sends.log"
 
 run() { "$T/tmux-resume-test" "$@" 2>&1 | sed 's/^\[[^]]*\] //'; }
@@ -143,6 +150,47 @@ out="$(TMUX_RESUME_DETECT_COOLDOWN_HOURS=0 "$T/tmux-resume-test" 2>&1)"
 assert_eq "cooldown 0 -> immediate fall-through" "yes" \
   "$([[ "$out" == *"cooldown 0"* ]] && echo yes || echo no)"
 assert_eq "cooldown 0 sends keystrokes" "$EXPECTED_SEND" "$(sends)"
+
+echo "== opt-in gate =="
+# All of these use cooldown 0 so the detect-only row falls straight through and
+# the action row — the only row that can send — is the one under test.
+gated() { reset_state; TMUX_RESUME_DETECT_COOLDOWN_HOURS=0 "$T/tmux-resume-test" 2>&1; }
+
+out="$(FAKE_WINDOW="dotfiles" gated)"
+assert_eq "un-opted window still detected" "yes" \
+  "$([[ "$out" == *MATCH* ]] && echo yes || echo no)"
+assert_eq "un-opted window says why it sent nothing" "yes" \
+  "$([[ "$out" == *"not opted in"* ]] && echo yes || echo no)"
+assert_eq "un-opted window receives nothing" "" "$(sends)"
+
+out="$(FAKE_WINDOW="auto-overnight" gated)"
+assert_eq "opted-in window receives keystrokes" "$EXPECTED_SEND" "$(sends)"
+
+# Window names can contain spaces; the pane list is tab-delimited so they survive.
+out="$(FAKE_WINDOW="auto-two words" gated)"
+assert_eq "opted-in name with a space still opts in" "$EXPECTED_SEND" "$(sends)"
+
+# Env overrides the file directive, so a different prefix can opt a window in.
+out="$(FAKE_WINDOW="ci-run" TMUX_RESUME_OPTIN_PREFIX="ci-" gated)"
+assert_eq "env prefix overrides the file directive" "$EXPECTED_SEND" "$(sends)"
+
+# Set-but-empty must FAIL CLOSED. `${VAR:-default}` would treat it as unset and
+# silently restore `auto-`, i.e. keep sending after being told to stop.
+out="$(FAKE_WINDOW="auto-test" TMUX_RESUME_OPTIN_PREFIX="" gated)"
+assert_eq "empty prefix disables sending, does not match everything" "" "$(sends)"
+assert_eq "empty prefix reports no prefix" "yes" \
+  "$([[ "$out" == *"<none>"* ]] && echo yes || echo no)"
+
+echo "== directive lines are not pattern rows =="
+# A directive has no " | ", so the row parser would read the whole line as both
+# name and regex — turning any pane that displays the directive text into a
+# match. It is skipped instead; this pane must stay untouched.
+reset_state
+printf '%s\n' 'TMUX_RESUME_OPTIN_PREFIX=auto-' > "$T/directive.txt"
+out="$(FAKE_CAPTURE="$T/directive.txt" TMUX_RESUME_DETECT_COOLDOWN_HOURS=0 "$T/tmux-resume-test" 2>&1)"
+assert_eq "directive text in a pane does not match" "yes" \
+  "$([[ "$out" != *MATCH* ]] && echo yes || echo no)"
+assert_eq "directive text in a pane sends nothing" "" "$(sends)"
 
 echo "== false-positive guards =="
 reset_state
