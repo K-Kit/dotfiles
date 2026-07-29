@@ -2,13 +2,13 @@
 
 ## Irreversible — never do these
 
-- **Deleting files**: prefer `archive/` > `trash` (macOS) > `rm`. Never `rm -rf` unless explicitly asked.
-- **Destructive git**: never `git checkout --`, `git reset --hard`, `git clean -fd` — ask first.
-- **Stashes**: verify with `git stash show -p stash@{N}` before dropping; prefer `git stash apply` over `pop`. A stash whose restore failed under the sandbox is intact — retry with `dangerouslyDisableSandbox: true`.
+- **Deleting files**: prefer `archive/` > `trash` > `rm`. Never `rm -rf` unless asked.
+- **Stashes**: the stack is shared across worktrees. `stash push -u -m '<tag>'`, `apply <sha>`, never `pop`; `stash show -p` before dropping. A restore that failed under the sandbox is intact — retry with `dangerouslyDisableSandbox: true`.
 - **Secrets**: never commit API keys, tokens, credentials.
-- **Edit races**: if `Edit` fails with "file modified since read", re-read and retry — never fall back to `Write` over the whole file.
-- **`git add -A`**: never in-sandbox — it stages the mask artifacts described below. Use explicit pathspecs.
-- **`sys.path.insert`** crashes the Claude Code session; safe pattern in `rules/coding-conventions.md`.
+- **Edit races**: `Edit` failing with "file modified since read" means re-read and retry, never `Write` over the file.
+- **`git add -A`**: never in-sandbox — it stages the mask artifacts below. Use explicit pathspecs.
+
+Enforced by hook, not by this file: `block_destructive_git.sh` (`reset --hard`, `checkout -- <path>`, `clean -f`, bare `stash`, `stash pop`), `nudge_syspath.sh` (`sys.path.insert` crashes the session).
 
 ## Sandbox failure modes
 
