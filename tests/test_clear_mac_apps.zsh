@@ -304,6 +304,52 @@ check     "the quit is refused"            "$OUT" "capped at close"
 check_not "and Chrome is not quit"         "$OUT" "Quitting Google Chrome"
 unset STUB_CHROME_TABS_2 STUB_CHROME_CALLS
 
+# The exit status is a contract with hide-idle-apps' escalate(), which gives an
+# app its rung back on nonzero. main() used to end with `(( ${#slow_quit_set} >
+# 0 )) && echo ...`, so the status reported whether the CONFIG listed a `slow:
+# true` app - nothing to do with the run. That made the give-back a coin flip
+# decided by one YAML line: with Spark Desktop present it was always 0 (a failed
+# close still advanced to the quit rung), and without it always 1 (no app ever
+# reached quit). test_hide_idle_apps.zsh's test 20 pins the give-back against a
+# stub with a settable code, so only a check here can catch the real thing.
+print -r -- "16. the exit status reports the run, not the config's shape"
+export STUB_APP_LIST="Bear|net.shinyfrog.bear
+"
+# Earlier tests leave these set - window count at 0 (an app with no windows is
+# closed by doing nothing, which would make the failure case below vacuous) and
+# the AX return code at 1 (which would make the success cases fail). State that
+# leaks between tests is exactly how a check stops testing what it claims to.
+export STUB_WINDOW_COUNT=2 STUB_AX_RC=0
+: > "$AXCAP"   # forget which apps were probed, so the AX path runs again
+CONFIG_NO_SLOW="defaults:
+  manual: quit
+  auto: quit
+apps:
+  Bear: {manual: close}"
+CONFIG_WITH_SLOW="$CONFIG_NO_SLOW
+  Spark Desktop: {slow: true}"
+
+print -r -- "$CONFIG_NO_SLOW" > "$ROOT/config/app-lifecycle.yaml"
+run --only Bear
+check "a clean close exits 0 with no slow app in the config" "$(( RC == 0 ))" "1"
+
+print -r -- "$CONFIG_WITH_SLOW" > "$ROOT/config/app-lifecycle.yaml"
+run --only Bear
+check "and still exits 0 once a slow app is listed"          "$(( RC == 0 ))" "1"
+
+# AX click fails, so it falls back to keystrokes; the stub answers those with
+# nothing, which is not evidence the windows went away. Exported, because the
+# stub reads it from the environment two processes down.
+export STUB_AX_RC=1
+run --only Bear
+check "a close that left windows behind exits non-zero"      "$(( RC != 0 ))" "1"
+check "and says which app"                                   "$OUT" "Bear still has windows"
+
+print -r -- "$CONFIG_NO_SLOW" > "$ROOT/config/app-lifecycle.yaml"
+run --only Bear
+check "failure is reported without a slow app too"           "$(( RC != 0 ))" "1"
+unset STUB_AX_RC
+
 # --- a broken config stops us dead -----------------------------------------
 # The default action here is "quit", so a config we cannot read must abort
 # rather than fall back to defaults and quit everything.

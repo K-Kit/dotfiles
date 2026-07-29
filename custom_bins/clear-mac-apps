@@ -122,6 +122,7 @@ slow_quit_and_wait() {
         fi
     done
     echo "  Warning: $app still running after 30s, moving on"
+    return 1
 }
 
 # Close all windows of an app without quitting
@@ -250,6 +251,7 @@ close_app_windows() {
 close_app_windows_keystroke() {
     local app="$1"
     local patience="${2:-3}"
+    local remaining=""
     # Use Cmd+W via System Events - works for Electron apps and others
     # that don't respond to standard AppleScript window commands.
     #
@@ -258,7 +260,12 @@ close_app_windows_keystroke() {
     # (no progress after `patience` attempts), escalate to Cmd+Shift+W, which
     # closes the whole window at once. If that also stalls, give up.
     # Overall bound: max 20 attempts.
-    osascript -e "
+    #
+    # Report the count left behind rather than swallowing it. hide-idle-apps
+    # advances an app's rung *before* calling here and only gives the rung back
+    # on a nonzero status, so a `|| true` here would start the quit clock for an
+    # app whose windows are still open - the one case that must not happen.
+    remaining=$(osascript -e "
         tell application \"System Events\"
             tell process \"$app\"
                 set frontmost to true
@@ -289,9 +296,14 @@ close_app_windows_keystroke() {
                     end if
                     set lastCount to currentCount
                 end repeat
+                return (count of windows) as text
             end tell
         end tell
-    " 2>/dev/null || true
+    " 2>/dev/null) || return 1
+    # An empty reply means osascript succeeded but told us nothing, which is not
+    # evidence the windows went away - treat it as failure, like every other
+    # unreadable signal in this pair of scripts.
+    [[ "$remaining" == 0 ]]
 }
 
 # Get the title of a (non-Chrome) app's frontmost window, best-effort
@@ -622,6 +634,12 @@ main() {
         return 0
     fi
 
+    # Counts actions that did not do what they said. main()'s exit status is a
+    # contract with hide-idle-apps' escalate(), which gives an app its rung back
+    # on nonzero - so this has to mean "something failed", not whatever the last
+    # line of the function happened to evaluate to.
+    local -i failures=0
+
     # Quit apps in parallel (don't need focus)
     if (( ${#apps_to_quit} > 0 )); then
         echo "Quitting ${#apps_to_quit} apps in parallel..."
@@ -631,36 +649,48 @@ main() {
         wait
     fi
 
-    # Hides in parallel: nothing here needs focus either.
+    # Hides in parallel: nothing here needs focus either. `wait` with no
+    # arguments discards every job's status, so collect the PIDs and wait on
+    # each one - otherwise a failed hide is indistinguishable from a clean run.
     if (( ${#apps_hide} > 0 )); then
         echo "Hiding ${#apps_hide} apps in parallel..."
+        local -a hide_pids=()
         for app in "${apps_hide[@]}"; do
             hide_app "$app" &
+            hide_pids+=($!)
         done
-        wait
+        local pid
+        for pid in "${hide_pids[@]}"; do
+            wait "$pid" || failures+=1
+        done
     fi
 
     # Sequential, because the keystroke fallback needs focus and two of those in
     # parallel would fight over it. The AX path itself needs no focus.
     for app in "${apps_close_windows[@]}"; do
         echo "Closing windows: $app"
-        close_app_windows "$app" 3
+        close_app_windows "$app" 3 || { echo "  Warning: $app still has windows"; failures+=1; }
     done
 
     # Slow-quit apps in parallel: send quit, then poll each until exit (max 30s each).
     # No focus needed (System Events polling is name-based), so safe to background.
     if (( ${#apps_slow_quit} > 0 )); then
         echo "Quitting (slow) ${#apps_slow_quit} apps in parallel..."
+        local -a slow_pids=()
         for app in "${apps_slow_quit[@]}"; do
             slow_quit_and_wait "$app" &
+            slow_pids+=($!)
         done
-        wait
+        local slow_pid
+        for slow_pid in "${slow_pids[@]}"; do
+            wait "$slow_pid" || failures+=1
+        done
     fi
 
     # Selective-close: close non-protected windows, keep app alive
     for app in "${apps_selective_close[@]}"; do
         echo "Selective-close: $app"
-        close_app_selectively "$app" "${protected_patterns[@]}"
+        close_app_selectively "$app" "${protected_patterns[@]}" || failures+=1
     done
 
     echo ""
@@ -669,6 +699,12 @@ main() {
     (( ${#hide_only_set} > 0 )) && echo "  Hide-only: ${(k)hide_only_set}"
     (( ${#close_windows_set} > 0 )) && echo "  Close-windows: ${(k)close_windows_set}"
     (( ${#slow_quit_set} > 0 )) && echo "  Slow-quit: ${(k)slow_quit_set}"
+
+    # Explicit, because the four lines above are `(( cond )) && echo` and the
+    # last one's condition would otherwise become this script's exit status -
+    # i.e. "does the config list a slow: true app", which is not a result.
+    (( failures > 0 )) && echo "  Failed actions: $failures"
+    return $(( failures > 0 ))
 }
 
 main "$@"
