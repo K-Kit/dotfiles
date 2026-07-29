@@ -2,7 +2,7 @@
 
 Reference for every component `deploy.sh` deploys, with the non-obvious rationale for each. Read this when adding, debugging, or disabling a deploy component; the full mechanics live in the matching `deploy_*()` function in [`../deploy.sh`](../deploy.sh).
 
-Per-component subtleties (symlink vs copy, merge behaviour, key gotchas) are tabulated in [`../CLAUDE.md`](../CLAUDE.md) under *Important Behaviors*.
+Per-component subtleties are tabulated under [Per-Component Behaviors](#per-component-behaviors) below. Two of them — the Obsidian manual-promotion rule and the per-project secrets model — stay inline in [`../CLAUDE.md`](../CLAUDE.md) because getting them wrong destroys data.
 
 Each component in `deploy.sh` is deployed with inline logic or helper functions:
 
@@ -37,3 +37,38 @@ Each component in `deploy.sh` is deployed with inline logic or helper functions:
 - Package auto-update - Weekly upgrade + cleanup (Sunday 5 AM, brew/apt/dnf/pacman, launchd/cron)
 - Package manager configs - Global npmrc, bunfig.toml, pnpm rc, uv.toml with 7-day min-release-age + ignore-scripts (symlinked)
 - Dependency audit - Weekly scan for known-bad packages across all repos (Sunday 10 AM, launchd/cron)
+
+## Per-Component Behaviors
+
+Subtleties worth knowing per component. Full mechanics live in the matching `deploy_*()` function in [`../deploy.sh`](../deploy.sh).
+
+| Component | Mechanism | Key gotcha |
+|-----------|-----------|------------|
+| **Gist Sync** (`deploy_secrets`) | Bidirectional sync of `~/.ssh/config`, `authorized_keys`, `config/user.conf` with gist `3cc239...371`. `authorized_keys` uses **disable-wins union merge** (local is always the canonical base; whole-line-commented keys are tombstones that suppress that key everywhere even if the gist still lists it active); `~/.ssh/config` and `user.conf` use last-modified-wins. Daily 8 AM (launchd/cron). | Requires `gh auth login`. Manual: `sync-gist`. Runs before git config (user.conf provides identity). Merge logic in `scripts/shared/merge_authorized_keys.py`; active convention `<type> <blob> [## note]`, disable convention `# <type> <blob>` under `# --- Disabled / pending deletion ---`. |
+| **Git Config** (`deploy_git_config`) | Reads `config/user.conf`; prompts on conflicts. Deploys split ignores: `~/.gitignore_global` (git, broad), `~/.ignore_global` (ripgrep, narrow), `~/.config/fd/ignore` (fd). Result: git ignores `data/`/`archive/`, but search tools can still see them. | `fd` has no `--no-ignore-global` flag — use `fd -I` to traverse research dirs. |
+| **Editor Settings** (`deploy_editor_settings`) | Merges into VSCode/Cursor/Antigravity settings (no overwrite, existing wins). Auto-installs 38 curated extensions from `vscode_extensions.txt`. | Antigravity CLI at `/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity`. |
+| **Zed** | Symlinks `config/zed/{settings,keymap}.json` → `~/.config/zed/`. Searches gitignored files by default. | SSH hosts read from `~/.ssh/config` (gist-synced). Cmd+K overrides Zed's chord prefix → inline AI edit. |
+| **Finicky, Ghostty** | Symlinked to fixed paths (the Ghostty path is platform-specific). Existing files backed up with a timestamp. | Ghostty needs a reload (Cmd+Shift+Comma) after a config change. |
+| **Plotting + matplotlib** (`--matplotlib`) | **Copies** Python modules to `~/.local/lib/plotting/` (isolation); **symlinks** `.mplstyle` files to `~/.config/matplotlib/stylelib/` (live updates). PYTHONPATH set in zshrc. | Python module updates require re-running `deploy.sh --matplotlib`. Default style: `anthropic`. |
+| **File Associations** (`--file-apps`) | Reads `config/macos_default_apps.conf`, compiles `tools/set-default-app/main.swift` (cached), calls the deprecated `LSSetDefaultRoleHandlerForContentType` (still works on Sequoia). The same conf drives `$EDITOR`/`$VISUAL`. | macOS only. Linux would need `xdg-mime` (not implemented). |
+| **Claude Code** (smart merge) | Symlinks `claude/` → `~/.claude/`. If `~/.claude/` predates dotfiles it is backed up to `~/.claude.backup.<ts>`, then runtime files are restored: `.credentials.json`, `history.jsonl`, `cache/`, `projects/`, `plans/`, `todos/`, `mcp_servers.json`. | Works whether `install.sh` or `deploy.sh` runs first. |
+
+## Cloud Environments
+
+The standard directory structure works transparently on RunPod/cloud via symlinks created by `scripts/cloud/setup.sh`. `setup.sh` runs the lean **`cloud` profile** (`install.sh --profile=cloud` / `deploy.sh --profile=cloud`) — `server` minus pueue, zotero MCP, Rust extras, and Docker; it keeps the modern CLI tools, uv, gh, claude, and codex.
+
+It provisions the **`main` branch by default**; pin another with `--branch <name>` (env `DOTFILES_BRANCH`), e.g. `curl … | bash -s -- --branch yulong`. `setup.sh` is **always fetched from `main`** (one canonical bootstrap URL); `--branch` only chooses which branch is cloned on the box. `provision.py --branch yulong` likewise fetches `setup.sh` from main and passes `--branch yulong` through to the clone. The active branch is printed in the setup banner.
+
+gh is installed current (Linux: the official `cli.github.com` apt repo with sudo, else a release binary), not jammy's 2.4.0, so `gh auth login --git-protocol ssh` works.
+
+## Extending
+
+**New alias** — general ones go in the matching themed split in `config/aliases/<topic>.sh` (sourced by `zshrc.sh`'s `aliases/*.sh` loop); environment-specific ones go in `config/aliases_<name>.sh` and deploy with `./deploy.sh --aliases=<name>`.
+
+**New dependency** — add to `install.sh` with OS detection (`is_macos`/`is_linux`), and add a feature flag if it is optional (e.g. `--extras`, `--experimental`). Update the defaults at the top of `install.sh` if it should be included by default.
+
+**New deployment component** — create a `deploy_X()` function in `deploy.sh`, add flag parsing in the `while` loop, call the function in the appropriate section (symlink/copy/append), then update the help text and defaults.
+
+**New custom binary** — add the script to `custom_bins/` (automatically on PATH) and `chmod +x` it.
+
+**Code style** — 2-space indentation in shell scripts; use the `backup_file()` helper for anything destructive. General language conventions live in `~/.claude/rules/coding-conventions.md`.
