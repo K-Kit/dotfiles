@@ -14,7 +14,7 @@ This setup reflects workflows optimized for ML research: reproducibility, experi
 
 > Originally forked from [jplhughes/dotfiles](https://github.com/jplhughes/dotfiles) - thanks John for the solid foundation!
 
-> **AI agents working here:** start with [`CLAUDE.md`](./CLAUDE.md) — it has a Quick Reference, deploy-component table, and operational gotchas. This README is human-oriented onboarding; CLAUDE.md is the operational doc.
+> **AI agents working here:** start with [`CLAUDE.md`](./CLAUDE.md) — top rules, a common-tasks table, and pointers into [`docs/deploy-components.md`](./docs/deploy-components.md) (deploy behavior, cloud, extending) and [`docs/tooling-and-packages.md`](./docs/tooling-and-packages.md) (packages, symlink-vs-copy, gotchas). This README is human-oriented onboarding; CLAUDE.md is the operational doc.
 
 ## Quickstart
 
@@ -226,7 +226,7 @@ This setup includes extensive [Claude Code](https://docs.anthropic.com/en/docs/c
 
 **What's included:**
 
-- **`CLAUDE.md`** — Slim identity file (~120 lines) pointing at modular rules and docs
+- **`CLAUDE.md`** — Slim identity file (~55 lines) pointing at modular rules and docs
 - **`rules/`** — 19 auto-loaded behavioral rules (safety, git, agents, refusal alternatives, supply-chain, browser automation, etc.)
 - **`docs/`** — On-demand knowledge loaded by skills (research methodology, async patterns, tmux, agent teams)
 - **`agents/`** — Personal agents (kept lean — most specialized agents live in plugins like `ai-safety-plugins`)
