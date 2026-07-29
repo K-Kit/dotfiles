@@ -434,8 +434,13 @@ main() {
             hide_min="$ALC_DEFAULT_HIDE_AFTER";  close_min="$ALC_DEFAULT_CLOSE_AFTER"
             quit_min="$ALC_DEFAULT_QUIT_AFTER"
         fi
+        # exclude_set is built from ALC_APP_KEYS, so it can only ever hold apps
+        # the config names. `defaults.auto: skip` reaches an unlisted app here
+        # and nowhere else - without this it was hidden despite resolving to skip.
+        [[ "$auto" == skip ]] && continue
+
         # How far up the ladder this app may go. `manual:` caps the destructive
-        # rungs only - hiding got its say via `auto: skip` in exclude_set above.
+        # rungs only - hiding got its say via `auto: skip` just above.
         rank_m=$(rank_action "$manual"); rank_a=$(rank_action "$auto")
         ceiling=$(( rank_m < rank_a ? rank_m : rank_a ))
 

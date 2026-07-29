@@ -83,7 +83,15 @@ case "$script" in
         # whether a capped run can still reach a quit.
         if [[ -n "${STUB_CHROME_CALLS:-}" ]]; then
             print -rn -- x >> "$STUB_CHROME_CALLS"
-            if [[ -n "${STUB_CHROME_TABS_2:-}" && "$(cat "$STUB_CHROME_CALLS")" != x ]]; then
+            calls="$(cat "$STUB_CHROME_CALLS")"
+            # Read 3 is pass 2's post-close verification. Reads 2 and 3 answering
+            # alike would make a closed target indistinguishable from a stuck one,
+            # so the verification could never be observed to pass.
+            if [[ -n "${STUB_CHROME_TABS_3:-}" && ${#calls} -ge 3 ]]; then
+                print -rn -- "$STUB_CHROME_TABS_3"
+                exit 0
+            fi
+            if [[ -n "${STUB_CHROME_TABS_2:-}" && "$calls" != x ]]; then
                 print -rn -- "$STUB_CHROME_TABS_2"
                 exit 0
             fi
@@ -444,6 +452,72 @@ run --only Bear
 check     "the idle job's run still exits non-zero" "$(( RC != 0 ))" "1"
 check_not "and does not notify"                     "$(cat "$STUB_NOTIFY_LOG")" "display notification"
 unset STUB_AX_RC STUB_NOTIFY_LOG
+
+# --- defaults.manual reaches apps the config never names -------------------
+# Test 6 pins the `quit` default, which is also what an unlisted app got when
+# the dispatch ignored defaults.manual entirely - so it cannot tell the two
+# apart. These two configs can: under them, quitting Safari is the bug.
+print -r -- "20. an unlisted app takes whatever defaults.manual says"
+export STUB_APP_LIST="Ghostty|com.mitchellh.ghostty
+Safari|com.apple.Safari
+"
+print -r -- "defaults:"$'\n'"  manual: close"$'\n'"apps:"$'\n'"  Ghostty: {manual: skip}" \
+    > "$ROOT/config/app-lifecycle.yaml"
+run --dry-run
+check     "a close default closes it"      "$OUT" "Would CLOSE WINDOWS (1):
+  - Safari"
+check     "and quits nothing"              "$OUT" "Would QUIT (0):"
+check     "a named app keeps its own value" "$OUT" "Would SKIP (no-touch):
+  - Ghostty"
+
+# The mirror of the bug above, and the one the first fix introduced. Only the
+# skip/hide/close apps get their own bucket, so a listed app whose `manual:` is
+# an explicit `quit` reaches the same fallback an unlisted app does - and reading
+# defaults.manual there unconditionally let a gentler default overrule it.
+print -r -- "defaults:"$'\n'"  manual: close"$'\n'"apps:"$'\n'"  Safari: {manual: quit}" \
+    > "$ROOT/config/app-lifecycle.yaml"
+run --dry-run
+check     "an explicit quit outranks a gentler default" "$OUT" "Would QUIT (1):
+  - Safari"
+check     "and is not downgraded to close"              "$OUT" "Would CLOSE WINDOWS (1):
+  - Ghostty"
+
+print -r -- "defaults:"$'\n'"  manual: skip"$'\n'"protect_windows:"$'\n'"  - Google Meet" \
+    > "$ROOT/config/app-lifecycle.yaml"
+run --dry-run
+check     "a skip default touches nothing" "$OUT" "Would QUIT (0):"
+check     "not even to close"              "$OUT" "Would CLOSE WINDOWS (0):"
+check     "both apps are skipped"          "$OUT" "Would SKIP (no-touch):
+  - Ghostty
+  - Safari"
+
+# Test 18 covers the branch taken when NO window is worth keeping, which returns
+# before pass 2 ever runs - so the ID-close itself went unchecked. It ended with a
+# bare `|| true` and returned 0 whatever happened. The idle caller reads 0 as "the
+# close rung completed" and keeps the `closed` phase it wrote before the call, so a
+# window that never closed is quit by quit_after instead of being retried.
+print -r -- "21. pass 2 reports whether the targeted windows actually closed"
+cp "$REPO/config/app-lifecycle.yaml" "$ROOT/config/app-lifecycle.yaml"
+export STUB_APP_LIST="Google Chrome|com.google.Chrome
+"
+export STUB_CHROME_CALLS="$WORK/chrome.calls"
+# Both windows are still there at the rescan, so pass 2 runs for real: window 2 is
+# protected, window 1 is the target. Test 15 drops the protected tab instead, which
+# is why it lands in the other branch.
+export STUB_CHROME_TABS_2="1|Inbox (3) - Gmail
+2|Google Meet - standup
+"
+export STUB_CHROME_TABS_3="2|Google Meet - standup
+"
+run --only "Google Chrome" --max-action close
+check     "a closed target exits 0"            "$(( RC == 0 ))" "1"
+check_not "and the protected window survives"  "$OUT" "Quitting Google Chrome"
+
+# Same path, target still open on the verification read.
+export STUB_CHROME_TABS_3="$STUB_CHROME_TABS_2"
+run --only "Google Chrome" --max-action close
+check     "a target left open exits non-zero"  "$(( RC != 0 ))" "1"
+unset STUB_CHROME_TABS_2 STUB_CHROME_TABS_3 STUB_CHROME_CALLS
 
 # --- a broken config stops us dead -----------------------------------------
 # The default action here is "quit", so a config we cannot read must abort

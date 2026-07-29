@@ -1669,6 +1669,15 @@ parse_args() {
     _only_components=()
     local _only_mode=false
 
+    # Components the user named with an explicit `--no-<x>`. A component that must
+    # UNINSTALL when deselected cannot read DEPLOY_<X>=false to decide that:
+    # --only and --minimal set every other component false too, so an unrelated
+    # `--only vim` would tear down installed jobs it never mentioned. "Not
+    # selected" and "explicitly refused" are different questions; this answers
+    # the second. Names are uppercased with underscores, as DEPLOY_<X> is.
+    typeset -ga EXPLICIT_OPT_OUTS
+    EXPLICIT_OPT_OUTS=()
+
     while (( $# )); do
         case "$1" in
             -h|--help)
@@ -1770,6 +1779,7 @@ parse_args() {
                 component="${component//-/_}"  # dashes to underscores
                 typeset -g "INSTALL_${component}=false"
                 typeset -g "DEPLOY_${component}=false"
+                EXPLICIT_OPT_OUTS+=("$component")
                 ;;
             --*)
                 if [[ "$_only_mode" == true ]]; then

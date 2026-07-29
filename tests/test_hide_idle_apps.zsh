@@ -493,6 +493,35 @@ run 0 --dry-run
 check "the gate is named as busy"          "$OUT" "-> close busy"
 unset STUB_HID_IDLE_NS
 
+# --- 23. defaults.auto reaches apps the config never names -----------------
+# Codex P2. Test 17 covers `auto: skip` on a LISTED app, which is caught by
+# exclude_set - and exclude_set is built from ALC_APP_KEYS, so it structurally
+# cannot hold an unlisted one. Telegram is unlisted, and test 4 already proves
+# this same seeding hides it - so under a skip default, hiding it is exactly the
+# bug the exclude_set test can never see.
+print -r -- "23. defaults.auto: skip protects an app the config never names"
+cp "$ROOT/config/app-lifecycle.yaml" "$WORK/alc.bak"
+{
+    print -r -- "defaults:"
+    print -r -- "  manual: quit"
+    print -r -- "  auto: skip"
+    print -r -- "  hide_after: 15"
+    print -r -- "  close_after: 15"
+    print -r -- "  quit_after: 30"
+    print -r -- "  user_idle: 5"
+    print -r -- "  min_visible_percent: 40"
+    print -r -- "apps:"
+    print -r -- "  Numbers: {manual: skip}"   # a listed app the stub never runs
+} > "$ROOT/config/app-lifecycle.yaml"
+rm -rf "$FAKEHOME/.cache"; seed_state 60
+run 0
+check_not "the unlisted app is not hidden"  "$(cat "$STUB_HIDE_LOG")" "unix id is 102"
+# Bare "Hid:", not "Hid: Telegram" - hid_names is space-joined, so naming one app
+# only matches when it happens to sort first. Under a skip default nothing at all
+# should be hidden, which is both the stronger claim and the order-free one.
+check_not "and nothing is reported hidden"  "$OUT" "Hid:"
+cp "$WORK/alc.bak" "$ROOT/config/app-lifecycle.yaml"
+
 print -r -- ""
 print -r -- "PASS=$PASS FAIL=$FAIL"
 (( FAIL == 0 )) || exit 1

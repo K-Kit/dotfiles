@@ -439,13 +439,38 @@ close_app_selectively() {
     script+='end tell'
     osascript -e "$script" 2>/dev/null || true
 
+    # Verify rather than assume. The idle caller pre-writes the `closed` phase
+    # and gives the rung back only on a non-zero exit, so an unverified 0 here
+    # advances an app whose windows are still open - and quit_after later quits
+    # it. Re-read the window list: it answers both "did the targets go?" and the
+    # zombie check below, so it also replaces a second osascript round-trip.
+    # Not re-declared as local: both names already exist from pass 1, and zsh
+    # leaves TYPESET_SILENT unset, so a valueless `local` would print them.
+    # Captured, not piped from a process substitution, whose exit status is
+    # discarded: a rescan that FAILED would then arrive as an empty list, which
+    # is indistinguishable from "every window closed" - and the zombie check
+    # below reads that as licence to quit an app whose protected windows are all
+    # still open. An unreadable rescan is not evidence, so report the close as
+    # failed and leave the app alone.
+    local rescan=""
+    rescan=$(get_chrome_window_tabs) || return 1
+
+    typeset -A still_open
+    while IFS='|' read -r wid title; do
+        [[ -z "$wid" ]] && continue
+        still_open[$wid]=1
+    done <<< "$rescan"
+
+    local stuck=0
+    for wid in "${ids_to_close[@]}"; do
+        (( ${+still_open[$wid]} )) && stuck=$(( stuck + 1 ))
+    done
+
     # Zombie check: if 0 windows remain after close, quit the app
-    local remaining
-    remaining=$(osascript -e 'tell application "Google Chrome" to return count of windows' 2>/dev/null || echo "")
-    if [[ "$remaining" == "0" ]]; then
+    if (( ${#still_open} == 0 )); then
         quit_app_capped "$app"
     fi
-    return 0
+    return $(( stuck > 0 ))
 }
 
 # Self-heal the Safari web app registry: regenerate if missing or >24h stale.
@@ -569,6 +594,25 @@ main() {
         fi
     }
 
+    # An app absent from `apps:` gets `defaults.manual:`, exactly as a listed one
+    # gets its own value. Falling straight through to a quit made the default a
+    # lie in the safe direction - `defaults.manual: close` still quit every
+    # unlisted app - but reading the default unconditionally is the mirror bug.
+    # The three sets above hold only the skip/hide/close apps, so a listed app
+    # whose `manual:` is an explicit `quit` also lands here, and a gentler
+    # default would silently overrule it. The app's own value wins; the default
+    # applies only where the config genuinely never named it. Only `quit` needs
+    # push_quit's slow-modifier lookup.
+    push_default() {
+        local action="${ALC_MANUAL[${(L)1}]:-$ALC_DEFAULT_MANUAL}"
+        case "$action" in
+            skip)  apps_skipped+=("$1") ;;
+            hide)  apps_hide+=("$1") ;;
+            close) apps_close_windows+=("$1") ;;
+            *)     push_quit "$1" "$2" ;;
+        esac
+    }
+
     for entry in "${running_entries[@]}"; do
         local app="${entry%%${SEP}*}"
         local bid="${entry#*${SEP}}"
@@ -580,8 +624,10 @@ main() {
             apps_hide+=("$app")
         elif (( ${+close_windows_set[$app_lower]} )) || { [[ -n "$bid" ]] && (( ${+close_windows_bids[$bid]} )) }; then
             apps_close_windows+=("$app")
-        elif (( ${#protected_patterns} > 0 )); then
-            # Check if this app has any protected windows
+        elif (( ${#protected_patterns} > 0 )) && [[ "$ALC_DEFAULT_MANUAL" == (close|quit) ]]; then
+            # Check if this app has any protected windows. Skipped entirely for
+            # a skip/hide default, which touches no window and so has nothing to
+            # protect - the check costs an AppleScript round-trip per app.
             local has_protected=false
             if [[ "$app" == "Google Chrome" ]]; then
                 # Chrome: check all tab titles (only fetch once, cache result)
@@ -613,10 +659,10 @@ main() {
             if $has_protected; then
                 apps_selective_close+=("$app")
             else
-                push_quit "$app" "$bid"
+                push_default "$app" "$bid"
             fi
         else
-            push_quit "$app" "$bid"
+            push_default "$app" "$bid"
         fi
     done
 

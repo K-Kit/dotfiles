@@ -15,9 +15,23 @@ HELPER_BIN="$DOT_DIR/tools/window-exposure/window-exposure"
 source "$DOT_DIR/scripts/scheduler/scheduler.sh"
 
 JOB_ID="hide-idle-apps"
+# The FILE is authoritative for the installed job, and an inherited
+# HIDE_IDLE_POLL_SECONDS is deliberately not honoured here.
+#
+# It cannot be: launchd's ProgramArguments is a bare argv with no shell and no
+# environment of ours, so an override would set the plist's StartInterval and
+# never reach the job. hide-idle-apps would re-read this file, get 60, derive
+# MAX_GAP=180, and then read every 300s wake as a skipped interval - resetting
+# every app's timers on each poll, so the automation would never act at all.
+# One value both the plist and the runtime can see is the only safe kind.
+_poll_override="${HIDE_IDLE_POLL_SECONDS:-}"
 HIDE_IDLE_POLL_SECONDS=60
 # shellcheck source=/dev/null
 [[ -f "$TUNABLES_CONF" ]] && source "$TUNABLES_CONF"
+if [[ -n "$_poll_override" && "$_poll_override" != "$HIDE_IDLE_POLL_SECONDS" ]]; then
+    _sched_log_warn "Ignoring HIDE_IDLE_POLL_SECONDS=$_poll_override from the environment:"
+    _sched_log_warn "it cannot reach a launchd job. Set HIDE_IDLE_POLL_SECONDS in $TUNABLES_CONF instead."
+fi
 
 uninstall() { unschedule "$JOB_ID" 2>/dev/null || true; }
 
