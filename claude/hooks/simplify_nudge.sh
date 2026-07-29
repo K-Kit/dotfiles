@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Stop hook: if a code file changed this turn (marked by
-# simplify_mark_dirty.sh), nudge Claude via additionalContext to run the
-# simplify skill before finishing. Soft nudge only — never blocks the stop.
+# simplify_mark_dirty.sh), surface a systemMessage suggesting a simplify pass.
+# Soft nudge only — never blocks the stop.
 #
-# stop_hook_active guard: additionalContext keeps the conversation going
-# through the same loop protections as decision:block, so without this guard
-# a simplify pass that itself edits code would re-mark the session dirty and
-# re-trigger the nudge on the next Stop check.
+# systemMessage, not additionalContext, and deliberately so. additionalContext
+# forces the turn to continue, which made every code-writing turn pay for an
+# extra pass whether or not the code needed one — the "harness scaffolding that
+# adds a separate pass" pattern current models are explicitly worse off for.
+# A systemMessage puts the suggestion in front of the user and stops there.
+#
+# Because nothing continues the turn, the stop_hook_active guard this hook used
+# to carry is moot: a simplify pass can no longer re-mark the session dirty and
+# re-trigger itself on the next Stop check. Don't reinstate it with the message
+# type as-is.
 set -euo pipefail
 
 INPUT=$(cat)
@@ -18,15 +24,9 @@ MARKER="${TMPDIR:-/tmp}/claude-simplify-dirty-${SESSION_ID}"
 [ -f "$MARKER" ] || exit 0
 rm -f "$MARKER" 2>/dev/null || true
 
-STOP_HOOK_ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || exit 0
-[[ "$STOP_HOOK_ACTIVE" == "true" ]] && exit 0
-
 cat <<'HOOK_EOF'
 {
-  "hookSpecificOutput": {
-    "hookEventName": "Stop",
-    "additionalContext": "Code was written this turn — consider running the simplify skill (Skill tool, skill: \"simplify\") on the changed files before finishing."
-  }
+  "systemMessage": "Code changed this turn — `/simplify` will run a quality pass over the changed files if it's worth one."
 }
 HOOK_EOF
 exit 0
