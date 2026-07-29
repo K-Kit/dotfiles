@@ -1,169 +1,27 @@
-# Agents & Delegation Rules
+# Agents & Delegation
 
-## Subagent Strategy
+## Spawn Fewer Than You Want To
 
-**Default: delegate, not do.** Prevent context pollution by letting agents summarize.
+Current models reach for delegation more readily than the work justifies, so the default is a cap, not an invitation. Delegate for large, genuinely independent, parallelisable tracks — a wide multi-file investigation, several unrelated subsystems. Don't delegate what you can finish in a handful of tool calls yourself, and when one agent can do the job, send one rather than a fleet.
 
-Available agents are listed in Task tool description. Use **PROACTIVELY**:
-
-| Agent | Trigger |
-|-------|---------|
-| `efficient-explorer` | Codebase exploration in large repos (>500 line files) |
-| `code-reviewer` | After ANY implementation — don't wait to be asked |
-| `plan-critic` | Before implementing plans with arch decisions, migrations, auth, concurrency |
-| `codex-reviewer` | After significant implementation, alongside code-reviewer |
-| `performance-optimizer` | Slow code, sequential API calls, missing caching |
-
-**Principles**: Parallelize agents • Be specific • Include size limits in prompts • ASK if unclear
-
-### Concurrent Edit Constraint
-
-**One editor per file.** Never spawn multiple agents to edit the same file.
-
-## Don't Defer Fixes — Delegate in Parallel
-
-**Anti-pattern:** Spot a small, well-scoped bug during a conversation. Say "real bug to file" / "want me to ship it now?" / "5 min fix" / "out of scope." Continue the original task. Fix never lands.
-
-**Rule:** If you can describe the fix in one paragraph and have the root cause, **just delegate it** — don't ask permission, don't backlog it. Spin up a parallel worktree subagent (or tmux Claude Code session for longer iteration) and continue the main task while the fix lands. The user reviews the worktree branch when ready.
-
-| Situation | Action |
-|-----------|--------|
-| Fix needs spec / architecture decisions | Stay inline, surface tradeoffs, get user input |
-| Well-scoped, root cause known | **Worktree subagent** (`isolation: "worktree"`, `run_in_background: true`) — keep working |
-| Needs more iteration than one shot | tmux Claude Code session, briefed with full context |
-| Might not actually be a bug | Confirm one signal first, then delegate or drop |
-
-**Briefing template for the worktree agent:**
-- Repo + paths + line refs
-- Bug + root cause + concrete repro
-- Fix approach (smallest correct change; no surrounding refactoring)
-- Test requirement (covering test + run existing suite)
-- Constraints: don't push, don't merge, don't bump version — user reviews the worktree
-
-**Catch-yourself signals:** "real bug to file" • "5 min fix" • "want me to ship it now?" • "out of scope but worth filing" — skip the question, spawn the worktree agent, continue.
-
-### Worktree Isolation: Use Repo-Relative Paths Only
-
-**`isolation: "worktree"` sets the agent's cwd, but does NOT rewrite paths inside the prompt.** If your prompt contains an absolute path (e.g. `/Users/yulong/code/repo/foo.md`), the agent follows the absolute path and writes to the main tree — silently defeating the isolation.
-
-**Rule:** When briefing a worktree agent, use repo-relative paths only.
-
-| Anti-pattern (breaks isolation) | Correct |
-|---------------------------------|---------|
-| `Write /Users/yulong/code/repo/src/foo.py` | `Write src/foo.py` (cwd is the worktree) |
-| `cd /Users/yulong/code/repo && pytest` | `pytest` (already in worktree) |
-| `Edit ~/.claude/skills/X/SKILL.md` (when worktree is in `~/.claude/`) | `Edit skills/X/SKILL.md` |
-
-**If the path MUST be absolute** (e.g., agent needs to read from a path outside the repo), tell the agent explicitly: "This path is outside the worktree — read only; do not write here."
-
-**Verify after agent completes:** check `git -C <worktree> status` for the expected files. If the worktree is empty and main tree has untracked files matching what the agent claimed to write, the isolation broke.
-
-## Task Delegation Strategy
-
-**Principle:** Skills = workflows you execute, Agents = delegation to external tools.
-
-| Agent | Use Case | Strength |
-|-------|----------|----------|
-| **Task subagent** (general-purpose) | **Default for judgment, exploration, second opinions** | Subscription-billed, fresh context, MCP inherited, parallel via `run_in_background` |
-| **codex-companion** | Codex tasks and reviews (gpt-5.6-sol, ultra reasoning) | Harness-tracked via Monitor tool — survives subagent exit, re-notifies on completion |
-| **core:claude** | Detached/long-running headless work; fresh auth context | tmux-based, survives parent session — **API-billed pool post-June-15, use sparingly** |
-
-### Google Workspace Access
-
-Google Docs/Sheets/Drive/Gmail/Calendar:
-
-| Tool | Use Case | How |
-|------|----------|-----|
-| **gws** (Google Workspace CLI) | Direct API calls — read/write Docs, Sheets, Drive, Gmail, Calendar | `gws docs documents get --id <docId>`, `gws drive files list` — structured JSON output, works from Bash |
-
-```
-Need delegation?
-├─ Google Workspace (read/write)?
-│   ├─ Raw API call (get doc, list files)? → gws via Bash
-├─ Plan needs critique? → code:plan-critic (+ Task subagent in parallel)
-├─ Clear implementation spec/plan? → codex-companion task --write (via Monitor)
-├─ Bug with clear repro? → codex-companion task (+ debugger for investigation)
-├─ Need judgment/taste/exploration? → **Task subagent** (default — subscription)
-│   └─ Detached >5min, fresh auth, or true headless? → core:claude (claude -p, API-billed)
-├─ Code review needed? → code:code-reviewer (+ code:codex-reviewer for significant changes)
-└─ Multi-step workflow? → Use skills
-```
-
-## CLI Agent Delegation Enforcement
-
-**Problem:** `core:claude` agents are Claude instances that can answer directly instead of calling their CLI. Without explicit CLI invocation in the prompt, they sometimes just respond with their own reasoning — defeating the purpose.
-
-**Rule:** When spawning CLI-backed agents, the prompt MUST include the exact Bash command to run.
-
-| Agent | Required prompt pattern |
-|-------|------------------------|
-| `core:gemini-cli` | `You MUST use the Bash tool to run: gemini -p "<prompt>"` |
-| `core:claude` | `You MUST use the Bash tool to run: claude -p --model <model> --permission-mode bypassPermissions "<prompt>"` |
-
-**Anti-pattern** (agent answers directly instead of delegating):
-```
-prompt: "What's the architecture of this codebase?"
-→ Agent writes a text response using its own reasoning ❌
-```
-
-**Correct pattern** (agent delegates to CLI):
-```
-prompt: "You MUST use the Bash tool to run: gemini -p '@src/ Summarize the architecture of this codebase'"
-→ Agent calls Bash with the gemini command ✅
-```
-
-**Diagnostic:** If a CLI agent returns with 0 tool_uses, it failed to delegate — the prompt was too question-like. Rephrase as an explicit CLI command.
-
-## Consuming Agent Results
-
-**Use the returned result directly.** When an Agent tool completes, the result is in the tool response — don't read `.output` files.
-
-| Do this | NOT this |
-|---------|----------|
-| Use the Agent tool's returned result | Read/Search/Grep on `.output` task files |
-| If result feels incomplete, re-invoke with a more specific prompt | Parse raw `.output` files for additional detail |
-| For background agents, use `TaskOutput` or check artifacts on disk | Grep `.output` (produces `[Omitted long matching line]` on long lines) |
-
-## Factual Verification (Never Delegate)
-
-**Problem:** Agents without web search tools answer factual questions confidently from training data, which can be wrong. Delegating "does X exist?" to a general-purpose agent that returns 0 tool_uses means it guessed — and you relayed the guess as fact.
-
-**Rule:** For factual verification ("does tool X have flag Y?", "does library Z support feature W?"), verify using the **most authoritative source** in main context. Never delegate to an agent.
-
-| Verification type | Best source | Fallback | NOT this |
-|-------------------|-------------|----------|----------|
-| Does a CLI flag/feature exist? | `tool --help` / `man tool` | WebSearch | Agent (may lack tools) |
-| Is a library/API claim accurate? | Official docs (Context7) | WebSearch | Agent answering from training data |
-| Current version/release info | `tool --version` / package registry | WebSearch | Agent (stale knowledge) |
-
-**Diagnostic:** If any agent returns with 0 tool_uses on a lookup task, its answer is unverified — do not relay it as fact.
-
-**User experience is strong signal.** If the user says "I've been using X for days," treat that as strong evidence and verify locally (`--help`, test command) rather than contradicting with unverified claims.
-
-## Agent Teams (Escalation)
-
-For multi-agent communication, see `~/.claude/docs/agent-teams-guide.md`.
-
-```
-Task complexity?
-├─ Single focused output? → Subagent (Task tool)
-├─ 2-3 independent outputs? → Parallel subagents
-├─ Parallel + needs inter-agent communication? → Agent Team
-└─ Unclear? → Start with subagents, escalate if needed
-```
+**Never spawn an agent to verify or double-check your own work.** Self-correction already happens without being asked; a verifier agent on top of it burns tokens and latency without buying accuracy. A second opinion is a different thing — that means a different model family and it has its own rule (`rules/second-opinions.md`).
 
 ## Never Run Detached Long-Jobs Inside a Subagent
 
-**Root cause of a real failure (2026-06-15):** the `core:codex` agent launched `codex exec` as a backgrounded/detached process, then its own turn ended. When a subagent exits, any child it detached is orphaned — nothing re-notifies the parent, the job dies or runs to no effect, and the agent falsely reports `completed`. Burned hours, wrote nothing.
+When a subagent's turn ends, any process it backgrounded or detached is orphaned: nothing re-notifies the parent, the job dies or runs to no effect, and the agent reports `completed` anyway. (Real failure, 2026-06-15: `core:codex` backgrounded `codex exec` — burned hours, wrote nothing.) A subagent is not a durable host for background work. Launch long-running jobs from a harness-tracked mechanism that survives the launching context: `codex-companion` via the Monitor tool for Codex work, Bash `run_in_background` from *main* context, or tmux.
 
-**Rule:** A subagent is NOT a durable host for background work. Launch long-running or detached jobs from a **harness-tracked** mechanism that survives the launching context and re-notifies on completion:
+**A `completed` status means the subagent's turn ended, not that its child did anything.** When an agent claims it ran a detached job, check the artifact on disk before relaying success.
 
-| Need | Use (harness-tracked) | NOT |
-|------|----------------------|-----|
-| Codex review/task (gpt-5.6-sol, ultra reasoning) | **codex-companion via the Monitor tool** (`codex-companion task` / `review`) | `core:codex` agent backgrounding `codex exec` |
-| Long shell job (build, train, sweep) | Bash `run_in_background` in **main context**, `tmux`, or Monitor | `&` / `nohup` inside a subagent that then exits |
-| Cloud job to watch (Modal, CI) | Monitor poll-loop, or Bash `run_in_background` in main context | detached process inside a subagent |
+## CLI-Backed Agents Answer Instead of Delegating
 
-**Corollary — verify, don't trust the `completed` status:** when an agent claims it ran a detached job, check the artifact on disk before relaying success (file written? `pgrep` the process? `ls` the output?). A subagent's `completed` means its *turn* ended, not that its detached child did anything.
+`core:claude` and `core:gemini-cli` are Claude instances that will answer from their own reasoning rather than invoke the CLI, unless the prompt contains the literal command: `You MUST use the Bash tool to run: gemini -p "<prompt>"`, or `claude -p --model <model> --permission-mode bypassPermissions "<prompt>"`. A question-shaped prompt gets a text answer, not a delegation. `core:claude` draws on the API-billed pool — use sparingly.
 
-**codex-companion is the standard path for detached Codex work** once `codex login` is done: route backgrounded/long-running Codex jobs through it via the Monitor tool (it persists and re-notifies; a raw `codex exec` inside a subagent does not).
+Never delegate factual verification — `rules/verify-before-instructing.md`.
+
+## Worktree Isolation Breaks on Absolute Paths
+
+`isolation: "worktree"` sets the agent's cwd but does not rewrite paths inside the prompt — an absolute path in the brief sends the agent's writes to the main tree, silently defeating the isolation. Brief worktree agents with repo-relative paths only, and explicitly mark any genuinely-external absolute path read-only. Verify afterwards with `git -C <worktree> status`.
+
+## Agent Results
+
+Use the Agent tool's returned result; don't grep the `.output` file — long lines come back as `[Omitted long matching line]`.

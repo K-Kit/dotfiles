@@ -1,74 +1,23 @@
 # Safety & Git Rules
 
-## Zero Tolerance Rules
+## Irreversible — never do these
 
-| Rule | Consequence |
-|------|-------------|
-| **NEVER delete files** (`rm -rf`) unless explicitly asked | Prefer: `archive/` > `trash` (macOS) > `rm`. Violation → termination |
-| **NEVER use mock data** in production code | Only in unit tests. ASK if data unavailable |
-| **NEVER fabricate information** | Say "I don't know" when uncertain |
-| **NEVER ignore unexpected results** | Surprisingly good/bad → investigate before concluding. A hidden bug is worse than a failed experiment |
-| **NEVER commit secrets** | API keys, tokens, credentials |
-| **NEVER run `git checkout --`** or any destructive Git (e.g. `git reset --hard`, `git clean -fd`): ALWAYS prefer safe, reversible alternatives, and ask the user if best practice is to do so | Can trigger catastrophic, irreversible data loss |
-| **NEVER drop a git stash** without first running `git stash show -p stash@{N}` to verify contents. If a stash/pop partially failed (sandbox), retry with `dangerouslyDisableSandbox: true` — the stash data is fine, only the restore was blocked. Use `git stash apply` (keeps stash) over `git stash pop` (deletes stash) when uncertain | Dropped stash = irreversible data loss. A "broken" stash usually just needs sandbox bypass to restore |
-| **NEVER use `sys.path.insert`** directly | Crashes Claude Code session (see `rules/coding-conventions.md` for safe pattern) |
-| **NEVER rewrite full file during race conditions** | If Edit fails with "file modified since read", pause and wait (exponential backoff), then ask user—NEVER use Write to overwrite entire file as workaround |
+- **Deleting files**: prefer `archive/` > `trash` > `rm`. Never `rm -rf` unless asked.
+- **Stashes**: the stack is shared across worktrees. `stash push -u -m '<tag>'`, `apply <sha>`, never `pop`; `stash show -p` before dropping. A restore that failed under the sandbox is intact — retry with `dangerouslyDisableSandbox: true`.
+- **Secrets**: never commit API keys, tokens, credentials.
+- **Edit races**: `Edit` failing with "file modified since read" means re-read and retry, never `Write` over the file.
+- **`git add -A`**: never in-sandbox — it stages the mask artifacts below. Use explicit pathspecs.
 
-## Sandbox Awareness (Proactive)
+Enforced by hook, not by this file: `block_destructive_git.sh` (`reset --hard`, `checkout -- <path>`, `clean -f`, bare `stash`, `stash pop`), `nudge_syspath.sh` (`sys.path.insert` crashes the session).
 
-Before running deployment scripts, file system operations, or configuration tasks, anticipate these common sandbox failure patterns:
+## Sandbox failure modes
 
-| Pattern | Problem | Workaround |
-|---------|---------|------------|
-| Writing to `/tmp` | Sandbox may restrict `/tmp` | Use `$TMPDIR` (set to `/tmp/claude/`) or project-local `./tmp/` |
-| `rm -rf` / `rm` | Blocked by sandbox | Use `trash` (macOS) or `mv` to `.bak`/`archive/` |
-| Heredocs in commands | Shell creates temp file in `/tmp` → blocked | Use `git commit -F` with file in `$TMPDIR`, or `printf` piping (see Git Commands) |
-| Writing to `$CLAUDE_JOB_DIR/tmp` (background jobs) | Sandbox denies writes under `~/.claude/jobs` (harness-injected `denyWithinAllow`), so `printf > $CLAUDE_JOB_DIR/tmp/msg.txt` silently creates nothing and a later `git commit -F` fails with "could not read log file" | Put commit-msg and similar small files in `$TMPDIR` with a job-unique name (e.g. `$TMPDIR/<jobid>-commit-msg.txt`). `settings.json` allowlists `~/.claude/jobs/*/tmp`, but the injected deny may still win — verify with a test write before relying on it |
-| `git pull/merge/stash` failing with "Read-only file system" or "unable to unlink" | Runtime `denyWithinAllow` blocks git's unlink+rename on `config/`, `.claude/settings.json`, and `.claude/skills/` — even though `git` is in `excludedCommands`. This is injected by Claude Code, not user-configurable | Use `dangerouslyDisableSandbox: true` on `git pull`, `git merge`, `git stash` when they fail with these errors. Retry immediately — don't try workarounds (patch files, sparse checkout) first |
-| Stray dotfiles appear in `ls -la` / `git status` (`.bashrc`, `.gitconfig`, `.idea`, `.gitmodules`, `.claude/skills`…) shown as `crw-rw-rw- … 1, 3 … nobody` | **Linux bubblewrap only.** The sandbox masks denied paths by bind-mounting `/dev/null` (char device, major 1 / minor 3) over them. They are NOT repo content — and `git fetch`/submodule ops will hit "Permission denied" reading them (e.g. `.gitmodules`). macOS Seatbelt does NOT do this — it restricts writes but leaves denied paths visible as normal files (verified: write-denied `.claude/settings.json` still `stat`s as a regular file, not a char device) | Recognize `crw` + `1, 3` + `nobody` as a sandbox mask, not a file. **Never `git add -A`** — it would stage these artifacts; use explicit pathspecs (`git add <file>`). To confirm: `find . -maxdepth 2 -type c` lists masked paths. If a git op genuinely needs the masked path, retry with `dangerouslyDisableSandbox: true` |
+| Symptom | Reality | Fix |
+|---|---|---|
+| Temp writes fail | `/tmp` is restricted | `$TMPDIR` (`/tmp/claude/`) or project-local `./tmp/` |
+| Heredoc (`<<EOF`) in a command | The shell writes its temp file to a denied path → **empty commit message**, failed commit | `mkdir -p "$TMPDIR" && printf '%s\n' "subject" "" "body" > "$TMPDIR/msg.txt" && git commit -F "$TMPDIR/msg.txt"`. `-m` is fine for one-liners |
+| Background job writing `$CLAUDE_JOB_DIR/tmp/…` | Writes under `~/.claude/jobs` are denied, so the redirect **silently creates nothing** and `git commit -F` then fails with "could not read log file" | Use `$TMPDIR` with a job-unique name (`$TMPDIR/<jobid>-commit-msg.txt`) |
+| `git pull`/`merge`/`stash` → "Read-only file system" or "unable to unlink" | Runtime `denyWithinAllow` on `config/`, `.claude/settings.json`, `.claude/skills/`, injected by Claude Code and not user-configurable — `git` being in `excludedCommands` does not help | Retry immediately with `dangerouslyDisableSandbox: true`. Do not reach for patch files or sparse checkout |
+| Phantom dotfiles in `git status`/`ls -la` as `crw-rw-rw- … 1, 3 … nobody` | **Linux bubblewrap only** — denied paths are masked by bind-mounting `/dev/null` over them. Not repo content; `git fetch`/submodule ops hit "Permission denied" on them (e.g. `.gitmodules`). macOS Seatbelt does not do this | Confirm with `find . -maxdepth 2 -type c`. Never `git add -A`. If a git op genuinely needs the masked path, `dangerouslyDisableSandbox: true` |
 
-More patterns (chmod/chown, symlinks, deploy.sh/install.sh, git hooks, launchd/cron, `.claude/settings*.json`, modal CLI, codex-companion ENOENT/EROFS): see `docs/sandbox-troubleshooting.md`.
-
-**When planning a task involving file system operations:** List anticipated sandbox issues BEFORE executing. Don't discover them one-by-one through failures — that wastes context and user patience.
-
-## Git Commands (Readability)
-
-- **Smart pull strategy** — choose the safest sync method based on context, not unconditional rebase:
-  ```
-  After git fetch origin:
-  +-- Local ahead, remote has nothing     -> just push (no pull needed)
-  +-- Local behind, no local commits      -> git pull --ff-only
-  +-- Diverged:
-  |   +-- Local has merge commits?        -> git pull --no-rebase (merge)
-  |   +-- >20 local commits to replay?    -> git pull --no-rebase (merge)
-  |   +-- Few commits, no merges          -> git pull --rebase
-  |   +-- Any pull fails?                 -> abort, show state, ask user
-  +-- @{u} not configured                 -> commit, git push -u origin <branch>
-  ```
-  **Principle:** Rebase only when cheap and safe (few commits, no merges). Never rebase merge commits — rebase drops them and replays their individual commits, causing massive conflicts.
-- **Default pull behavior**: When user says "pull":
-  1. Determine correct remote: `UPSTREAM_REMOTE=$(git rev-parse --abbrev-ref @{u} 2>/dev/null | cut -d/ -f1)` then `git fetch "${UPSTREAM_REMOTE:-origin}"` (always)
-  2. Evaluate state: `git log @{u}.. --oneline`, `git log ..@{u} --oneline`, `git log @{u}.. --merges --oneline`
-  3. Apply decision tree above
-  4. If unstaged changes: stash first, sync, then stash pop
-  - If stash fails due to sandbox (e.g., `.claude/settings*.json` unlink errors), commit the non-settings files first, then push directly
-  - If merge conflicts occur after stash pop, notify user and help resolve
-- **Use readable refs** over commit hashes: branch names, tags, `origin/branch`
-- Examples:
-  - ✅ `git log origin/main..feature-branch`
-  - ✅ `git diff main..yulong/dev`
-  - ❌ `git log 5f41114..a8084f7` (hard to read)
-- Only use hashes when refs don't exist (e.g., comparing arbitrary commits)
-
-### Commit Messages (Sandbox-Safe)
-
-**NEVER use heredoc (`<<EOF`) in commit commands** — the shell creates a temp file in `/tmp` which the sandbox blocks, producing an empty message and a failed commit.
-
-Instead, write the message to a file first (ensure `$TMPDIR` directory exists):
-```bash
-mkdir -p "$TMPDIR" && printf '%s\n' "feat: subject line" "" "Body details here" > "$TMPDIR/commit_msg.txt" && git commit -F "$TMPDIR/commit_msg.txt"
-```
-
-For single-line messages, `-m "message"` works fine without heredocs.
-
-**Background jobs**: keep the msg file in `$TMPDIR` too — just make the name job-unique (e.g. `$TMPDIR/<jobid>-commit-msg.txt`). Do NOT use `$CLAUDE_JOB_DIR/tmp` for it despite the harness suggesting that dir for temp files: the sandbox denies writes under `~/.claude/jobs`, the redirect silently creates nothing, and `git commit -F` then fails with "could not read log file".
+More patterns (chmod, symlinks, git hooks, launchd/cron, modal, codex-companion): `docs/sandbox-troubleshooting.md`.

@@ -7,6 +7,7 @@ config/secrets.sh
 config/safari_web_apps.local
 config.local.sh
 config/machines.conf
+config/secrets-global.conf
 .secrets
 .envrc
 
@@ -570,3 +571,6 @@ claude/.last-update-result.json
 
 # Stray scratch files
 Untitled.md
+
+# pytest falls back to a repo-local basetemp because $TMPDIR is read-only here
+pytest-of-*/

@@ -1,1 +1,1 @@
-/home/yulong/.claude/skills/things3.md
+../things3.md

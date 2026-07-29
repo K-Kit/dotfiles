@@ -125,11 +125,16 @@ if [ -x "$DOT_DIR/custom_bins/dotfiles-secrets" ]; then
     [[ $# -gt 0 ]] || { echo "Provide a command after --" >&2; return 1; }
 
     (
+      # Capture-then-eval, not `source <(...)`: process substitution hides the
+      # producer's exit status, so a helper that failed to resolve a named key
+      # would leave the command below running silently keyless.
+      local exports
       if [[ "${keys[1]}" == "--all" ]]; then
-        source <("$DOT_DIR/custom_bins/dotfiles-secrets" shell --all)
+        exports=$("$DOT_DIR/custom_bins/dotfiles-secrets" shell --all) || exit 1
       else
-        source <("$DOT_DIR/custom_bins/dotfiles-secrets" shell "${keys[@]}")
+        exports=$("$DOT_DIR/custom_bins/dotfiles-secrets" shell "${keys[@]}") || exit 1
       fi
+      eval "$exports"
       "$@"
     )
   }

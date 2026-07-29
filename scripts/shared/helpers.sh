@@ -1659,6 +1659,100 @@ install_editor_extensions() {
     fi
 }
 
+# ─── Worktree Guard ───────────────────────────────────────────────────────────
+
+# Abort if DOT_DIR is a linked git worktree rather than the main checkout.
+#
+# DOT_DIR resolves from the script's own location, so running install.sh or
+# deploy.sh from a worktree bakes the worktree path into ~/.claude and ~20 other
+# user-level symlinks plus every launchd/cron job. The worktree is then deleted
+# by cwrm/cwclean, and gitignored runtime state (plugin registry, credentials)
+# only ever exists in the main checkout — so Claude Code silently loses its
+# plugins and asks for a fresh login.
+#
+# Canonicalise a path printed by `git rev-parse --git-dir` / `--git-common-dir`.
+# Those print relative to the -C directory unless already absolute, and older
+# git echoes an unrecognised option back verbatim — resolving through `cd`
+# turns every one of those cases into empty output, which the caller treats as
+# "detection failed" rather than "not a worktree".
+_resolve_git_dir() {
+    local path="$1"
+    [[ -z "$path" ]] && return 0
+    [[ "$path" != /* ]] && path="$DOT_DIR/$path"
+    (cd "$path" 2>/dev/null && pwd -P)
+}
+
+# Usage: guard_not_worktree "$0" "$@"
+guard_not_worktree() {
+    local invoked_as="$1"; shift
+
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --allow-worktree|-h|--help) return 0 ;;
+        esac
+    done
+
+    local script_name
+    script_name="$(basename "$invoked_as")"
+
+    # Not a git repo at all (tarball or curl|bash install) — nothing to guard.
+    git -C "$DOT_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
+
+    # A linked worktree has its own .git dir distinct from the shared common dir.
+    # Both queries return paths relative to DOT_DIR when not already absolute;
+    # canonicalise so the comparison is not defeated by symlinks or `..`.
+    local git_dir common_dir
+    git_dir="$(_resolve_git_dir "$(git -C "$DOT_DIR" rev-parse --git-dir 2>/dev/null)")"
+    common_dir="$(_resolve_git_dir "$(git -C "$DOT_DIR" rev-parse --git-common-dir 2>/dev/null)")"
+
+    # Inside a repo but detection failed — old git without --git-common-dir, a
+    # safe.directory rejection, an unreadable path. Fail closed: an unusable
+    # probe is exactly the case where an unnoticed worktree deploy does damage.
+    if [[ -z "$git_dir" || -z "$common_dir" ]]; then
+        cat >&2 <<EOF
+
+✗ Refusing to run $script_name: cannot tell whether DOT_DIR is a git worktree.
+
+  DOT_DIR:
+    $DOT_DIR
+
+  \`git rev-parse --git-dir / --git-common-dir\` did not return a usable path.
+  Running from a worktree would repoint ~/.claude and ~20 other user-level
+  symlinks at a directory cwrm/cwclean will later delete, so this refuses
+  rather than guesses.
+
+  If this is the main checkout, pass --allow-worktree.
+
+EOF
+        exit 1
+    fi
+
+    [[ "$git_dir" == "$common_dir" ]] && return 0
+
+    local main_checkout
+    main_checkout="$(dirname "$common_dir")"
+
+    cat >&2 <<EOF
+
+✗ Refusing to run $script_name from a git worktree.
+
+  DOT_DIR resolved to the worktree:
+    $DOT_DIR
+
+  Running from here would repoint ~/.claude and ~20 other user-level symlinks
+  at this worktree, and bake its path into scheduled jobs. Removing the
+  worktree later would break all of them.
+
+  Run from the main checkout instead (absolute path matters):
+    $main_checkout/$script_name $*
+
+  To override anyway, pass --allow-worktree.
+
+EOF
+    exit 1
+}
+
 # ─── CLI Argument Parsing ─────────────────────────────────────────────────────
 
 # Parse CLI arguments and override config
@@ -1693,6 +1787,10 @@ parse_args() {
                 ;;
             --force|--force-reinstall)
                 FORCE_REINSTALL=true
+                ;;
+            --allow-worktree)
+                # Consumed by guard_not_worktree before parse_args runs.
+                # Accepted here as a no-op so it composes with --only.
                 ;;
             --append)
                 DEPLOY_APPEND=true
@@ -1767,6 +1865,13 @@ parse_args() {
                 # Exported so child processes (e.g. app-picker) honor it.
                 NON_INTERACTIVE=true
                 export NON_INTERACTIVE
+                ;;
+            --allow-worktree-deploy)
+                # Opt out of deploy.sh's worktree guard. Not a component, so it
+                # needs its own case — the --* catch-all below would both mangle
+                # it into a DEPLOY_* variable and collide with --only.
+                ALLOW_WORKTREE_DEPLOY=true
+                export ALLOW_WORKTREE_DEPLOY
                 ;;
             --no-*)
                 if [[ "$_only_mode" == true ]]; then

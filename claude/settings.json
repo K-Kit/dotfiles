@@ -3,7 +3,6 @@
   "cleanupPeriodDays": 999999,
   "env": {
     "BASH_MAX_OUTPUT_LENGTH": "100000",
-    "CLAUDECODE": "",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000",
     "CLAUDE_CODE_COORDINATOR_MODE": "1",
@@ -167,8 +166,6 @@
       "WebSearch",
       "WebFetch",
       "Read",
-      "EnterWorktree",
-      "Artifact",
       "Read(**/.envrc)",
       "Bash(CUDA_VISIBLE_DEVICES=* python *)",
       "Bash(CUDA_VISIBLE_DEVICES=* uv run *)",
@@ -380,11 +377,11 @@
       "mcp__plugin_things-mcp_things__update_project",
       "mcp__claude_ai_Notion__notion-move-pages"
     ],
-    "defaultMode": "acceptEdits"
+    "defaultMode": "auto"
   },
-  "model": "opusplan",
+  "model": "opus",
   "fallbackModel": [
-    "opus"
+    "fable"
   ],
   "hooks": {
     "PermissionRequest": [
@@ -459,6 +456,11 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/simplify_mark_dirty.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/nudge_syspath.sh",
+            "timeout": 5
           }
         ]
       }
@@ -527,6 +529,12 @@
           },
           {
             "type": "command",
+            "command": "$HOME/.claude/hooks/block_secret_expansion.sh",
+            "timeout": 5,
+            "statusMessage": "Checking for secret expansion"
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/hooks/block_email_send.sh",
             "if": "Bash(*gws*gmail*)",
             "timeout": 5,
@@ -571,6 +579,11 @@
             "type": "command",
             "command": "node \"$HOME/.claude/hooks/codex_git_add_reminder.mjs\"",
             "if": "Bash(git add *)",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/block_destructive_git.sh",
             "timeout": 5
           }
         ]
@@ -729,6 +742,11 @@
             "type": "command",
             "command": "$HOME/.claude/hooks/simplify_nudge.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/nudge_bg_prose_question.sh",
+            "timeout": 5
           }
         ]
       }
@@ -759,24 +777,24 @@
     "padding": 1
   },
   "enabledPlugins": {
-    "claude-md-management@claude-plugins-official": true,
-    "code-simplifier@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": false,
+    "code-simplifier@claude-plugins-official": false,
     "code@ai-safety-plugins": true,
     "codex@codex-plugin-cc": true,
-    "commit-commands@claude-plugins-official": true,
-    "context7@claude-plugins-official": true,
+    "commit-commands@claude-plugins-official": false,
+    "context7@claude-plugins-official": false,
     "core@ai-safety-plugins": true,
-    "dev-browser@dev-browser-marketplace": true,
-    "figma@claude-plugins-official": true,
-    "frontend-design@claude-plugins-official": true,
+    "dev-browser@dev-browser-marketplace": false,
+    "figma@claude-plugins-official": false,
+    "frontend-design@claude-plugins-official": false,
     "gopls-lsp@claude-plugins-official": true,
     "hookify@claude-plugins-official": true,
-    "huggingface-skills@claude-plugins-official": true,
-    "imessage@claude-plugins-official": true,
-    "llms-fetch-mcp@alignment-hive": true,
-    "playground@claude-plugins-official": true,
+    "huggingface-skills@claude-plugins-official": false,
+    "imessage@claude-plugins-official": false,
+    "llms-fetch-mcp@alignment-hive": false,
+    "playground@claude-plugins-official": false,
     "playwright@claude-plugins-official": true,
-    "plugin-dev@claude-plugins-official": true,
+    "plugin-dev@claude-plugins-official": false,
     "pyright-lsp@claude-plugins-official": true,
     "ralph-loop@claude-plugins-official": true,
     "remember@claude-plugins-official": true,
@@ -785,13 +803,13 @@
     "security-guidance@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,
     "swift-lsp@claude-plugins-official": true,
-    "telegram@claude-plugins-official": true,
-    "things-mcp@productivity-tools": true,
+    "telegram@claude-plugins-official": false,
+    "things-mcp@productivity-tools": false,
     "typescript-lsp@claude-plugins-official": true,
-    "ui-ux-pro-max@ui-ux-pro-max-skill": true,
-    "viz@ai-safety-plugins": true,
+    "ui-ux-pro-max@ui-ux-pro-max-skill": false,
+    "viz@ai-safety-plugins": false,
     "workflow@ai-safety-plugins": true,
-    "writing@ai-safety-plugins": true
+    "writing@ai-safety-plugins": false
   },
   "extraKnownMarketplaces": {
     "ai-safety-plugins": {
@@ -916,6 +934,7 @@
         "/tmp/claude",
         "/tmp/tmux-*",
         "/tmp/tmux-*/*",
+        "/private/tmp/com.apple.launchd.*/Listeners",
         "/var/folders/*/*/T",
         "/var/folders/*/*/T/claude",
         "/var/folders/*/*/T/claude/*",
@@ -1004,17 +1023,15 @@
   "showClearContextOnPlanAccept": true,
   "autoUpdatesChannel": "latest",
   "plansDirectory": "plans",
-  "autoMemoryDirectory": "memory",
   "showThinkingSummaries": true,
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "claudeMdExcludes": [
-    "node_modules",
-    "vendor",
-    ".venv",
-    "target",
-    "cache",
-    ".cache"
+    "**/node_modules/**",
+    "**/vendor/**",
+    "**/.venv/**",
+    "**/target/**",
+    "**/.cache/**"
   ],
   "theme": "auto",
   "verbose": false,

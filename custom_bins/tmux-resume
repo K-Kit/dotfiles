@@ -3,6 +3,24 @@
 # auto-resume them by sending configured keystrokes. Scheduled hourly.
 #   --dry-run : detect and log only, send nothing (use this to verify patterns).
 # Patterns: config/tmux-resume-patterns.conf (override via $TMUX_RESUME_PATTERNS).
+#
+# OPT-IN SCOPING: keystrokes are only sent into panes whose tmux *window name*
+# starts with $TMUX_RESUME_OPTIN_PREFIX (default "auto-"). Detection is never
+# scoped and always logs; only the *send* is gated. Set the prefix via the env
+# var or a `TMUX_RESUME_OPTIN_PREFIX=auto-` directive line in the patterns file
+# (env wins). An empty prefix disables sending entirely rather than matching
+# every window — fail closed, never blanket.
+#
+# WHY opt-in rather than "resume everything": the rate limit is the only
+# involuntary stopping point an unattended session has. Resuming every pane
+# deletes that stopping point, so nothing terminates and sessions/worktrees
+# accumulate. Requiring the human to name a window `auto-<topic>` at launch
+# means resumption only happens where it was actually intended, and `tmux ls`
+# shows you exactly which sessions will resume.
+#
+# CAVEAT: tmux auto-names windows after the running command, so a window
+# running a command that itself begins with the prefix would match by accident.
+# Pick a prefix you do not run as a command.
 set -euo pipefail
 
 # cron/launchd give a minimal PATH.
@@ -13,14 +31,74 @@ DOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PATTERNS_FILE="${TMUX_RESUME_PATTERNS:-$DOT_DIR/config/tmux-resume-patterns.conf}"
 CAPTURE_LINES="${TMUX_RESUME_LINES:-12}"
 
+# Tab-delimited so window names containing spaces or colons survive the split.
+PANE_FMT=$'#{session_name}:#{window_index}.#{pane_index}\t#{window_name}'
+
+# Detect-only rows are throttled, not permanent. A pane sitting on a rate-limit
+# banner produces no new output, so the banner never leaves the capture window —
+# a detect-only row that returned unconditionally would keep winning first-match
+# every hour forever, including after the limit resets, stranding the pane until
+# a human touched it. Instead: hold the pane for this cooldown, then fall through
+# so a later action row can retry. Set to 0 to disable holding entirely (every
+# scan retries, i.e. detect-only rows become no-ops).
+STATE_DIR="${TMUX_RESUME_STATE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tmux-resume}"
+DETECT_COOLDOWN_HOURS="${TMUX_RESUME_DETECT_COOLDOWN_HOURS:-6}"
+
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 trim() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
 
+# One 0-byte marker file per (socket, pane, row); its mtime is the hold's start.
+# Key is sanitised to a flat filename — collisions are harmless (worst case two
+# panes share a cooldown clock) and the alternative is parsing a shared file that
+# concurrent runs would race on.
+state_key() { printf '%s' "$1" | tr -c '[:alnum:]' '_'; }
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+
 command -v tmux &>/dev/null || { echo "[$(ts)] tmux-resume: tmux not found" >&2; exit 0; }
 [[ -f "$PATTERNS_FILE" ]] || { echo "[$(ts)] tmux-resume: patterns file missing: $PATTERNS_FILE" >&2; exit 0; }
+
+# Read a `KEY=value` directive from the patterns file (last occurrence wins).
+# Directives share the patterns file so the whole policy lives in one place;
+# the row parser skips any TMUX_RESUME_*= line so they cannot be read as rows.
+conf_directive() {
+  local key="$1" val
+  val="$(grep -E "^[[:space:]]*$key=" "$PATTERNS_FILE" 2>/dev/null | tail -1)"
+  [[ -z "$val" ]] && return 1
+  val="$(printf '%s' "${val#*=}" | trim)"
+  val="${val%\"}"; val="${val#\"}"
+  val="${val%\'}"; val="${val#\'}"
+  printf '%s' "$val"
+}
+
+# Resolution order: env (if SET, even to empty) > file directive (if PRESENT, even
+# empty) > built-in default. The distinction between set-but-empty and unset is
+# load-bearing: an empty prefix means "send to nothing", so it has to be
+# expressible. `${VAR:-default}` cannot express it — it treats empty as unset and
+# would silently restore `auto-`, i.e. keep sending after you asked it to stop.
+if [[ -n "${TMUX_RESUME_OPTIN_PREFIX+set}" ]]; then
+  OPTIN_PREFIX="$TMUX_RESUME_OPTIN_PREFIX"
+elif OPTIN_PREFIX="$(conf_directive TMUX_RESUME_OPTIN_PREFIX)"; then
+  : # Directive present. An empty value there is honoured as "disable", not defaulted.
+else
+  OPTIN_PREFIX="auto-"
+fi
+
+# Only opted-in windows receive keystrokes. An empty prefix matches nothing
+# (fail closed) — deliberately NOT "match everything", which is the blanket
+# behaviour this gate exists to prevent.
+optin_ok() { [[ -n "$OPTIN_PREFIX" && "$1" == "$OPTIN_PREFIX"* ]]; }
+
+# Publish the resolved prefix so the shell helpers (tauto/tnoauto/tautols) read it
+# from here instead of hard-coding "auto-". Without this they rename windows to a
+# prefix the gate may no longer accept, silently opting the pane out of the thing
+# the human just asked for. Empty output means sending is disabled.
+if [[ "${1:-}" == "--print-optin-prefix" ]]; then
+  printf '%s\n' "$OPTIN_PREFIX"
+  exit 0
+fi
 
 # Discover all tmux server sockets for this user. tmux uses $TMUX_TMPDIR else
 # $TMPDIR else /tmp, plus /tmux-<uid>/. launchd/cron may hand us a different
@@ -42,11 +120,13 @@ discover_sockets() {
 }
 
 resume_pane() {
-  local socket="$1" target="$2" captured="$3"
-  local line name after_name regex send
+  local socket="$1" target="$2" captured="$3" window="$4"
+  local line name after_name regex send state_file cooldown held
   while IFS= read -r line; do
     line="$(printf '%s' "$line" | trim)"
     [[ -z "$line" || "$line" == \#* ]] && continue
+    # Directive lines configure policy, they are not pattern rows.
+    [[ "$line" == TMUX_RESUME_*=* ]] && continue
     # Split on " | " (space-pipe-space) so bare `|` inside ERE patterns is preserved.
     # Format: "name | trigger_regex | send_sequence"
     name="${line%% | *}"
@@ -64,10 +144,53 @@ resume_pane() {
     send="$(printf '%s' "$send" | trim)"
     [[ -z "$name" || -z "$regex" ]] && continue
     if printf '%s' "$captured" | grep -iqE "$regex"; then
+      if [[ -z "$send" ]]; then
+        # Detect-only row: hold the pane, then release it to the action rows below.
+        cooldown=$(( DETECT_COOLDOWN_HOURS * 3600 ))
+        if (( cooldown <= 0 )); then
+          echo "[$(ts)] MATCH [$name] $target — detect-only disabled (cooldown 0), falling through"
+          continue
+        fi
+        state_file="$STATE_DIR/$(state_key "${socket}|${target}|${name}")"
+        if [[ -f "$state_file" ]]; then
+          held=$(( $(date -u +%s) - $(file_mtime "$state_file") ))
+        else
+          held=-1
+        fi
+        if (( held >= 0 && held < cooldown )); then
+          echo "[$(ts)] MATCH [$name] $target — detect-only, holding (${held}s of ${cooldown}s)"
+          return 0
+        fi
+        # Either first sighting (start the clock) or the cooldown elapsed (restart
+        # it). Both re-stamp the marker; the difference is that a first sighting
+        # holds and an elapsed one falls through to retry.
+        #
+        # If the marker cannot be persisted the clock never starts, so every scan
+        # sees held<0 and reports a fresh "first sighting" forever. Keep holding —
+        # falling through would send into a weekly-limit pane every hour, the exact
+        # behaviour this gate exists to stop — but name the cause, because the
+        # "first sighting" line repeating hourly is what made this undiagnosable.
+        # resume_pane runs under `|| true`, so errexit will not catch this.
+        if ! $DRY_RUN && ! { mkdir -p "$STATE_DIR" && : > "$state_file"; } 2>/dev/null; then
+          echo "[$(ts)] MATCH [$name] $target — detect-only, marker unwritable ($state_file), holding"
+          return 0
+        fi
+        if (( held < 0 )); then
+          echo "[$(ts)] MATCH [$name] $target — detect-only, first sighting, holding ${DETECT_COOLDOWN_HOURS}h"
+          return 0
+        fi
+        echo "[$(ts)] MATCH [$name] $target — detect-only cooldown elapsed (${held}s), retrying via action rows"
+        continue
+      fi
+      # Action row matched, but this window did not opt in: log and stop. The
+      # row still "won" the first-match race, so no later row fires — the log
+      # line above is the detection record for this pane.
+      if ! optin_ok "$window"; then
+        echo "[$(ts)] MATCH [$name] $target — window '$window' not opted in (prefix '${OPTIN_PREFIX:-<none>}'), sending nothing"
+        return 0
+      fi
       if $DRY_RUN; then
-        echo "[$(ts)] MATCH [$name] $target — would send: ${send:-<detect-only>} (dry-run)"
-      elif [[ -z "$send" ]]; then
-        echo "[$(ts)] MATCH [$name] $target — detect-only (no send configured)"
+        echo "[$(ts)] MATCH [$name] $target — would send: $send (dry-run)"
       else
         echo "[$(ts)] MATCH [$name] $target — sending: $send"
         local steps step
@@ -75,8 +198,17 @@ resume_pane() {
         for step in "${steps[@]}"; do
           step="$(printf '%s' "$step" | trim)"
           [[ -z "$step" ]] && continue
-          # shellcheck disable=SC2086  # deliberate word-split into tmux key tokens
-          tmux -S "$socket" send-keys -t "$target" $step
+          if [[ ${#step} -ge 2 && "$step" == \"*\" ]]; then
+            # Double-quoted step -> literal text. `-l` disables key-name lookup,
+            # so spaces survive and "Enter" would be typed as the word Enter.
+            # Send real keys as their own unquoted step: "some text" ; Enter
+            tmux -S "$socket" send-keys -t "$target" -l "${step:1:${#step}-2}"
+          else
+            # Unquoted step -> word-split into separate tmux key tokens. Multi-word
+            # text here LOSES its spaces (`wrap up` types as `wrapup`); quote it.
+            # shellcheck disable=SC2086  # deliberate word-split into tmux key tokens
+            tmux -S "$socket" send-keys -t "$target" $step
+          fi
           sleep 0.6
         done
       fi
@@ -94,10 +226,10 @@ fi
 
 while IFS= read -r socket; do
   [[ -z "$socket" ]] && continue
-  while IFS= read -r target; do
+  while IFS=$'\t' read -r target window; do
     [[ -z "$target" ]] && continue
     captured="$(tmux -S "$socket" capture-pane -p -t "$target" -S -"$CAPTURE_LINES" 2>/dev/null || true)"
     [[ -z "$captured" ]] && continue
-    resume_pane "$socket" "$target" "$captured" || true
-  done < <(tmux -S "$socket" list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || true)
+    resume_pane "$socket" "$target" "$captured" "$window" || true
+  done < <(tmux -S "$socket" list-panes -a -F "$PANE_FMT" 2>/dev/null || true)
 done <<< "$sockets"

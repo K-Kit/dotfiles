@@ -243,8 +243,6 @@ FAST_ALLOW_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(rf"^{_CMD_PREFIX}python3?\s+-m\s+inspect_ai\b"), "inspect_ai module"),
     # codex exec (sandboxed CLI — review, task, etc.; exec is a codex subcommand, not shell exec)
     (re.compile(r"codex\s+exec\b"), "codex exec (sandboxed CLI)"),
-    # .agent-claims/ operations (multi-agent coordination, ephemeral files only)
-    (re.compile(r"^(?:mkdir\s+-p|cat|ls|rm\s+-f|printf|for\b).*\.agent-claims"), "agent claims coordination"),
     # gws (Google Workspace CLI) — read and create operations are safe.
     # Deletes are caught by block_gws_delete.sh PreToolUse hook.
     # Verbs: list, get, search, export, create, insert, send (with --draft)
@@ -917,7 +915,8 @@ def main() -> None:
             emit_warning(
                 "auto-classify has NO API key — all non-trivial commands will fall back to manual prompts.",
                 "with-anthropic-key.sh could not inject ANTHROPIC_API_KEY.",
-                "Check: is bws in PATH? Run `dotfiles-secrets shell ANTHROPIC_API_KEY` to test.",
+                "Test it: `dotfiles-secrets shell ANTHROPIC_API_KEY` — it now prints the exact reason "
+                "(no bws in PATH / stale cache / ambiguous env name needing a line in config/secrets-global.conf).",
             )
             return  # Single JSON payload per hook invocation
 

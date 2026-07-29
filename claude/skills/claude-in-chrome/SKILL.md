@@ -1,1 +1,1 @@
-/home/yulong/.claude/skills/claude-in-chrome.md
+../claude-in-chrome.md

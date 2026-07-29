@@ -19,6 +19,7 @@ Most skills below are **model-invoked**: Claude fires them automatically when yo
 | `commit-push-sync` | "commit and push", "sync changes", "update remote" |
 | `merge-worktree` | "merge this worktree", "merge my branch back", "finish this worktree" |
 | `finishing-a-development-branch` | Implementation is done, tests pass, deciding merge/PR/cleanup |
+| `wrap-up` | A session needs to reach a terminal state — land it as a draft PR, state the blocker, or say it's done (dotfiles trial) |
 | `diagnosing-bugs` | "diagnose"/"debug this", something broken/throwing/failing/slow |
 | `mv-repo` | Moving a repo to a new directory (venv, project state, tmux sessions) |
 | `migrate-to-codex` | Migrating instructions/skills/agents/MCP config into Codex |

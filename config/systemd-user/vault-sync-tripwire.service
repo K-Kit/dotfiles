@@ -1,0 +1,10 @@
+[Unit]
+Description=Vault sync tripwire (EX-9): unexcluded regenerable dirs and oversized files
+
+[Service]
+Type=oneshot
+# User units inherit a minimal PATH without ~/.local/bin, where uv lives; without
+# this the wrapper exits 127 and the detector never runs. The wrapper repairs PATH
+# itself too, so this is defence in depth rather than the only guard.
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/yulong/code/dotfiles/scripts/vault/vault_sync_tripwire.sh
