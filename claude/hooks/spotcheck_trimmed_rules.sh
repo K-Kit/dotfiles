@@ -3,8 +3,12 @@
 # tier, prove the replacement hook still produces the behaviour.
 #
 # SCOPE: script-level. Each hook is fed the JSON the harness would send and
-# its exit code / stdout is inspected. This is NOT live session enforcement --
-# the hooks are not yet wired into the main checkout's settings.json.
+# its exit code / stdout is inspected. This is NOT live session enforcement.
+# Wiring is a post-merge step by necessity: ~/.claude/hooks resolves into the
+# main checkout, where these scripts do not exist until this branch merges, so
+# editing settings.json first would point live hooks at missing files. The
+# wiring patch is in the PR body; these script-level tests are the pre-merge
+# proof that the behaviour survives the prose deletions.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 H=claude/hooks
