@@ -37,6 +37,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -206,6 +207,18 @@ def under_target(folder: str) -> tuple[str, tuple]:
     """
     child = folder + "/"
     return "(path = ? OR substr(path, 1, ?) = ?)", (folder, len(child), child)
+
+
+def path_is_excluded(rel: str, excluded: Sequence[str]) -> bool:
+    """Whether a vault-relative path is hidden by an ignoreFolders entry.
+
+    The local-filesystem twin of under_target() above, and it must stay one:
+    both encode the same ob matcher, so a divergence between them would let the
+    server-row gate and the local walk disagree about what a given exclusion
+    covers. cli.js does `e === r || e.startsWith(r + "/")` -- vault-relative,
+    segment-safe, case-sensitive, and with no wildcard support whatsoever.
+    """
+    return any(rel == f or rel.startswith(f + "/") for f in excluded)
 
 
 def utc_stamp() -> str:
@@ -1112,10 +1125,9 @@ def predicted_exclusions(excluded: list[str]) -> list[str]:
     """
 
     def is_excluded(rel: str) -> bool:
-        return any(rel == f or rel.startswith(f + "/") for f in excluded)
+        return path_is_excluded(rel, excluded)
 
-    found: list[str] = []
-    seen: set[str] = set()
+    found: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(VAULT, onerror=lambda e: None):
         rel_dir = os.path.relpath(dirpath, VAULT)
         rel_dir = "" if rel_dir == "." else rel_dir
@@ -1133,9 +1145,8 @@ def predicted_exclusions(excluded: list[str]) -> list[str]:
         for name in filenames:
             for child in MANIFEST_REGENERABLE.get(name, ()):
                 rel = f"{rel_dir}/{child}" if rel_dir else child
-                if rel not in seen and not is_excluded(rel):
-                    seen.add(rel)
-                    found.append(rel)
+                if not is_excluded(rel):
+                    found.add(rel)
     return sorted(found)
 
 
@@ -1177,8 +1188,7 @@ def cmd_tripwire(args: argparse.Namespace) -> int:
     excluded = list(cfg.get(EXCLUSION_KEY) or [])
 
     def is_excluded(rel: str) -> bool:
-        # Mirrors the ob matcher exactly: vault-relative, segment-safe, case-sensitive.
-        return any(rel == f or rel.startswith(f + "/") for f in excluded)
+        return path_is_excluded(rel, excluded)
 
     max_bytes = int(args.max_file_mb * MB)
     regenerable: list[tuple[str, int]] = []
