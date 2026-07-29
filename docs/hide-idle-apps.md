@@ -53,7 +53,13 @@ An app that becomes frontmost, or owns an onscreen window again, drops back to t
 
 That self-heal cannot rescue a *hidden* app, which owns no onscreen window by construction. So a rung is advanced **before** the call — a job killed mid-close must not re-fire every poll — and given back if the call returns nonzero, or a close that failed would start the quit clock.
 
-That give-back only works if `clear-mac-apps` reports the run rather than something incidental, so its `main()` counts failed actions and returns them explicitly. It once ended on `(( ${#slow_quit_set} > 0 )) && echo …`, which made the exit status report *whether the config listed a `slow: true` app* — with one listed the give-back never fired, without one it always did. The close path likewise reports the window count it left behind instead of swallowing it in `|| true`.
+That give-back only works if `clear-mac-apps` reports the run rather than something incidental, so its `main()` counts failed actions and returns them explicitly. It once ended on `(( ${#slow_quit_set} > 0 )) && echo …`, which made the exit status report *whether the config listed a `slow: true` app* — with one listed the give-back never fired, without one it always did. The close path likewise reports the window count it left behind instead of swallowing it in `|| true`, and the parallel hide loop waits on each PID, because `wait` with no arguments discards every job's status.
+
+The one deliberate exception is the fast-quit loop, which keeps a bare `wait`: `tell application "X" to quit` waits for a reply the app often dies before sending, so honouring that status would manufacture failures rather than find them. Nothing consumes it — the give-back applies to `close` alone.
+
+The two callers want that failure reported two different ways. The idle job passes `--only` and consumes the status, so there it propagates. A bare invocation is the macOS Shortcut, where "Run Shell Script" turns any nonzero status into a Shortcut error dialog — far too loud for one app keeping a window open. That path posts a notification naming the rung and the app, and exits clean.
+
+The subtlest version of the same bug was a *refusal* reported as success. When a run capped at `close` found, on rescan, that an app's last protected window had gone, it declined to quit — correctly — and returned 0 having closed nothing. The close rung then read as complete. A capped run now closes the windows instead, which is what that rung was asking for anyway.
 
 ## Closing windows without stealing focus
 

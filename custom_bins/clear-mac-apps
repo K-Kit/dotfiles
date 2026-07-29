@@ -22,6 +22,10 @@ REGISTRY_FILE="${SCRIPT_DIR}/../config/safari_web_apps.local"
 DRY_RUN=false
 MAX_ACTION=quit
 typeset -a ONLY_APPS=()
+# Every action that did not do what it said, as "<rung>: <app>". main()'s exit
+# status is derived from this, and the manual path reads it back to say which
+# app in a notification - so it is a global, not a counter local to main().
+typeset -ga FAILED_ACTIONS=()
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -340,6 +344,31 @@ hide_app() {
 # be quit - and that decision happens after main() has already capped the run,
 # so without this check `--max-action close` could still quit an app whose
 # protected window closed in the intervening moment.
+#
+# Only the zombie check calls this, and only after the non-protected windows
+# have already been closed: there, refusing the quit still leaves the close
+# rung genuinely done, so reporting success is honest. The other former caller
+# had closed nothing, and now closes rather than refusing.
+# Run one background job per app and record which ones failed, tagged with the
+# rung. `wait` with no arguments discards every job's status, so the PIDs have
+# to be collected and waited on one at a time - otherwise a failed action is
+# indistinguishable from a clean run. The names ride alongside because a PID
+# alone cannot say which app it was.
+run_parallel() {   # run_parallel <rung> <fn> <app>...
+    local rung="$1" fn="$2"; shift 2
+    local -a pids=() names=()
+    local app=""
+    for app in "$@"; do
+        "$fn" "$app" &
+        pids+=($!)
+        names+=("$app")
+    done
+    local -i i=0
+    for (( i = 1; i <= ${#pids}; i++ )); do
+        wait "${pids[$i]}" || FAILED_ACTIONS+=("$rung: ${names[$i]}")
+    done
+}
+
 quit_app_capped() {
     if [[ "$MAX_ACTION" == close ]]; then
         echo "  $1: would quit, but this run is capped at close"
@@ -384,9 +413,21 @@ close_app_selectively() {
     # All windows protected → nothing to do
     (( ${#ids_to_close} == 0 )) && return 0
 
-    # No protected windows → quit entirely
+    # No protected windows → the whole app can go. But a run capped at `close`
+    # must not quit, and simply refusing here would return 0 having closed
+    # nothing - telling escalate() the close rung completed. The app keeps the
+    # `closed` phase it was given before the call, cannot self-heal (a hidden
+    # app owns no onscreen window, so nothing ever drops it back a rung), and
+    # quit_after later quits an app whose windows were never closed. That is
+    # the precise failure this branch exists to remove, so do the rung's actual
+    # job instead of reporting a success that did not happen.
     if (( ${#protected_windows} == 0 )); then
-        quit_app_capped "$app"
+        if [[ "$MAX_ACTION" == close ]]; then
+            echo "  $app: would quit, but this run is capped at close — closing its windows instead"
+            close_app_windows "$app"
+            return
+        fi
+        quit_app "$app"
         return
     fi
 
@@ -634,13 +675,23 @@ main() {
         return 0
     fi
 
-    # Counts actions that did not do what they said. main()'s exit status is a
-    # contract with hide-idle-apps' escalate(), which gives an app its rung back
-    # on nonzero - so this has to mean "something failed", not whatever the last
-    # line of the function happened to evaluate to.
-    local -i failures=0
+    # Actions that did not do what they said accumulate in FAILED_ACTIONS.
+    # main()'s exit status is a contract with hide-idle-apps' escalate(), which
+    # gives an app its rung back on nonzero - so it has to mean "something
+    # failed", not whatever the last line of the function happened to evaluate
+    # to. Reset here rather than at declaration so a re-entrant call cannot
+    # inherit a previous run's failures.
+    FAILED_ACTIONS=()
 
-    # Quit apps in parallel (don't need focus)
+    # Quit apps in parallel (don't need focus).
+    #
+    # The bare `wait` here is deliberate, and the only one left in this function.
+    # quit_app ends in `|| true` because `tell application "X" to quit` waits for
+    # a reply the app often dies before sending, so a *successful* quit reports
+    # an error often enough that honouring the status would manufacture failures
+    # rather than find them. Nothing consumes this rung's status anyway: the
+    # give-back in hide-idle-apps' escalate() applies to `close` alone, because
+    # a close that silently failed is what starts a quit clock it should not.
     if (( ${#apps_to_quit} > 0 )); then
         echo "Quitting ${#apps_to_quit} apps in parallel..."
         for app in "${apps_to_quit[@]}"; do
@@ -654,43 +705,27 @@ main() {
     # each one - otherwise a failed hide is indistinguishable from a clean run.
     if (( ${#apps_hide} > 0 )); then
         echo "Hiding ${#apps_hide} apps in parallel..."
-        local -a hide_pids=()
-        for app in "${apps_hide[@]}"; do
-            hide_app "$app" &
-            hide_pids+=($!)
-        done
-        local pid
-        for pid in "${hide_pids[@]}"; do
-            wait "$pid" || failures+=1
-        done
+        run_parallel hide hide_app "${apps_hide[@]}"
     fi
 
     # Sequential, because the keystroke fallback needs focus and two of those in
     # parallel would fight over it. The AX path itself needs no focus.
     for app in "${apps_close_windows[@]}"; do
         echo "Closing windows: $app"
-        close_app_windows "$app" 3 || { echo "  Warning: $app still has windows"; failures+=1; }
+        close_app_windows "$app" 3 || { echo "  Warning: $app still has windows"; FAILED_ACTIONS+=("close: $app"); }
     done
 
     # Slow-quit apps in parallel: send quit, then poll each until exit (max 30s each).
     # No focus needed (System Events polling is name-based), so safe to background.
     if (( ${#apps_slow_quit} > 0 )); then
         echo "Quitting (slow) ${#apps_slow_quit} apps in parallel..."
-        local -a slow_pids=()
-        for app in "${apps_slow_quit[@]}"; do
-            slow_quit_and_wait "$app" &
-            slow_pids+=($!)
-        done
-        local slow_pid
-        for slow_pid in "${slow_pids[@]}"; do
-            wait "$slow_pid" || failures+=1
-        done
+        run_parallel quit slow_quit_and_wait "${apps_slow_quit[@]}"
     fi
 
     # Selective-close: close non-protected windows, keep app alive
     for app in "${apps_selective_close[@]}"; do
         echo "Selective-close: $app"
-        close_app_selectively "$app" "${protected_patterns[@]}" || failures+=1
+        close_app_selectively "$app" "${protected_patterns[@]}" || FAILED_ACTIONS+=("close: $app")
     done
 
     echo ""
@@ -703,8 +738,31 @@ main() {
     # Explicit, because the four lines above are `(( cond )) && echo` and the
     # last one's condition would otherwise become this script's exit status -
     # i.e. "does the config list a slow: true app", which is not a result.
-    (( failures > 0 )) && echo "  Failed actions: $failures"
-    return $(( failures > 0 ))
+    (( ${#FAILED_ACTIONS} > 0 )) && echo "  Failed actions: ${(j:, :)FAILED_ACTIONS}"
+    return $(( ${#FAILED_ACTIONS} > 0 ))
 }
 
-main "$@"
+# A failed action is worth surfacing, but not the same way to both callers.
+#
+# The idle job invokes us with --only and consumes the exit status: escalate()
+# gives an app its rung back on nonzero, so a close that failed must not read
+# as done. That path has to keep the status.
+#
+# A bare invocation is the macOS Shortcut, where "Run Shell Script" turns any
+# nonzero status into a Shortcut error dialog - far too loud for "one app kept
+# a window open". Post a notification naming what failed and exit clean.
+notify_failures() {
+    # Quotes would end the AppleScript string early; app names should not
+    # contain them, but a config typo must not turn into a syntax error.
+    local body="${${(j:, :)FAILED_ACTIONS}//\"/}"
+    osascript -e "display notification \"$body\" with title \"clear-mac-apps\" subtitle \"action did not complete\"" 2>/dev/null || true
+}
+
+if main "$@"; then
+    exit 0
+else
+    rc=$?
+    (( ${#ONLY_APPS} > 0 )) && exit $rc
+    notify_failures
+    exit 0
+fi

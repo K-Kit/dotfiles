@@ -65,6 +65,15 @@ case "$script" in
         print -r -- 0 ;;
     *keystroke*)
         [[ -n "${STUB_KEY_LOG:-}" ]] && print -r -- "$script" >> "$STUB_KEY_LOG" ;;
+    *"display notification"*)
+        [[ -n "${STUB_NOTIFY_LOG:-}" ]] && print -r -- "$script" >> "$STUB_NOTIFY_LOG"
+        : ;;
+    *"set visible"*)
+        # hide_app. Settable, because the hide bucket runs its osascript in a
+        # background job and `wait` with no arguments would discard exactly
+        # this status - which is the thing the test using it is checking.
+        (( ${STUB_HIDE_RC:-0} != 0 )) && exit "${STUB_HIDE_RC}"
+        : ;;
     *"to count windows"*)         print -r -- "${STUB_WINDOW_COUNT:-2}" ;;
     *"background only is false"*) print -rn -- "${STUB_APP_LIST:-}" ;;
     *"Google Chrome"*)
@@ -109,6 +118,7 @@ AXCAP="$ROOT/home/.cache/hide-idle-apps/ax-capability"
 run() {  # run [args...]; sets OUT / ERR / RC
     [[ -n "${STUB_AX_LOG:-}" ]]     && : > "$STUB_AX_LOG"
     [[ -n "${STUB_KEY_LOG:-}" ]]    && : > "$STUB_KEY_LOG"
+    [[ -n "${STUB_NOTIFY_LOG:-}" ]] && : > "$STUB_NOTIFY_LOG"
     [[ -n "${STUB_CHROME_CALLS:-}" ]] && : > "$STUB_CHROME_CALLS"
     # HOME is faked because the close path remembers which apps cannot be closed
     # by clicking, under ~/.cache - a real run must not write to the real one.
@@ -349,6 +359,91 @@ print -r -- "$CONFIG_NO_SLOW" > "$ROOT/config/app-lifecycle.yaml"
 run --only Bear
 check "failure is reported without a slow app too"           "$(( RC != 0 ))" "1"
 unset STUB_AX_RC
+
+# The hide bucket is the one path that runs its action in a background job and
+# then has to report it. `wait` with no arguments returns the status of the
+# *shell's* last job bookkeeping, not the jobs', so a failed hide used to be
+# indistinguishable from a clean run. Nothing else in this suite executes that
+# loop - every other non-dry test lands in close or selective-close - so
+# without this the PID collection and `local pid=""` are unexecuted code.
+print -r -- "17. a failed hide is reported, not swallowed by bare `wait`"
+export STUB_APP_LIST="Bear|net.shinyfrog.bear
+"
+print -r -- "defaults:
+  manual: quit
+  auto: quit
+apps:
+  Bear: {manual: hide}" > "$ROOT/config/app-lifecycle.yaml"
+
+export STUB_HIDE_RC=0
+run --only Bear
+check     "the hide bucket is the one that ran"  "$OUT" "Hiding 1 apps in parallel"
+check     "a hide that worked exits 0"           "$(( RC == 0 ))" "1"
+
+export STUB_HIDE_RC=1
+run --only Bear
+check     "a hide that failed exits non-zero"    "$(( RC != 0 ))" "1"
+unset STUB_HIDE_RC
+
+# Codex, this round: with the run capped at close and the protected tab gone by
+# the rescan, close_app_selectively called quit_app_capped, which refuses the
+# quit and returns 0 - having closed nothing. escalate() reads 0 as "the close
+# rung completed", keeps the `closed` phase it wrote before the call, and
+# quit_after later quits an app whose windows are still open. A hidden app owns
+# no onscreen window, so nothing ever drops it back a rung to self-heal.
+#
+# Test 15 asserted only that Chrome was not quit, which the false success also
+# satisfies. The rung now does its actual job - close the windows - and reports
+# whether that worked.
+print -r -- "18. a capped selective-close closes, rather than reporting a refusal as success"
+cp "$REPO/config/app-lifecycle.yaml" "$ROOT/config/app-lifecycle.yaml"
+export STUB_APP_LIST="Google Chrome|com.google.Chrome
+"
+export STUB_CHROME_CALLS="$WORK/chrome.calls"
+export STUB_CHROME_TABS_2="1|Inbox (3) - Gmail
+"
+export STUB_WINDOW_COUNT=2 STUB_AX_RC=0
+: > "$AXCAP"
+
+run --only "Google Chrome" --max-action close
+check     "it closes instead of refusing"        "$OUT" "closing its windows instead"
+check_not "and still never quits"                "$OUT" "Quitting Google Chrome"
+check     "a close that worked exits 0"          "$(( RC == 0 ))" "1"
+
+# Same path, but the close genuinely fails: AX click errors, the keystroke
+# fallback tells us nothing, so the windows are still there.
+export STUB_AX_RC=1
+run --only "Google Chrome" --max-action close
+check     "a close that failed exits non-zero"   "$(( RC != 0 ))" "1"
+unset STUB_AX_RC STUB_CHROME_TABS_2 STUB_CHROME_CALLS
+
+# The two callers want the same failure reported two different ways. The idle
+# job passes --only and reads the status - that is the give-back signal, so it
+# must survive. A bare run is the macOS Shortcut, where "Run Shell Script"
+# turns any nonzero status into an error dialog, which is far too loud for one
+# app keeping a window. Notify there and exit clean.
+print -r -- "19. a manual run notifies; only the idle job's --only run exits non-zero"
+export STUB_APP_LIST="Bear|net.shinyfrog.bear
+"
+export STUB_NOTIFY_LOG="$WORK/notify.log"
+export STUB_WINDOW_COUNT=2 STUB_AX_RC=1   # AX fails, keystrokes prove nothing
+: > "$AXCAP"
+print -r -- "defaults:
+  manual: quit
+  auto: quit
+apps:
+  Bear: {manual: close}" > "$ROOT/config/app-lifecycle.yaml"
+
+run
+check     "a bare run exits 0 despite the failure" "$(( RC == 0 ))" "1"
+check     "and posts a notification"               "$(cat "$STUB_NOTIFY_LOG")" "display notification"
+check     "naming the rung and the app"            "$(cat "$STUB_NOTIFY_LOG")" "close: Bear"
+check     "while still saying so on stdout"        "$OUT" "Failed actions: close: Bear"
+
+run --only Bear
+check     "the idle job's run still exits non-zero" "$(( RC != 0 ))" "1"
+check_not "and does not notify"                     "$(cat "$STUB_NOTIFY_LOG")" "display notification"
+unset STUB_AX_RC STUB_NOTIFY_LOG
 
 # --- a broken config stops us dead -----------------------------------------
 # The default action here is "quit", so a config we cannot read must abort
