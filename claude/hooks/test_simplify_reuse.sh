@@ -24,6 +24,8 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Hooks keep their state under TMPDIR — point them at the sandbox.
 export TMPDIR="$TMP"
+STATE_DIR="$TMP/claude-simplify-$(id -u)"
+state_file() { printf '%s/reuse-%s.json' "$STATE_DIR" "$1"; }
 
 ok()   { PASS=$((PASS + 1)); }
 bad()  { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
@@ -60,6 +62,13 @@ expect() {
     case "$out" in *systemMessage*) got=fire ;; esac
     if [ "$got" != "$want" ]; then
         bad "$desc (expected $want, got $got)"
+        return
+    fi
+    # Half the output contract is that stdout is a single valid JSON object
+    # with a systemMessage key — a substring check alone would miss a message
+    # broken by a quote or newline in a script path.
+    if [ "$got" = fire ] && ! printf '%s' "$out" | jq -e '.systemMessage | strings' >/dev/null 2>&1; then
+        bad "$desc (stdout is not a JSON object with a string systemMessage)"
         return
     fi
     if [ -n "$needle" ] && [[ "$out" != *"$needle"* ]]; then
@@ -131,6 +140,97 @@ for i in 1 2 3 4; do
 done
 expect "edited between every run stays silent" "$(nudge "$S")" silent
 
+# --- scratch-ness is judged relative to the enclosing repo ------------------
+# Repos and worktrees get checked out under /tmp; without this, running a test
+# file three times would nudge you to "promote" your test suite.
+echo "=== repo-relative detection ==="
+
+mkdir -p "$TMP/myrepo/.git" "$TMP/myrepo/tests" "$TMP/myrepo/src" "$TMP/myrepo/tmp"
+printf 'x = 1\n' > "$TMP/myrepo/tests/test_auth.py"
+printf 'x = 1\n' > "$TMP/myrepo/src/utils.py"
+printf 'x = 1\n' > "$TMP/myrepo/tmp/probe.py"
+
+S=repo-tests
+runs 3 "$S" "$TMP" "pytest $TMP/myrepo/tests/test_auth.py -x"
+expect "test file in a repo under /tmp ignored" "$(nudge "$S")" silent
+
+S=repo-src
+runs 3 "$S" "$TMP" "python3 $TMP/myrepo/src/utils.py"
+expect "source file in a repo under /tmp ignored" "$(nudge "$S")" silent
+
+S=repo-tmp
+runs 3 "$S" "$TMP" "python3 $TMP/myrepo/tmp/probe.py"
+expect "repo-local tmp/ is still scratch" "$(nudge "$S")" fire "myrepo/tmp/probe.py"
+
+# --- path resolution: never nudge about a file that isn't there -------------
+echo "=== path resolution ==="
+
+S=cd-prefix
+runs 3 "$S" "/home/user" "cd $TMP && bash scratch/probe.sh"
+OUT=$(nudge "$S")
+expect "cd prefix resolves the real path" "$OUT" fire "$TMP/scratch/probe.sh"
+case "$OUT" in *"/home/user/scratch/probe.sh"*) bad "cd prefix leaked the pre-cd cwd" ;; *) ok ;; esac
+
+S=ghost
+runs 4 "$S" "$TMP" "python3 $TMP/scratch/ghost.py"
+expect "nonexistent script never goes stable" "$(nudge "$S")" silent
+
+S=unexpanded
+runs 4 "$S" "$TMP" 'python3 $TMPDIR/tmp_probe.py'
+expect "unexpanded variable is not a path" "$(nudge "$S")" silent
+
+S=redirect-target
+printf 'x = 1\n' > "$TMP/bin/gen.py"
+runs 3 "$S" "$TMP" "python3 $TMP/bin/gen.py > $TMP/scratch/out.py"
+expect "redirect target is written, not run" "$(nudge "$S")" silent
+
+# --- command shapes that must still count ----------------------------------
+echo "=== command shapes ==="
+
+S=glued
+runs 3 "$S" "$TMP" "python3 $TMP/scratch/probe.py; echo done"
+expect "glued semicolon still counts" "$(nudge "$S")" fire "probe.py"
+
+S=loop
+runs 3 "$S" "$TMP" "for i in 1 2; do python3 $TMP/scratch/probe.py; done"
+expect "for-loop body still counts" "$(nudge "$S")" fire "probe.py"
+
+S=flags
+runs 3 "$S" "$TMP" "python3 -u $TMP/scratch/probe.py"
+expect "interpreter flags don't hide the script" "$(nudge "$S")" fire "probe.py"
+
+S=uv-with
+runs 3 "$S" "$TMP" "uv run --with requests $TMP/scratch/probe.py"
+expect "uv run with flag arguments counts" "$(nudge "$S")" fire "probe.py"
+
+S=bare
+runs 3 "$S" "$TMP/scratch" "python3 probe.py"
+expect "bare name inside a scratch cwd counts" "$(nudge "$S")" fire "$TMP/scratch/probe.py"
+
+S=hash
+printf 'x = 1\n' > "$TMP/scratch/tmp_v#1.py"
+runs 3 "$S" "$TMP" "python3 $TMP/scratch/tmp_v#1.py"
+expect "# in a filename is not a comment" "$(nudge "$S")" fire 'tmp_v#1.py'
+
+# A single huge token is the shape that makes shlex.split quadratic — the hook
+# must bail out, not burn its whole timeout on every large Bash call.
+S=huge
+python3 - "$TMP" > "$TMP/huge.json" <<'PY'
+import json, sys
+# One 400 KB token — an inline program or base64 blob — with a .py mention so
+# the cheap pre-filter doesn't skip it for the wrong reason.
+command = "python3 -c 'x = \"" + "a" * 400_000 + "\"  # probe.py'"
+print(json.dumps({"session_id": "huge", "cwd": sys.argv[1], "tool_name": "Bash",
+                  "tool_input": {"command": command}}))
+PY
+START=$SECONDS
+rc=0
+python3 "$DIR/simplify_track_reuse.py" < "$TMP/huge.json" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || bad "tracker exited $rc on a huge command"
+ELAPSED=$((SECONDS - START))
+if [ "$ELAPSED" -lt 3 ]; then ok; else bad "huge command took ${ELAPSED}s (must bail out fast)"; fi
+expect "huge command tracked nothing" "$(nudge "$S")" silent
+
 # --- nudge: message composition and repeat suppression ----------------------
 echo "=== nudge behaviour ==="
 
@@ -169,10 +269,37 @@ done
 
 # A corrupt state file must degrade to "no candidates", not to an error.
 S=corrupt
-printf 'not json at all' > "$TMP/claude-simplify-reuse-${S}.json"
+mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR"
+printf 'not json at all' > "$(state_file "$S")"
 expect "corrupt state file silent" "$(nudge "$S")" silent
 track "$S" "$TMP" "python3 $TMP/scratch/probe.py"
 ok  # tracker survived a corrupt state file (bad() already fired if it didn't)
+
+# One hostile entry must not suppress the valid candidates beside it, and must
+# not freeze tracking for the rest of the session.
+S=hostile
+runs 3 "$S" "$TMP" "python3 $TMP/scratch/probe.py"
+python3 - "$(state_file "$S")" <<'PY'
+import json, sys
+path = sys.argv[1]
+state = json.load(open(path))
+state["/tmp/scratch/tampered.py"] = 7
+state["/tmp/scratch/typed.py"] = {"runs": "abc", "stable": None}
+json.dump(state, open(path, "w"))
+PY
+expect "hostile state entries don't suppress candidates" "$(nudge "$S")" fire "probe.py"
+track "$S" "$TMP" "python3 $TMP/scratch/probe.py"
+if jq -e '."/tmp/scratch/probe.py"' "$(state_file "$S")" >/dev/null 2>&1 ||
+   jq -e 'to_entries | map(select(.value | type == "object")) | length >= 1' \
+        "$(state_file "$S")" >/dev/null 2>&1; then ok
+else bad "tracking froze after a hostile state entry"; fi
+
+# Session ids are used to build a filename — a traversal attempt is dropped.
+S="../../escape"
+rc=0
+bash_event "$S" "$TMP" "python3 $TMP/scratch/probe.py" |
+    python3 "$DIR/simplify_track_reuse.py" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] && [ ! -e "$TMP/../../escape" ] && ok || bad "session id traversal not rejected"
 
 echo
 TOTAL=$((PASS + FAIL))

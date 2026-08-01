@@ -9,13 +9,17 @@ want is "this throwaway earned its keep", not "a script exists":
     (that's what the simplify_mark_dirty.sh / simplify_nudge.sh pair covers);
   * a run whose file is byte-identical (same mtime) to the previous run is a
     "stable" run. Edit-run-edit-run debugging loops produce runs but no stable
-    runs, so they never reach the promotion threshold.
+    runs, so they never reach the promotion threshold. A path we can't stat is
+    never stable — an unresolvable path is the least verified thing here, and
+    counting it would nudge about scripts that don't exist.
 
-State lives in a per-session JSON file under TMPDIR, same convention as the
-dirty marker. Per-session (not per-user) keeps cleanup free and avoids nudging
-about a script someone abandoned last week. Concurrent Bash calls can race on
-the read-modify-write; the loser silently loses one increment, which is a fine
-outcome for a nudge and not worth a lock file.
+Scratch-ness is judged *relative to the enclosing repo* when there is one, so a
+repo or worktree checked out under /tmp doesn't make its whole test suite look
+like scratch work, while a repo-local `tmp/` still does.
+
+State lives in a per-user 0700 directory under TMPDIR. Concurrent Bash calls can
+race on the read-modify-write; the loser silently loses one increment, which is
+a fine outcome for a nudge and not worth a lock file.
 
 Always exits 0 and never blocks — a tracking hook must not break a Bash call.
 """
@@ -27,70 +31,178 @@ import shlex
 import sys
 
 SCRIPT_RE = re.compile(r"\.(py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl|R)$")
+# Cheap pre-filter so the overwhelming majority of Bash calls never reach the
+# tokenizer: no script extension anywhere in the command, nothing to track.
+SCRIPT_HINT_RE = re.compile(r"\.(py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl|R)\b")
+# shlex.split is quadratic in the length of a single token, and a giant token is
+# exactly what `python3 -c '<program>'` or an inline base64 blob looks like. No
+# scratch-script invocation is this long; refusing to tokenize keeps the hook
+# far inside its timeout instead of stalling every large Bash call.
+MAX_COMMAND_LEN = 20_000
 
-# Throwaway *locations*: a tmp/scratch path segment anywhere, or macOS's
-# /var/folders TMPDIR. Includes the agent scratchpad (/tmp/claude-*/…).
+# Throwaway *locations*: a tmp/scratch path segment, or macOS's /var/folders
+# TMPDIR. Includes the agent scratchpad (/tmp/claude-*/…).
 SCRATCH_DIR_RE = re.compile(r"(^|/)(tmp|temp|scratch|scratchpad|\.tmp|var/folders)(/|$)")
 # Throwaway *names*: tmp_foo.py, scratch-check.sh, oneoff_backfill.py.
 SCRATCH_NAME_RE = re.compile(r"^(tmp|temp|scratch|throwaway|oneoff|one_off)[-_.]")
 # Vendored trees hold plenty of tmp/ paths that are nobody's scratch work.
 VENDOR_RE = re.compile(r"/(node_modules|site-packages|\.venv|venv|\.git|dist|build)/")
-# A script whose own directory is a permanent home already lives where a
-# promotion would put it. Matters because repos and worktrees get checked out
-# under /tmp, which would otherwise make every script in them look scratch.
+# Directories that already are a permanent home — a script sitting in one has
+# nowhere to be promoted to.
 PERMANENT_PARENTS = {"bin", "sbin", "custom_bins", "tools", "scripts", "libexec"}
 
-# A candidate path only counts when something actually ran it: an interpreter
-# in front of it, or the path itself in command position (./tmp/x.sh).
+# A candidate path only counts when something ran it: an interpreter earlier in
+# the same command segment, or the path itself in command position (./tmp/x.sh).
 INTERPRETERS = {
-    "python", "python3", "uv", "uvx", "run", "bash", "sh", "zsh", "fish",
+    "python", "python3", "uv", "uvx", "bash", "sh", "zsh", "fish",
     "node", "bun", "deno", "tsx", "ts-node", "ruby", "perl", "Rscript",
     "pytest", "poetry", "pdm", "source", ".",
 }
-# Tokens after which the next word starts a fresh command.
-CMD_START_AFTER = {
+# Tokens after which the next word starts a fresh command. Glued operators
+# (`x.py; echo`) are split into these by tokenize().
+SEPARATORS = {
     "&&", "||", ";", "|", "|&", "&", "(", ")", "{", "}",
-    "then", "else", "do", "time", "nohup", "env", "exec", "xargs", "command",
+    "then", "else", "do", "done", "fi", "time", "nohup", "env", "exec",
+    "xargs", "command",
 }
+SEPARATOR_RE = re.compile(r"[;|&()]+")
+REDIRECTS = {">", ">>", "<", "<<", "2>", "2>>", "&>", "1>", ">|"}
+ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
-def is_scratch(path: str) -> bool:
+def tokenize(command: str) -> list:
+    """Shell-ish tokens, with glued operators promoted to their own tokens."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        # Unbalanced quotes (heredocs, mostly) — a dumb split still finds paths.
+        tokens = command.split()
+
+    flat = []
+    for token in tokens:
+        if not SEPARATOR_RE.search(token):
+            flat.append(token)
+            continue
+        for i, part in enumerate(SEPARATOR_RE.split(token)):
+            if i:
+                flat.append(";")
+            if part:
+                flat.append(part)
+    return flat
+
+
+def resolve(token: str, cwd: str):
+    """Absolute path for a command token, or None if it isn't literal enough."""
+    if not token or "$" in token or "*" in token or "?" in token:
+        return None
+    return os.path.normpath(os.path.join(cwd, os.path.expanduser(token)))
+
+
+def repo_root(directory: str, cache: dict):
+    """Nearest ancestor holding a .git, or None. Memoized per directory."""
+    if directory in cache:
+        return cache[directory]
+
+    seen, current = [], directory
+    root = None
+    for _ in range(64):  # bounded: never walk a pathological path forever
+        if current in cache:
+            root = cache[current]
+            break
+        seen.append(current)
+        if os.path.exists(os.path.join(current, ".git")):
+            root = current
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+
+    for path in seen:
+        cache[path] = root
+    return root
+
+
+def is_scratch(path: str, cache: dict) -> bool:
+    """Does this look like a throwaway script rather than a real component?"""
     if not SCRIPT_RE.search(path) or VENDOR_RE.search(path):
         return False
-    parent = os.path.dirname(path)
-    if os.path.basename(parent) in PERMANENT_PARENTS:
+
+    directory = os.path.dirname(path)
+    # Inside a repo, judge the path by where it sits *in the repo*: a checkout
+    # under /tmp is a checkout, not scratch — but its own tmp/ dir still is.
+    root = repo_root(directory, cache)
+    relative = os.path.relpath(directory, root) if root else directory
+    if relative == ".":
+        relative = ""
+
+    if PERMANENT_PARENTS & set(relative.split(os.sep)):
         return False
-    if SCRATCH_DIR_RE.search(parent):
+    if SCRATCH_DIR_RE.search(relative):
         return True
     return bool(SCRATCH_NAME_RE.match(os.path.basename(path)))
 
 
 def scripts_run(command: str, cwd: str) -> list:
     """Absolute paths of scratch scripts this command executes (deduped)."""
-    try:
-        tokens = shlex.split(command, comments=True)
-    except ValueError:
-        # Unbalanced quotes (heredocs, mostly) — a dumb split still finds paths.
-        tokens = command.split()
+    if len(command) > MAX_COMMAND_LEN or not SCRIPT_HINT_RE.search(command):
+        return []
 
-    found, at_cmd_start = [], True
+    tokens = tokenize(command)
+    found, cache = [], {}
+    at_cmd_start, saw_interpreter, prev = True, False, ""
+
     for i, token in enumerate(tokens):
-        if token in CMD_START_AFTER:
-            at_cmd_start = True
+        if token in SEPARATORS:
+            at_cmd_start, saw_interpreter, prev = True, False, ""
             continue
-        prev = tokens[i - 1] if i else ""
-        executed = at_cmd_start or os.path.basename(prev) in INTERPRETERS
+        if prev in REDIRECTS:  # a redirect target was written, not run
+            prev = token
+            continue
+        prev = token
+        if ASSIGN_RE.match(token) or token.startswith("-"):
+            continue  # env assignment or flag: neither starts nor ends a command
+
+        # `cd /tmp/work && ./probe.sh` — follow the cwd or the path resolves
+        # against the wrong directory and we nudge about a file that isn't there.
+        if at_cmd_start and token == "cd" and i + 1 < len(tokens):
+            target = resolve(tokens[i + 1], cwd)
+            if target and os.path.isdir(target):
+                cwd = target
+            continue
+
+        if os.path.basename(token) in INTERPRETERS:
+            saw_interpreter = True
+            at_cmd_start = False
+            continue
+
+        executed = at_cmd_start or saw_interpreter
         at_cmd_start = False
-        if executed and is_scratch(token):
-            resolved = os.path.normpath(os.path.join(cwd, os.path.expanduser(token)))
-            if resolved not in found:
-                found.append(resolved)
+        if not executed:
+            continue
+
+        path = resolve(token, cwd)
+        if path and path not in found and is_scratch(path, cache):
+            found.append(path)
     return found
 
 
-def state_path(session_id: str) -> str:
+def state_path(session_id: str):
+    """Per-session state file inside a private per-user directory, or None.
+
+    0700 and ownership-checked: the file's contents reach the user as a
+    systemMessage, so another local account must not be able to write it.
+    """
     tmp = os.environ.get("TMPDIR") or "/tmp"
-    return os.path.join(tmp, f"claude-simplify-reuse-{session_id}.json")
+    directory = os.path.join(tmp, f"claude-simplify-{os.geteuid()}")
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        info = os.stat(directory)
+    except OSError:
+        return None
+    if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        return None
+    return os.path.join(directory, f"reuse-{session_id}.json")
 
 
 def load_state(path: str) -> dict:
@@ -115,19 +227,30 @@ def save_state(path: str, state: dict) -> None:
             pass
 
 
+def count(value) -> int:
+    """Coerce a tally that a corrupt state file may have turned into anything."""
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def record(state: dict, script: str) -> None:
     try:
         mtime = os.path.getmtime(script)
     except OSError:
-        mtime = 0.0  # deleted or never on disk — still counts as a run
+        mtime = None  # unresolvable path: counts as a run, never as stable
 
     entry = state.get(script)
     if not isinstance(entry, dict):
         entry = {"runs": 0, "stable": 0, "mtime": None, "notified": False}
-    entry["runs"] = int(entry.get("runs") or 0) + 1
-    if entry.get("mtime") == mtime:
-        entry["stable"] = int(entry.get("stable") or 0) + 1
+    entry["runs"] = count(entry.get("runs")) + 1
+    if mtime is not None and entry.get("mtime") == mtime:
+        entry["stable"] = count(entry.get("stable")) + 1
+    else:
+        entry["stable"] = count(entry.get("stable"))
     entry["mtime"] = mtime
+    entry["notified"] = bool(entry.get("notified"))
     state[script] = entry
 
 
@@ -141,19 +264,24 @@ def main() -> None:
 
     session_id = payload.get("session_id") or ""
     tool_input = payload.get("tool_input")
-    if not session_id or not isinstance(tool_input, dict):
+    if not session_id or "/" in session_id or not isinstance(tool_input, dict):
         return
 
     command = tool_input.get("command") or ""
     if not isinstance(command, str) or not command:
         return
 
-    cwd = payload.get("cwd") or os.getcwd()
-    scripts = scripts_run(command, cwd if isinstance(cwd, str) else os.getcwd())
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        cwd = os.getcwd()
+
+    scripts = scripts_run(command, cwd)
     if not scripts:
         return
 
     path = state_path(session_id)
+    if not path:
+        return
     state = load_state(path)
     for script in scripts:
         record(state, script)

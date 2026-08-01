@@ -28,13 +28,19 @@ SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null) ||
 
 TMP="${TMPDIR:-/tmp}"
 MARKER="$TMP/claude-simplify-dirty-${SESSION_ID}"
-REUSE_STATE="$TMP/claude-simplify-reuse-${SESSION_ID}.json"
+# Must match state_path() in simplify_track_reuse.py. The 0700 per-user
+# directory matters because these contents are echoed back to the user as a
+# systemMessage — another local account must not be able to write them.
+STATE_DIR="$TMP/claude-simplify-$(id -u)"
+REUSE_STATE="$STATE_DIR/reuse-${SESSION_ID}.json"
+[ -d "$STATE_DIR" ] && [ -O "$STATE_DIR" ] || REUSE_STATE=""
 
 # Runs of the same script needed before it counts as reusable. At least one of
 # them must be a "stable" run (file unchanged since the previous run) so that
 # edit-run-edit-run debugging never trips the nudge — see simplify_track_reuse.py.
+# Leading zeros are rejected too: --argjson would choke on `007`.
 THRESHOLD="${CLAUDE_SIMPLIFY_REUSE_RUNS:-3}"
-[[ "$THRESHOLD" =~ ^[0-9]+$ ]] || THRESHOLD=3
+[[ "$THRESHOLD" =~ ^[1-9][0-9]*$ ]] || THRESHOLD=3
 
 PARTS=()
 
@@ -43,8 +49,11 @@ if [ -f "$MARKER" ]; then
   PARTS+=("Code changed this turn — \`/simplify\` will run a quality pass over the changed files if it's worth one.")
 fi
 
-if [ -f "$REUSE_STATE" ]; then
-  SELECT="(.value.runs // 0) >= \$t and (.value.stable // 0) >= 1 and (.value.notified // false) != true"
+if [ -n "$REUSE_STATE" ] && [ -f "$REUSE_STATE" ]; then
+  # The type guard keeps one corrupt entry from erroring the whole program out
+  # and suppressing every valid candidate alongside it.
+  SELECT="(.value | type) == \"object\" and ((.value.runs // 0) | tonumber? // 0) >= \$t \
+and ((.value.stable // 0) | tonumber? // 0) >= 1 and (.value.notified // false) != true"
   CANDIDATES=$(jq -r --argjson t "$THRESHOLD" \
     "to_entries | map(select($SELECT)) | .[] | \"- \\(.key) (ran \\(.value.runs)×)\"" \
     "$REUSE_STATE" 2>/dev/null) || CANDIDATES=""
@@ -68,6 +77,7 @@ fi
 
 [ ${#PARTS[@]} -eq 0 ] && exit 0
 
+# Command substitution strips the trailing blank line between parts for us.
 MSG=$(printf '%s\n\n' "${PARTS[@]}")
-jq -n --arg msg "${MSG%$'\n\n'}" '{systemMessage: $msg}'
+jq -n --arg msg "$MSG" '{systemMessage: $msg}'
 exit 0
