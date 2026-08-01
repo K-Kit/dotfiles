@@ -56,6 +56,17 @@ Hooks for automating task and agent management workflows.
 - Blocks tool call when `AUTO_AGENT_DEPTH >= AUTO_AGENT_MAX_DEPTH`.
 - Intended to cap recursive delegation chains.
 
+### simplify_mark_dirty.sh / simplify_track_reuse.py / simplify_nudge.sh
+
+**Purpose:** Suggest a `/simplify` pass when the session produced work worth one. Two independent signals feed one `Stop` message; both are soft nudges (`systemMessage`) that never continue the turn.
+
+**Behavior:**
+- `simplify_mark_dirty.sh` (`PostToolUse`, `Write|Edit`) touches a per-session marker when a code file changes → "run a quality pass".
+- `simplify_track_reuse.py` (`PostToolUse`, `Bash`) tallies *executions* of throwaway scripts (paths under `tmp/`/`scratch/`, or `tmp_`-prefixed names) in a per-session JSON state file. A run whose file is unchanged since the previous run counts as "stable", so edit-run-edit-run debugging never accumulates.
+- `simplify_nudge.sh` (`Stop`) fires when a script hit `CLAUDE_SIMPLIFY_REUSE_RUNS` (default 3) runs with at least one stable run → "promote it into a permanent component" (criteria and destinations: `rules/reusable-component-promotion.md`). Each candidate is nudged once per session.
+
+**Tests:** `test_simplify_reuse.sh`.
+
 ## Runtime Policy
 
 Shared config is in `config/ai_automation.sh` (optionally overridden by `~/.claude/ai_automation.local.sh`).
