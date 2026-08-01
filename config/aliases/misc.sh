@@ -174,3 +174,77 @@ things() {
             ;;
     esac
 }
+
+#-------------------------------------------------------------
+# smix — random country + genre, for Spotify exploration
+#-------------------------------------------------------------
+
+# Draw one genre, then one country from that genre's eligible set, from $1 (a
+# smix.tsv path). $2/$3 are random numbers that MUST be expanded by the calling
+# shell: zsh does not re-seed $RANDOM in forked subshells, so a $RANDOM
+# referenced inside $( ) returns the same value every call and every draw comes
+# out identical. bash re-seeds, which hides the bug. Randomising in the caller
+# works under both. Emits "country<TAB>genre".
+#
+# Genre first, then country, is what makes dead pairs unconstructible: a genre
+# never sees a country outside its own scope, so "Mongolia Reggaeton" has no
+# code path. Drawing the country first would need a rejection loop instead.
+_smix_draw() {
+    awk -F'\t' -v r1="$2" -v r2="$3" '
+        /^#/ || NF == 0 { next }
+        $1 == "C" { cn[++nc] = $2; ct[nc] = $3; known[$2] = 1 }
+        $1 == "G" { gn[++ng] = $2; gs[ng] = $3 }
+        END {
+            if (nc == 0 || ng == 0) { exit 3 }
+            g = (r1 % ng) + 1
+            if (gs[g] == "*mod")        { for (i = 1; i <= nc; i++) if (ct[i] == "1") e[++ne] = cn[i] }
+            else if (gs[g] == "*trad")  { for (i = 1; i <= nc; i++)                   e[++ne] = cn[i] }
+            else { n = split(gs[g], p, ","); for (i = 1; i <= n; i++) if (p[i] in known) e[++ne] = p[i] }
+            if (ne == 0) { exit 4 }
+            printf "%s\t%s\n", e[(r2 % ne) + 1], gn[g]
+        }
+    ' "$1"
+}
+
+# smix        one country + genre pairing, with a Spotify search link
+# smix 5      five pairings
+# smix -o     also open the first pairing's Spotify search (macOS `open`)
+smix() {
+    local do_open=0 count=1
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -o|--open) do_open=1 ;;
+            [0-9]*)    count="$1" ;;
+            *)         echo "Usage: smix [-o] [count]"; return 1 ;;
+        esac
+        shift
+    done
+
+    local data="${SMIX_DATA:-$DOT_DIR/config/data/smix.tsv}"
+    if [[ ! -r "$data" ]]; then
+        echo "smix: cannot read data file: $data" >&2
+        return 1
+    fi
+
+    local i draw country genre query url r1 r2
+    for ((i = 0; i < count; i++)); do
+        # Expand $RANDOM HERE, not inside the $( ) below: zsh evaluates
+        # arguments to a command substitution in the forked subshell, where it
+        # does not re-seed, so every draw would come out identical.
+        r1=$RANDOM
+        r2=$RANDOM
+        draw=$(_smix_draw "$data" "$r1" "$r2") || {
+            echo "smix: no usable country/genre data in $data" >&2
+            return 1
+        }
+        country="${draw%%	*}"
+        genre="${draw##*	}"
+        query="$country $genre"
+        url="https://open.spotify.com/search/${query// /%20}"
+        printf '%s — %s\n  %s\n' "$country" "$genre" "$url"
+        if (( do_open )); then
+            command -v open >/dev/null 2>&1 && open "$url"
+            do_open=0
+        fi
+    done
+}
