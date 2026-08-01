@@ -243,7 +243,9 @@ smix() {
         url="https://open.spotify.com/search/${query// /%20}"
         printf '%s — %s\n  %s\n' "$country" "$genre" "$url"
         if (( do_open )); then
-            command -v open >/dev/null 2>&1 && open "$url"
+            # `o` is the repo's cross-platform opener (config/modern_tools.sh);
+            # bare `open` is macOS-only and would silently do nothing on Linux.
+            o "$url"
             do_open=0
         fi
     done
