@@ -16,6 +16,12 @@
 #     scope = *trad  portable traditional  -> paired with any country
 #     scope = Country[,Country...]  regional genre -> only its home countries
 #
+# Provenance: the country list comes from ISO 3166. The genres and every
+# genre->country mapping are hand-curated -- no machine-readable source for
+# them existed (Spotify's available-genre-seeds endpoint is deprecated, the
+# usual genre gists are not enumerable, Wikipedia's lists truncate). Expect
+# some attributions to be arguable; fix them by editing the row.
+#
 # Dead-pair prevention: smix draws the GENRE first, then draws a country from
 # that genre's eligible set. An impossible pairing is therefore unconstructible
 # rather than filtered after the fact. Adding a genre with a country name that
@@ -232,8 +238,10 @@ C	Brittany	2
 C	Cape Breton	2
 C	Catalonia	2
 C	Corsica	2
+C	French Antilles	2
 C	Greenland	2
 C	Hawaii	2
+C	Hong Kong	1
 C	Kurdistan	2
 C	Occitania	2
 C	Okinawa	2
@@ -349,7 +357,7 @@ G	Rocksteady	Jamaica
 G	Ska	Jamaica
 G	Soca	Trinidad and Tobago,Barbados
 G	Steelpan	Trinidad and Tobago
-G	Zouk	Haiti
+G	Zouk	French Antilles,Haiti
 
 # -- regional: Africa --
 G	Afrobeat	Nigeria
@@ -400,7 +408,7 @@ G	Qawwali	Pakistan,India
 G	Tabla	India
 
 # -- regional: East and Southeast Asia --
-G	Cantopop	China
+G	Cantopop	Hong Kong,China
 G	City Pop	Japan
 G	Dangdut	Indonesia
 G	Enka	Japan
