@@ -46,7 +46,7 @@ PARTS=()
 
 if [ -f "$MARKER" ]; then
   rm -f "$MARKER" 2>/dev/null || true
-  PARTS+=("Code changed this turn — \`/simplify\` will run a quality pass over the changed files if it's worth one.")
+  PARTS+=("Code changed this turn — run \`/simplify\` over it: reuse, simplification, efficiency, altitude.")
 fi
 
 if [ -n "$REUSE_STATE" ] && [ -f "$REUSE_STATE" ]; then
