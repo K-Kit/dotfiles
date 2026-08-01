@@ -176,20 +176,20 @@ things() {
 }
 
 #-------------------------------------------------------------
-# smix — random country + genre, for Spotify exploration
+# music-roulette — random country + genre, for Spotify exploration
 #-------------------------------------------------------------
 
 # Draw one genre, then one country from that genre's eligible set, from $1 (a
-# smix.tsv path). $2/$3 are random numbers that MUST be expanded by the calling
-# shell: zsh does not re-seed $RANDOM in forked subshells, so a $RANDOM
-# referenced inside $( ) returns the same value every call and every draw comes
-# out identical. bash re-seeds, which hides the bug. Randomising in the caller
-# works under both. Emits "country<TAB>genre".
+# music-roulette.tsv path). $2/$3 are random numbers that MUST be expanded by
+# the calling shell: zsh does not re-seed $RANDOM in forked subshells, so a
+# $RANDOM referenced inside $( ) returns the same value every call and every
+# draw comes out identical. bash re-seeds, which hides the bug. Randomising in
+# the caller works under both. Emits "country<TAB>genre".
 #
 # Genre first, then country, is what makes dead pairs unconstructible: a genre
 # never sees a country outside its own scope, so "Mongolia Reggaeton" has no
 # code path. Drawing the country first would need a rejection loop instead.
-_smix_draw() {
+_music_roulette_draw() {
     awk -F'\t' -v r1="$2" -v r2="$3" '
         /^#/ || NF == 0 { next }
         $1 == "C" { cn[++nc] = $2; ct[nc] = $3; known[$2] = 1 }
@@ -206,23 +206,23 @@ _smix_draw() {
     ' "$1"
 }
 
-# smix        one country + genre pairing, with a Spotify search link
-# smix 5      five pairings
-# smix -o     also open the first pairing's Spotify search (macOS `open`)
-smix() {
+# music-roulette        one country + genre pairing, with a Spotify search link
+# music-roulette 5      five pairings
+# music-roulette -o     also open the first pairing's Spotify search
+music-roulette() {
     local do_open=0 count=1
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -o|--open) do_open=1 ;;
             [0-9]*)    count="$1" ;;
-            *)         echo "Usage: smix [-o] [count]"; return 1 ;;
+            *)         echo "Usage: music-roulette [-o] [count]"; return 1 ;;
         esac
         shift
     done
 
-    local data="${SMIX_DATA:-$DOT_DIR/config/data/smix.tsv}"
+    local data="${MUSIC_ROULETTE_DATA:-$DOT_DIR/config/data/music-roulette.tsv}"
     if [[ ! -r "$data" ]]; then
-        echo "smix: cannot read data file: $data" >&2
+        echo "music-roulette: cannot read data file: $data" >&2
         return 1
     fi
 
@@ -233,8 +233,8 @@ smix() {
         # does not re-seed, so every draw would come out identical.
         r1=$RANDOM
         r2=$RANDOM
-        draw=$(_smix_draw "$data" "$r1" "$r2") || {
-            echo "smix: no usable country/genre data in $data" >&2
+        draw=$(_music_roulette_draw "$data" "$r1" "$r2") || {
+            echo "music-roulette: no usable country/genre data in $data" >&2
             return 1
         }
         country="${draw%%	*}"
@@ -250,3 +250,9 @@ smix() {
         fi
     done
 }
+
+# Transitional: `smix` was the original name. Kept so muscle memory still works.
+# A function, not an alias: zsh expands aliases at parse time, so an alias
+# defined by a sourced file is invisible to anything parsed alongside the
+# `source` itself (scripts, `zsh -c`). A function resolves at call time.
+smix() { music-roulette "$@"; }

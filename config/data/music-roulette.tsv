@@ -1,4 +1,4 @@
-# smix.tsv — data for the `smix` alias (config/aliases/misc.sh)
+# music-roulette.tsv — data for the `music-roulette` alias (config/aliases/misc.sh)
 #
 # Tab-separated. Lines starting with # and blank lines are ignored.
 #
@@ -22,11 +22,11 @@
 # usual genre gists are not enumerable, Wikipedia's lists truncate). Expect
 # some attributions to be arguable; fix them by editing the row.
 #
-# Dead-pair prevention: smix draws the GENRE first, then draws a country from
-# that genre's eligible set. An impossible pairing is therefore unconstructible
-# rather than filtered after the fact. Adding a genre with a country name that
-# does not appear as a C row is the one way to break this -- tmp/test-smix.sh
-# checks for exactly that.
+# Dead-pair prevention: music-roulette draws the GENRE first, then draws a
+# country from that genre's eligible set. An impossible pairing is therefore
+# unconstructible rather than filtered after the fact. Adding a genre with a
+# country name that does not appear as a C row is the one way to break this --
+# tmp/test-music-roulette.sh checks for exactly that.
 
 # --------------------------------------------------------------------------
 # Countries and music cultures
