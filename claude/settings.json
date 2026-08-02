@@ -683,6 +683,12 @@
           },
           {
             "type": "command",
+            "command": "$HOME/.claude/hooks/reap_jobs.sh",
+            "timeout": 60,
+            "async": true
+          },
+          {
+            "type": "command",
             "command": "$HOME/.claude/hooks/check_venv.sh",
             "timeout": 3
           },
