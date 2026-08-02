@@ -426,6 +426,11 @@
             "command": "$HOME/.claude/hooks/mark_failed_sync.sh",
             "if": "Bash(git *)",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/simplify_track_reuse.py",
+            "timeout": 5
           }
         ]
       },
@@ -1028,12 +1033,11 @@
   "skipDangerousModePermissionPrompt": true,
   "skipWorkflowUsageWarning": true,
   "claudeMdExcludes": [
-    "node_modules",
-    "vendor",
-    ".venv",
-    "target",
-    "cache",
-    ".cache"
+    "**/node_modules/**",
+    "**/vendor/**",
+    "**/.venv/**",
+    "**/target/**",
+    "**/.cache/**"
   ],
   "theme": "auto",
   "verbose": false,

@@ -64,3 +64,5 @@ This repo is **public** — and a branch in a public repo is public too, so pers
 ## Learnings
 
 Project-specific bugs, quirks, decisions and current state. Timestamp `- description (YYYY-MM-DD)`, keep under 20, prune past two weeks — retired entries move to [`docs/tooling-and-packages.md`](docs/tooling-and-packages.md) § Past Learnings.
+
+- The simplify nudge now has a second signal: `simplify_track_reuse.py` counts *runs* of scratch scripts (not writes — writes are iteration) and the Stop hook suggests promoting any that ran 3× with at least one run unchanged. Rules for where a promoted script lands: `claude/rules/reusable-component-promotion.md` (2026-08-01)

@@ -86,7 +86,7 @@ COMPONENTS:
     --mcp-sync        Install daily shared MCP sync for Claude and Codex
     --brew-update     Install weekly package upgrade + cleanup (brew/apt/dnf/pacman)
     --keyboard        Install keyboard repeat enforcement at login (macOS only)
-    --hide-idle-apps  Hide idle apps (Cmd+H) after N min not frontmost, except [hide-idle-exclude] (macOS only)
+    --hide-idle-apps  Hide, then close, then quit apps left covered up, per config/app-lifecycle.yaml (macOS only, off by default)
     --file-apps       Set default editor for coding file types (macOS only)
     --bedtime         Install bedtime timezone enforcement (macOS only, opt-in)
     --bearcli         Symlink Bear CLI → /usr/local/bin (macOS only, for cron/scripts)
@@ -1128,6 +1128,18 @@ queue_scheduled_job() {
 
     if [[ "$DEPLOY_HIDE_IDLE_APPS" == "true" ]] && is_macos; then
         queue_scheduled_job hide-idle-apps "$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh"
+    elif is_macos && (( ${EXPLICIT_OPT_OUTS[(Ie)HIDE_IDLE_APPS]} )); then
+        # This job used to default to on, and its plist points at the same
+        # binary, so an upgrade that flips the default to off would otherwise
+        # leave the old schedule running - now with close and quit rungs it
+        # never had. Opting out has to actually unload it.
+        #
+        # Gated on an EXPLICIT --no-hide-idle-apps, not on the flag being false:
+        # --only and --minimal set every other component false, so `--only vim`
+        # would otherwise tear this job down despite --only promising to touch
+        # nothing else. Refusing a component and not selecting it differ.
+        [[ -f "$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh" ]] && \
+            "$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh" --uninstall >/dev/null 2>&1 || true
     fi
 
     if (( ${#scheduled_jobs[@]} > 0 )); then
