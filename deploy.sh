@@ -1127,6 +1127,27 @@ queue_scheduled_job() {
     fi
 
     if [[ "$DEPLOY_HIDE_IDLE_APPS" == "true" ]] && is_macos; then
+        # Provenance, not the resolved boolean, decides whether this run may MINT
+        # the escalation token. DEPLOY_HIDE_IDLE_APPS=true can come from a CLI
+        # flag, a profile, or a config.local.sh line written long ago - and
+        # config.local.sh is sourced before parse_args. A host that pinned
+        # `DEPLOY_HIDE_IDLE_APPS=true` back in the hide-only era would otherwise
+        # be handed close/quit consent by a plain `./deploy.sh --non-interactive`,
+        # which is exactly the silent hide->quit upgrade the token exists to stop.
+        # The setup script still re-writes an already-present token, so ordinary
+        # redeploys of a consenting machine are unaffected.
+        # Assigned on BOTH branches, never merely set on one. A sentinel that is
+        # only ever written to true is not a gate: run_parallel passes our
+        # environment down, so an inherited HIDE_IDLE_APPS_EXPLICIT_CONSENT=true -
+        # left by an earlier opt-in deploy in the same shell, or exported by a
+        # wrapper - would sail through an if-without-else and be read as fresh
+        # consent. Deriving it unconditionally makes this invocation the only
+        # thing that can decide.
+        if (( ${EXPLICIT_OPT_INS[(Ie)HIDE_IDLE_APPS]} )); then
+            export HIDE_IDLE_APPS_EXPLICIT_CONSENT=true
+        else
+            export HIDE_IDLE_APPS_EXPLICIT_CONSENT=false
+        fi
         queue_scheduled_job hide-idle-apps "$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh"
     elif is_macos && (( ${EXPLICIT_OPT_OUTS[(Ie)HIDE_IDLE_APPS]} )); then
         # This job used to default to on, and its plist points at the same
@@ -1138,6 +1159,15 @@ queue_scheduled_job() {
         # --only and --minimal set every other component false, so `--only vim`
         # would otherwise tear this job down despite --only promising to touch
         # nothing else. Refusing a component and not selecting it differ.
+        #
+        # That narrowness leaves a real gap, and it is deliberately NOT closed
+        # here: a plain `./deploy.sh` on a machine from the default-on era takes
+        # neither branch, so the legacy job stays loaded and runs today's binary.
+        # Widening this condition is the one fix that cannot work - it is the
+        # `--only vim` bug above. The gap is closed at the other end instead, by
+        # an escalation token that only the install path writes: an inherited job
+        # keeps hiding and can no longer close or quit. See ESCALATION_TOKEN in
+        # custom_bins/hide-idle-apps.
         [[ -f "$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh" ]] && \
             "$DOT_DIR/scripts/cleanup/setup_hide_idle_apps.sh" --uninstall >/dev/null 2>&1 || true
     fi
