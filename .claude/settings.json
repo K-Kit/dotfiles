@@ -19,9 +19,9 @@
     "playwright@claude-plugins-official": false,
     "plugin-dev@claude-plugins-official": true,
     "pyright-lsp@claude-plugins-official": true,
-    "ralph-loop@claude-plugins-official": false,
+    "ralph-loop@claude-plugins-official": true,
     "remember@claude-plugins-official": true,
-    "research@ai-safety-plugins": false,
+    "research@ai-safety-plugins": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
     "security-guidance@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,
@@ -32,6 +32,6 @@
     "ui-ux-pro-max@ui-ux-pro-max-skill": true,
     "viz@ai-safety-plugins": true,
     "workflow@ai-safety-plugins": true,
-    "writing@ai-safety-plugins": false
+    "writing@ai-safety-plugins": true
   }
 }

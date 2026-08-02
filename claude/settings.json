@@ -791,7 +791,7 @@
     "hookify@claude-plugins-official": true,
     "huggingface-skills@claude-plugins-official": false,
     "imessage@claude-plugins-official": false,
-    "llms-fetch-mcp@alignment-hive": false,
+    "llms-fetch-mcp@alignment-hive": true,
     "playground@claude-plugins-official": false,
     "playwright@claude-plugins-official": true,
     "plugin-dev@claude-plugins-official": false,
@@ -806,10 +806,10 @@
     "telegram@claude-plugins-official": false,
     "things-mcp@productivity-tools": false,
     "typescript-lsp@claude-plugins-official": true,
-    "ui-ux-pro-max@ui-ux-pro-max-skill": false,
-    "viz@ai-safety-plugins": false,
+    "ui-ux-pro-max@ui-ux-pro-max-skill": true,
+    "viz@ai-safety-plugins": true,
     "workflow@ai-safety-plugins": true,
-    "writing@ai-safety-plugins": false
+    "writing@ai-safety-plugins": true
   },
   "extraKnownMarketplaces": {
     "ai-safety-plugins": {
@@ -1022,7 +1022,7 @@
   "advisorModel": "opus",
   "showClearContextOnPlanAccept": true,
   "autoUpdatesChannel": "latest",
-  "plansDirectory": "plans",
+  "plansDirectory": "~/vault/specs",
   "autoMemoryDirectory": "memory",
   "showThinkingSummaries": true,
   "skipDangerousModePermissionPrompt": true,
@@ -1081,10 +1081,6 @@
       ],
       "command": "/Applications/Bear.app/Contents/MacOS/bearcli"
     },
-    "things-cloud": {
-      "type": "http",
-      "url": "http://127.0.0.1:8080/mcp"
-    },
     "zotero": {
       "args": [
         "serve"
@@ -1096,6 +1092,10 @@
         "ZOTERO_LIBRARY_ID": "${ZOTERO_LIBRARY_ID}",
         "ZOTERO_LIBRARY_TYPE": "${ZOTERO_LIBRARY_TYPE:-user}"
       }
+    },
+    "things-cloud": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp"
     }
   }
 }
