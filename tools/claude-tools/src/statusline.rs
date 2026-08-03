@@ -325,8 +325,11 @@ fn format_classifier_str() -> Option<String> {
     match backend {
         "api" if label.is_empty() => Some("\x1b[2mauto\x1b[0m".to_string()),
         "api" => Some(format!("\x1b[2mauto:{}\x1b[0m", label)),
-        "subscription" if label.is_empty() => Some("\x1b[33mauto:sub\x1b[0m".to_string()),
-        "subscription" => Some(format!("\x1b[33mauto:sub\x1b[0m \x1b[2m({} down)\x1b[0m", label)),
+        // Deliberately does NOT name a key. `label` is the conf's preferred key,
+        // but with-anthropic-key.sh defers to an already-exported ANTHROPIC_API_KEY,
+        // so the key that actually failed may be a different one — naming the wrong
+        // key as down is worse than naming none. The healthy line still shows it.
+        "subscription" => Some("\x1b[33mauto:sub\x1b[0m \x1b[2m(api down)\x1b[0m".to_string()),
         "dead" => Some("\x1b[31m🔴auto\x1b[0m".to_string()),
         _ => None,
     }

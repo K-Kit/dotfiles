@@ -15,7 +15,13 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-RUST_BIN="$REPO/tools/claude-tools/target/release/claude-tools"
+# Deliberately the DEPLOYED dispatcher, not tools/claude-tools/target/release/.
+# settings.json runs bare `claude-tools statusline`, which resolves to this path
+# via custom_bins on PATH. Testing the fresh build instead let a stale committed
+# asset ship with no classifier segment while this suite stayed green
+# (2026-07-21 → 2026-08-03). If this fails, the committed asset is behind the
+# source: rebuild it per scripts/check-claude-tools-fresh.sh.
+RUST_BIN="$REPO/custom_bins/claude-tools"
 BASH_SL="$REPO/claude/statusline.sh"
 PASS=0
 FAIL=0
@@ -68,6 +74,12 @@ classifier_segment() {
     strip_ansi | tr '·' '\n' | grep -o 'auto[^ ]*\( ([^)]*)\)\?' | head -1 | sed 's/[[:space:]]*$//'
 }
 
+# Same segment with ANSI intact, so the parity check covers colour too. Stripping
+# first would let the two implementations disagree on dim-vs-yellow and still pass.
+classifier_segment_raw() {
+    tr '·' '\n' | grep 'auto' | head -1 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
 check() {
     local desc="$1" got="$2" want="$3"
     if [[ "$got" == "$want" ]]; then
@@ -78,20 +90,28 @@ check() {
     fi
 }
 
+# Fail, never skip. An earlier version exited 0 here, so a missing binary read
+# as a pass — the same silent-green failure mode as testing the wrong binary.
 [[ -x "$RUST_BIN" ]] || {
-    echo "SKIP: $RUST_BIN not built — run: cargo build --release --manifest-path tools/claude-tools/Cargo.toml" >&2
-    exit 0
+    echo "FAIL: $RUST_BIN missing or not executable" >&2
+    exit 1
 }
+
+echo "=== the deployed claude-tools is the platform dispatcher, not a raw binary ==="
+# custom_bins/claude-tools must stay a text wrapper that execs the arch-suffixed
+# asset. It has been clobbered with a raw ELF twice (e7c2de0 fixed it, eabeba2
+# reintroduced it) by a rebuild copied to the wrong path. Two bytes catch it.
+check "dispatcher is a shell wrapper" "$(head -c2 "$RUST_BIN")" '#!'
 
 echo "=== healthy API renders a minimal segment naming the active key ==="
 write_health api
 check "rust: api shows the key label" "$(render_rust | classifier_segment)" "auto:mats"
 check "bash: api shows the key label" "$(render_bash | classifier_segment)" "auto:mats"
 
-echo "=== degraded to subscription is visible and names the failed key ==="
+echo "=== degraded to subscription is visible but does NOT name a key ==="
 write_health subscription
-check "rust: subscription" "$(render_rust | classifier_segment)" "auto:sub (mats down)"
-check "bash: subscription" "$(render_bash | classifier_segment)" "auto:sub (mats down)"
+check "rust: subscription" "$(render_rust | classifier_segment)" "auto:sub (api down)"
+check "bash: subscription" "$(render_bash | classifier_segment)" "auto:sub (api down)"
 
 echo "=== both backends dead ==="
 write_health dead
@@ -121,9 +141,9 @@ printf '%s\n' \
     > "$FAKE/dot/config/secrets-global.conf"
 for backend in api subscription dead; do
     write_health "$backend"
-    r=$(render_rust | classifier_segment)
-    b=$(render_bash | classifier_segment)
-    check "parity ($backend)" "$b" "$r"
+    r=$(render_rust | classifier_segment_raw)
+    b=$(render_bash | classifier_segment_raw)
+    check "parity ($backend, ANSI included)" "$b" "$r"
 done
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

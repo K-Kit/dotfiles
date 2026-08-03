@@ -55,13 +55,53 @@ while IFS= read -r binary; do
     fi
 done < <(git -C "$REPO_ROOT" ls-files 'custom_bins/claude-tools-*')
 
+# custom_bins/claude-tools must stay the platform dispatch WRAPPER — a shell
+# script that execs the arch-suffixed asset. It is the path the statusline
+# actually invokes, so when a rebuild is copied here instead of to
+# claude-tools-<platform>, one architecture's binary becomes the runtime for
+# every machine and silently freezes at whatever the source said that day.
+# That has happened twice (e7c2de0 fixed it, eabeba2 reintroduced it), and
+# neither the date comparison above nor SHA256SUMS catches it — the file is
+# not tracked as an asset and it still exits 0. Two bytes do catch it.
+WRAPPER="$REPO_ROOT/custom_bins/claude-tools"
+clobbered=false
+if [[ -f "$WRAPPER" ]] && [[ "$(head -c2 "$WRAPPER" 2>/dev/null)" != '#!' ]]; then
+    clobbered=true
+fi
+
+# SHA256SUMS is the trust anchor bootstrap_claude_tools verifies prebuilt
+# downloads against. A rebuilt-but-unrecorded asset makes a fresh machine
+# reject the very binary this repo ships.
+SUMS="$SRC_DIR/SHA256SUMS"
+badsums=()
+if [[ -f "$SUMS" ]]; then
+    while read -r want name; do
+        [[ -n "$name" ]] || continue
+        got=$(sha256sum "$REPO_ROOT/custom_bins/$name" 2>/dev/null | cut -d' ' -f1)
+        [[ "$got" == "$want" ]] || badsums+=("$name")
+    done < "$SUMS"
+fi
+
 # Uncommitted source edits are a softer signal: nothing is stale *yet*, but
 # every binary will be the moment the edit is committed.
 dirty_src=$(git -C "$REPO_ROOT" status --porcelain -- tools/claude-tools/src 2>/dev/null)
 
-if [[ ${#stale[@]} -eq 0 && -z "$dirty_src" ]]; then
+if [[ ${#stale[@]} -eq 0 && -z "$dirty_src" ]] \
+    && [[ "$clobbered" == "false" && ${#badsums[@]} -eq 0 ]]; then
     $QUIET || echo "claude-tools binaries are up to date with the source"
     exit 0
+fi
+
+if [[ "$clobbered" == "true" ]]; then
+    echo "🔴 custom_bins/claude-tools is NOT the dispatch wrapper — it looks like a raw binary."
+    echo "  The statusline runs this path on every platform. Restore the wrapper:"
+    echo "    git show e7c2de0:custom_bins/claude-tools > custom_bins/claude-tools && chmod +x custom_bins/claude-tools"
+    echo "  Rebuilds belong in custom_bins/claude-tools-<platform>, never here."
+fi
+
+if [[ ${#badsums[@]} -gt 0 ]]; then
+    echo "⚠ SHA256SUMS does not match the committed binaries: ${badsums[*]}"
+    echo "  Refresh it:  (cd custom_bins && sha256sum claude-tools-* > ../tools/claude-tools/SHA256SUMS)"
 fi
 
 if [[ -n "$dirty_src" ]]; then

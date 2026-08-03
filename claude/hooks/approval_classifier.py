@@ -22,8 +22,31 @@ RULES_PATH = os.path.join(os.path.dirname(__file__), "approval_classifier_rules.
 API_URL = "https://api.anthropic.com/v1/messages"
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 500
-TIMEOUT_SECONDS = 12
 LOG_PATH = os.path.expanduser("~/.cache/claude/approval-classifier.log")
+
+# --- End-to-end time budget ---
+# Two sequential backends with independent timeouts can outlive the hook that
+# spawned them. Claude kills the PermissionRequest command after
+# HOOK_TIMEOUT_SECONDS, and a killed process writes no health file and emits no
+# warning — so the statusline keeps reporting "healthy" in exactly the case this
+# whole feature exists to make visible. One budget, allocated explicitly, with
+# the tail reserved for the epilogue.
+#
+# HOOK_TIMEOUT_SECONDS MUST match the PermissionRequest "timeout" in
+# claude/settings.json. Worst case: 8s API + 18s subscription + 4s epilogue = 30s.
+HOOK_TIMEOUT_SECONDS = 30
+EPILOGUE_RESERVE_SECONDS = 4  # write_health + emit_warning + stdout flush
+TOTAL_BUDGET_SECONDS = HOOK_TIMEOUT_SECONDS - EPILOGUE_RESERVE_SECONDS
+TIMEOUT_SECONDS = 8  # API backend — fail fast so the fallback gets real room
+
+# Monotonic, set at import so interpreter startup and module import count against
+# the budget too; the hook's clock started before any of this ran.
+_STARTED_MONOTONIC = time.monotonic()
+
+
+def remaining_budget() -> float:
+    """Seconds left before the hook deadline, minus the epilogue reserve."""
+    return TOTAL_BUDGET_SECONDS - (time.monotonic() - _STARTED_MONOTONIC)
 
 # --- Subscription fallback (second backend) ---
 # When the API-key path fails for ANY reason (no key, 401/403, 429, provider
@@ -36,7 +59,11 @@ LOG_PATH = os.path.expanduser("~/.cache/claude/approval-classifier.log")
 # Recursion is prevented by NESTED_ENV instead (checked at the top of main()),
 # which the child inherits through the environment.
 SUBSCRIPTION_MODEL = "haiku"
+# Ceiling only. The value actually passed is min(this, remaining_budget()), and
+# the attempt is skipped entirely below SUBSCRIPTION_MIN_SECONDS — starting a
+# ~9s call with 2s left just guarantees a kill mid-flight.
 SUBSCRIPTION_TIMEOUT_SECONDS = 60
+SUBSCRIPTION_MIN_SECONDS = 6
 NESTED_ENV = "APPROVAL_CLASSIFIER_NESTED"
 
 # Which backend last served a classification, read by the statusline.
@@ -852,7 +879,16 @@ def write_health(backend: str, detail: str = "") -> None:
 
 
 def extract_json_object(text: str) -> dict:
-    """Parse the first {...} block out of a model response."""
+    """Parse the first {...} block out of a model response.
+
+    Every failure leaves as an ApprovalClassifierWarning. It used to let
+    json.JSONDecodeError escape when braces were present but the span between
+    them was not valid JSON (a fenced block followed by prose containing a
+    brace, say). That exception is not what callers catch, so it escaped the
+    backend handler entirely: the hook died before write_health() ran, and the
+    statusline went on reporting a healthy classifier that was in fact dead —
+    precisely the invisibility this whole change exists to remove.
+    """
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1:
@@ -861,7 +897,14 @@ def extract_json_object(text: str) -> dict:
             text[:200],
             f"Check {LOG_PATH}. Claude will fall back to the normal permission prompt.",
         )
-    return json.loads(text[start : end + 1])
+    try:
+        return json.loads(text[start : end + 1])
+    except ValueError as e:  # JSONDecodeError is a ValueError subclass
+        raise ApprovalClassifierWarning(
+            "The classifier returned a response that was not valid JSON.",
+            f"{e}: {text[:200]}",
+            f"Check {LOG_PATH}. Claude will fall back to the normal permission prompt.",
+        ) from e
 
 
 def classify_via_subscription(
@@ -871,6 +914,7 @@ def classify_via_subscription(
     rules: str,
     trust_section: str = "",
     user_message: str = "",
+    timeout: float = SUBSCRIPTION_TIMEOUT_SECONDS,
 ) -> dict:
     """Second backend: classify through the Claude CLI's OAuth subscription.
 
@@ -889,23 +933,61 @@ def classify_via_subscription(
         auto-discovers CLAUDE.md, and running in the target repo would let an
         untrusted repo's CLAUDE.md write instructions into the prompt that
         decides whether to auto-approve actions in that same repo.
+
+    `--tools ""` is load-bearing, not tidiness. The child is a full Claude Code
+    session: without it the child can run Bash, and its own PermissionRequest
+    hook is the one thing that would have stopped it — except NESTED_ENV makes
+    that hook exit immediately. Since the prompt necessarily contains
+    attacker-influenced text (the tool_input being judged), a session that can
+    both read that text and execute commands is the whole attack. The child only
+    needs to emit JSON, so it needs no tools at all.
+
+    The rules go in `--system-prompt`, not the user turn, so the instructions and
+    the untrusted text are not in the same channel — and it replaces the Claude
+    Code agent persona, which this child has no use for.
+
+    `--safe-mode` disables CLAUDE.md, skills, plugins, hooks, MCP servers, custom
+    commands and agents in one flag (verified in `claude --help`, 2026-08-03). It
+    makes the cwd=~ and NESTED_ENV choices above belt-and-braces rather than the
+    only line of defence, and it drops the child's startup cost. Both are kept:
+    each of them alone is a single point of failure if the flag's meaning drifts.
     """
     user_msg = build_classify_user_msg(tool_name, tool_input, cwd, user_message)
-    prompt = (
-        f"{rules}\n{trust_section}\n\n{user_msg}\n\n"
+    system_prompt = (
+        f"{rules}\n{trust_section}\n\n"
         "Respond with ONLY the JSON object described above. No prose, no code fences."
     )
 
-    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    # Strip every Anthropic/provider routing variable, not just the failed key.
+    # A repo's direnv-approved .envrc can export ANTHROPIC_BASE_URL or
+    # ANTHROPIC_AUTH_TOKEN, and the nested CLI honours them — which would let a
+    # repo point the classifier deciding its own auto-approvals at an endpoint
+    # that always answers "allow". The API backend cannot be redirected this way
+    # (it hardcodes API_URL), so this is fallback-specific.
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("ANTHROPIC_")
+        and k not in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
+    }
     env[NESTED_ENV] = "1"
 
     try:
         proc = subprocess.run(
-            ["claude", "-p", "--model", SUBSCRIPTION_MODEL, "--output-format", "json"],
-            input=prompt,
+            [
+                "claude", "-p",
+                "--model", SUBSCRIPTION_MODEL,
+                "--output-format", "json",
+                "--tools", "",              # no tools: the child only emits JSON
+                "--safe-mode",              # no CLAUDE.md, skills, plugins, hooks, MCP, agents
+                "--disable-slash-commands", # nothing in the untrusted text can invoke a skill
+                "--strict-mcp-config",      # no MCP servers to start or expose
+                "--system-prompt", system_prompt,
+            ],
+            input=user_msg,
             capture_output=True,
             text=True,
-            timeout=SUBSCRIPTION_TIMEOUT_SECONDS,
+            timeout=timeout,
             env=env,
             cwd=os.path.expanduser("~"),
         )
@@ -917,7 +999,7 @@ def classify_via_subscription(
         ) from e
     except subprocess.TimeoutExpired as e:
         raise ApprovalClassifierWarning(
-            f"The subscription classifier timed out after {SUBSCRIPTION_TIMEOUT_SECONDS}s.",
+            f"The subscription classifier timed out after {timeout:.0f}s.",
             "The API-key backend had already failed.",
             "Claude will use the normal permission prompt.",
         ) from e
@@ -1031,10 +1113,15 @@ def classify(tool_name: str, tool_input: dict, cwd: str, rules: str, trust_secti
 def main() -> None:
     # Recursion guard. The subscription fallback spawns `claude -p`, which runs
     # its own PermissionRequest hooks; without this, every classification would
-    # spawn another classification. Checked before stdin is read so the nested
-    # process exits as cheaply as possible.
-    if os.environ.get(NESTED_ENV):
-        sys.exit(0)
+    # spawn another classification.
+    #
+    # It deliberately does NOT return here. Exiting at the top of main() would
+    # disable this hook's *deny* half as well as its allow half, leaving the
+    # nested session with no block on reads of ~/.ssh/id_*, .credentials.json
+    # and friends. Only the LLM classification recurses, so only that is
+    # skipped: the sensitive-path deny below still runs, and the nested session
+    # gets no auto-approvals at all.
+    nested = bool(os.environ.get(NESTED_ENV))
 
     try:
         hook_input = json.load(sys.stdin)
@@ -1052,7 +1139,7 @@ def main() -> None:
     # raises, and the subscription backend picks it up. The degradation is
     # surfaced by the statusline (see HEALTH_PATH) rather than by a per-call
     # warning, and the loud warning still fires if BOTH backends fail.
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not nested and not os.environ.get("ANTHROPIC_API_KEY"):
         log("NO KEY: with-anthropic-key.sh injected nothing — trying the subscription backend")
 
     # Fast-path: deny reads OR writes to sensitive credential files (before any allow)
@@ -1071,6 +1158,12 @@ def main() -> None:
             },
             "systemMessage": msg,
         }, sys.stdout)
+        return
+
+    # Recursion stops here: the sensitive-path deny above has run, and
+    # everything below either auto-approves or calls a classifier model, both of
+    # which the nested session must not do.
+    if nested:
         return
 
     # Always surface tool calls that are themselves questions to the user.
@@ -1148,10 +1241,25 @@ def main() -> None:
         write_health(HEALTH_BACKEND_API)
     except ApprovalClassifierWarning as api_warning:
         log(f"API BACKEND FAILED: {api_warning.headline} — {api_warning.details}")
+        budget = remaining_budget()
+        if budget < SUBSCRIPTION_MIN_SECONDS:
+            # Not enough of the hook deadline left to finish a fallback call.
+            # Give up here, while there is still time to record it, rather than
+            # starting a call that gets killed and leaves the health file stale.
+            log(f"SUBSCRIPTION BACKEND SKIPPED: only {budget:.1f}s of budget left")
+            write_health(HEALTH_BACKEND_DEAD, f"{api_warning.headline} | no time for fallback")
+            emit_warning(
+                api_warning.headline,
+                f"{api_warning.details} — no time left in the hook budget "
+                f"({budget:.1f}s) to try the subscription fallback",
+                api_warning.suggestion,
+            )
+            return
         try:
             result = classify_via_subscription(
                 tool_name, tool_input, cwd, rules,
                 trust_section=trust_section, user_message=user_message,
+                timeout=min(SUBSCRIPTION_TIMEOUT_SECONDS, budget),
             )
             write_health(HEALTH_BACKEND_SUBSCRIPTION, api_warning.headline)
             log("SUBSCRIPTION BACKEND: classified after the API backend failed")

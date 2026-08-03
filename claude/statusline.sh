@@ -159,8 +159,10 @@ if [ -f "$classifier_health" ]; then
         fi
         ;;
       subscription)
-        classifier_info="$(printf '\033[33m')auto:sub$(printf '\033[0m')"
-        [ -n "$key_label" ] && classifier_info="$classifier_info $(printf '\033[2m')(${key_label} down)$(printf '\033[0m')"
+        # Deliberately does NOT name a key — with-anthropic-key.sh defers to an
+        # already-exported ANTHROPIC_API_KEY, so the conf's preferred key may not
+        # be the one that failed. Naming the wrong key as down is worse than none.
+        classifier_info="$(printf '\033[33m')auto:sub$(printf '\033[0m') $(printf '\033[2m')(api down)$(printf '\033[0m')"
         ;;
       dead)
         classifier_info="$(printf '\033[31m')🔴auto$(printf '\033[0m')"
