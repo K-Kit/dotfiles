@@ -934,23 +934,32 @@ def classify_via_subscription(
         untrusted repo's CLAUDE.md write instructions into the prompt that
         decides whether to auto-approve actions in that same repo.
 
-    `--tools ""` is load-bearing, not tidiness. The child is a full Claude Code
-    session: without it the child can run Bash, and its own PermissionRequest
-    hook is the one thing that would have stopped it — except NESTED_ENV makes
-    that hook exit immediately. Since the prompt necessarily contains
-    attacker-influenced text (the tool_input being judged), a session that can
-    both read that text and execute commands is the whole attack. The child only
-    needs to emit JSON, so it needs no tools at all.
+    `--tools ""` is load-bearing, and it is now the ONLY thing bounding what the
+    child can do. The child is otherwise a full Claude Code session, and the
+    prompt necessarily contains attacker-influenced text (the tool_input being
+    judged) — a session that can both read that text and execute commands is the
+    whole attack. Note what `--safe-mode` costs here: it disables hooks, so the
+    child's own PermissionRequest hook does not run at all and cannot deny
+    anything. Before `--safe-mode` that hook still ran (NESTED_ENV made it skip
+    classification but keep its fast-deny on `~/.ssh/id_*` and friends); it is
+    gone now, so `--tools ""` has no backstop behind it.
+
+    That makes "does `--tools ""` really mean zero tools?" a load-bearing
+    question, so it was answered empirically rather than assumed: a child spawned
+    with exactly these flags and told to read a canary file reported both Read
+    and Agent disabled and could not open it (2026-08-03). Re-run that probe if
+    these flags change.
 
     The rules go in `--system-prompt`, not the user turn, so the instructions and
     the untrusted text are not in the same channel — and it replaces the Claude
     Code agent persona, which this child has no use for.
 
     `--safe-mode` disables CLAUDE.md, skills, plugins, hooks, MCP servers, custom
-    commands and agents in one flag (verified in `claude --help`, 2026-08-03). It
-    makes the cwd=~ and NESTED_ENV choices above belt-and-braces rather than the
-    only line of defence, and it drops the child's startup cost. Both are kept:
-    each of them alone is a single point of failure if the flag's meaning drifts.
+    commands and agents in one flag (verified in `claude --help`, 2026-08-03),
+    and it drops the child's startup cost. cwd=~ and NESTED_ENV are kept anyway:
+    each control alone is a single point of failure if a flag's meaning drifts,
+    and NESTED_ENV is what stops the recursion if `--safe-mode` ever stops
+    disabling hooks.
     """
     user_msg = build_classify_user_msg(tool_name, tool_input, cwd, user_message)
     system_prompt = (
@@ -1116,11 +1125,18 @@ def main() -> None:
     # spawn another classification.
     #
     # It deliberately does NOT return here. Exiting at the top of main() would
-    # disable this hook's *deny* half as well as its allow half, leaving the
-    # nested session with no block on reads of ~/.ssh/id_*, .credentials.json
-    # and friends. Only the LLM classification recurses, so only that is
-    # skipped: the sensitive-path deny below still runs, and the nested session
-    # gets no auto-approvals at all.
+    # disable this hook's *deny* half as well as its allow half, leaving a nested
+    # session with no block on reads of ~/.ssh/id_*, .credentials.json and
+    # friends. Only the LLM classification recurses, so only that is skipped: the
+    # sensitive-path deny below still runs, and a nested session gets no
+    # auto-approvals at all.
+    #
+    # For the child THIS file spawns, that deny half is currently unreachable —
+    # `--safe-mode` disables hooks, so the nested PermissionRequest hook never
+    # runs. The child is bounded by `--tools ""` instead (see
+    # classify_via_subscription). This branch is kept because it is the correct
+    # shape for any other nested invocation, and because it is what would carry
+    # the load if `--safe-mode` ever stopped disabling hooks.
     nested = bool(os.environ.get(NESTED_ENV))
 
     try:
