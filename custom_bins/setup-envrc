@@ -31,6 +31,18 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DOT_DIR="${DOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 SECRETS_HELPER="$DOT_DIR/custom_bins/dotfiles-secrets"
+
+# The dotfiles main checkout, even when this script runs from a git worktree.
+# Used for paths written into a generated .envrc, which must outlive any
+# worktree. Degrades to DOT_DIR outside a git tree.
+main_checkout_dir() {
+    local common
+    common=$(git -C "$DOT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+        || { printf '%s\n' "$DOT_DIR"; return; }
+    [[ -n "$common" ]] || { printf '%s\n' "$DOT_DIR"; return; }
+    printf '%s\n' "$(dirname "$common")"
+}
+
 # shellcheck source=/dev/null
 source "$DOT_DIR/scripts/helpers/dotfiles_secrets.sh"
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -411,7 +423,11 @@ write_envrc() {
     local telegram_secret="$1"
     shift
     local export_bindings=("$@")
-    local helper_bin="$DOT_DIR/custom_bins/dotfiles-secrets"
+    # Bake the MAIN checkout's helper, never a worktree copy: this absolute path
+    # is written into the repo's .envrc and outlives the shell that generated it.
+    # A worktree path would break that .envrc when the worktree is removed.
+    local helper_bin
+    helper_bin="$(main_checkout_dir)/custom_bins/dotfiles-secrets"
     local binding env_key secret_key
     local plain_required_secrets=()   # Valid env names — loaded via 'shell' batch
     local bws_key_bindings=()         # Secret key contains spaces — use 'get-value'
