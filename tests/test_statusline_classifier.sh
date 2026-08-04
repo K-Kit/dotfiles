@@ -46,6 +46,13 @@ printf '%s\n' \
 
 STATUS_INPUT='{"model":{"display_name":"Opus"},"workspace":{"current_dir":"'"$FAKE"'"},"cost":{"total_duration_ms":0},"context_window":{"used_percentage":0}}'
 
+# Session-line fixtures for the context/effort segments. Each is fed to both
+# implementations by render_with(), which swaps it in for STATUS_INPUT.
+session_input() {  # extra_json (merged over the context_window/effort defaults)
+    printf '{"model":{"display_name":"Opus"},"workspace":{"current_dir":"%s"},"cost":{"total_duration_ms":0},%s}' \
+        "$FAKE" "$1"
+}
+
 write_health() {  # backend, age_seconds
     local backend="$1" age="${2:-0}"
     python3 - "$HEALTH" "$backend" "$age" <<'PY'
@@ -145,6 +152,175 @@ for backend in api subscription dead; do
     b=$(render_bash | classifier_segment_raw)
     check "parity ($backend, ANSI included)" "$b" "$r"
 done
+
+
+# ---------------------------------------------------------------------------
+# Context-token and reasoning-effort segments
+# ---------------------------------------------------------------------------
+# Both read straight from the statusline input JSON, so they are driven by
+# fixtures rather than by files on disk. Every case is asserted against BOTH
+# implementations and then compared to each other with ANSI intact — the colour
+# is part of the contract (dim vs yellow effort, green/yellow/red ctx).
+
+render_rust_with() {
+    printf '%s' "$1" | env HOME="$FAKE" DOT_DIR="$FAKE/dot" "$RUST_BIN" statusline 2>/dev/null
+}
+
+render_bash_with() {
+    printf '%s' "$1" | env HOME="$FAKE" DOT_DIR="$FAKE/dot" bash "$BASH_SL" 2>/dev/null
+}
+
+# One ·-joined segment selected by prefix, ANSI stripped.
+segment() { strip_ansi | tr '·' '\n' | grep -o "$1.*" | head -1 | sed 's/[[:space:]]*$//'; }
+
+# Same, ANSI intact, for the parity comparison.
+segment_raw() { tr '·' '\n' | grep "$1" | head -1 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
+
+# The health file is gone by now (removed above), so no classifier segment
+# interferes with these.
+rm -f "$HEALTH"
+
+# desc, json_body, prefix, expected
+check_segment() {
+    local desc="$1" body="$2" prefix="$3" want="$4"
+    local input; input=$(session_input "$body")
+    check "rust: $desc" "$(render_rust_with "$input" | segment "$prefix")" "$want"
+    check "bash: $desc" "$(render_bash_with "$input" | segment "$prefix")" "$want"
+    check "parity: $desc (ANSI included)" \
+        "$(render_bash_with "$input" | segment_raw "$prefix")" \
+        "$(render_rust_with "$input" | segment_raw "$prefix")"
+}
+
+echo "=== context shows absolute tokens against the window size ==="
+check_segment "tokens/size/pct" \
+    '"context_window":{"used_percentage":61.7,"total_input_tokens":123456,"context_window_size":200000}' \
+    'ctx:' 'ctx:123k/200k 62%'
+
+echo "=== percentage is rounded, not truncated (the bash fallback used to truncate) ==="
+check_segment "61.7 rounds to 62" \
+    '"context_window":{"used_percentage":61.7,"total_input_tokens":1000,"context_window_size":200000}' \
+    'ctx:' 'ctx:1k/200k 62%'
+
+echo "=== a million-token window renders as M, not as 1000k ==="
+check_segment "1M window" \
+    '"context_window":{"used_percentage":85,"total_input_tokens":850000,"context_window_size":1000000}' \
+    'ctx:' 'ctx:850k/1.0M 85%'
+
+echo "=== the k→M boundary: nothing may ever render as '1000k' ==="
+# 999500 is where the k branch stops. Below it the value still rounds to 999k;
+# at and above it the k form would read "1000k", so it promotes to M instead.
+check_segment "999499 stays k" \
+    '"context_window":{"used_percentage":50,"total_input_tokens":999499,"context_window_size":2000000}' \
+    'ctx:' 'ctx:999k/2.0M 50%'
+check_segment "999500 promotes to M" \
+    '"context_window":{"used_percentage":50,"total_input_tokens":999500,"context_window_size":2000000}' \
+    'ctx:' 'ctx:1.0M/2.0M 50%'
+check_segment "999999 promotes to M" \
+    '"context_window":{"used_percentage":50,"total_input_tokens":999999,"context_window_size":2000000}' \
+    'ctx:' 'ctx:1.0M/2.0M 50%'
+check_segment "exactly 1000000" \
+    '"context_window":{"used_percentage":50,"total_input_tokens":1000000,"context_window_size":2000000}' \
+    'ctx:' 'ctx:1.0M/2.0M 50%'
+
+echo "=== the thousand boundary and sub-thousand counts render raw ==="
+check_segment "999 tokens stays raw" \
+    '"context_window":{"used_percentage":1,"total_input_tokens":999,"context_window_size":200000}' \
+    'ctx:' 'ctx:999/200k 1%'
+check_segment "845 tokens" \
+    '"context_window":{"used_percentage":1,"total_input_tokens":845,"context_window_size":200000}' \
+    'ctx:' 'ctx:845/200k 1%'
+check_segment "1499 rounds down to 1k" \
+    '"context_window":{"used_percentage":1,"total_input_tokens":1499,"context_window_size":200000}' \
+    'ctx:' 'ctx:1k/200k 1%'
+check_segment "1500 rounds up to 2k" \
+    '"context_window":{"used_percentage":1,"total_input_tokens":1500,"context_window_size":200000}' \
+    'ctx:' 'ctx:2k/200k 1%'
+
+echo "=== colour thresholds: green under 70, yellow at 70, red at 90 ==="
+threshold_colour() {  # pct -> the ANSI colour code of the ctx segment
+    render_rust_with "$(session_input "\"context_window\":{\"used_percentage\":$1,\"total_input_tokens\":1000,\"context_window_size\":200000}")" \
+        | segment_raw 'ctx:' | grep -o $'\033\[[0-9;]*m' | head -1
+}
+check "green below 70"  "$(threshold_colour 69)" "$(printf '\033[32m')"
+check "yellow at 70"    "$(threshold_colour 70)" "$(printf '\033[33m')"
+check "yellow below 90" "$(threshold_colour 89)" "$(printf '\033[33m')"
+check "red at 90"       "$(threshold_colour 90)" "$(printf '\033[31m')"
+
+echo "=== degradation: missing window size drops the denominator ==="
+check_segment "no window size" \
+    '"context_window":{"used_percentage":30,"total_input_tokens":60000}' \
+    'ctx:' 'ctx:60k 30%'
+
+echo "=== degradation: missing token count falls back to the percentage alone ==="
+check_segment "no token count" \
+    '"context_window":{"used_percentage":30,"context_window_size":200000}' \
+    'ctx:' 'ctx:30%'
+
+echo "=== zero percent still renders nothing at all ==="
+check_segment "zero percent" \
+    '"context_window":{"used_percentage":0,"total_input_tokens":123456,"context_window_size":200000}' \
+    'ctx:' ''
+
+# The gate is the ROUNDED percentage, not the raw JSON string. Rust reaches zero
+# via `.round() as u64` — which also saturates a negative to 0 — so a fallback
+# that tested the raw value for "0" would render "ctx:0%" and "ctx:-4%" where
+# the primary renders nothing. Both cases were live divergences before this.
+check_segment "0.4 rounds to zero and hides" \
+    '"context_window":{"used_percentage":0.4,"total_input_tokens":123456,"context_window_size":200000}' \
+    'ctx:' ''
+check_segment "negative percentage hides" \
+    '"context_window":{"used_percentage":-5,"total_input_tokens":123456,"context_window_size":200000}' \
+    'ctx:' ''
+check_segment "0.6 rounds up and shows" \
+    '"context_window":{"used_percentage":0.6,"total_input_tokens":123456,"context_window_size":200000}' \
+    'ctx:' 'ctx:123k/200k 1%'
+
+echo "=== M formatting agrees across the two float formatters ==="
+# Rust's {:.1} and awk's %.1f must round the same double the same way.
+# 1.05 looks like a rounding tie but the nearest double is 1.05000000000000004,
+# so correctly-rounding formatters both land on 1.1M. This case exists to catch
+# one of them rounding on the decimal literal instead of the value it holds.
+check_segment "1050000 tokens" \
+    '"context_window":{"used_percentage":50,"total_input_tokens":1050000,"context_window_size":2000000}' \
+    'ctx:' 'ctx:1.1M/2.0M 50%'
+check_segment "1500000 tokens" \
+    '"context_window":{"used_percentage":50,"total_input_tokens":1500000,"context_window_size":2000000}' \
+    'ctx:' 'ctx:1.5M/2.0M 50%'
+check_segment "1250000 tokens" \
+    '"context_window":{"used_percentage":50,"total_input_tokens":1250000,"context_window_size":2000000}' \
+    'ctx:' 'ctx:1.2M/2.0M 50%'
+
+echo "=== effort level is trimmed at the edges, matching Rust str::trim ==="
+check_segment "padded effort level" \
+    '"context_window":{"used_percentage":0},"effort":{"level":"  high  "}' \
+    'effort:' 'effort:high'
+check_segment "whitespace-only effort level" \
+    '"context_window":{"used_percentage":0},"effort":{"level":"   "}' \
+    'effort:' ''
+check_segment "null effort level" \
+    '"context_window":{"used_percentage":0},"effort":{"level":null}' \
+    'effort:' ''
+
+echo "=== reasoning effort renders when the model reports it ==="
+check_segment "effort high" \
+    '"context_window":{"used_percentage":0},"effort":{"level":"high"}' \
+    'effort:' 'effort:high'
+
+check_segment "effort xhigh" \
+    '"context_window":{"used_percentage":0},"effort":{"level":"xhigh"}' \
+    'effort:' 'effort:xhigh'
+
+echo "=== xhigh is yellow while high is dim — the whole point of the colour rule ==="
+xhigh_raw=$(render_rust_with "$(session_input '"context_window":{"used_percentage":0},"effort":{"level":"xhigh"}')" | segment_raw 'effort:')
+high_raw=$(render_rust_with "$(session_input '"context_window":{"used_percentage":0},"effort":{"level":"high"}')" | segment_raw 'effort:')
+check "rust: xhigh is yellow" "$(printf '%s' "$xhigh_raw" | grep -c $'\033\[33m')" "1"
+check "rust: high is dim"    "$(printf '%s' "$high_raw"  | grep -c $'\033\[2m')"  "1"
+
+echo "=== a model without reasoning effort adds no segment and no stray separator ==="
+no_effort=$(session_input '"context_window":{"used_percentage":0}')
+check_segment "effort absent" '"context_window":{"used_percentage":0}' 'effort:' ''
+check "rust: no trailing separator" "$(render_rust_with "$no_effort" | strip_ansi | sed -n 2p | sed 's/[[:space:]]*$//')" "[Opus]"
+check "bash: no trailing separator" "$(render_bash_with "$no_effort" | strip_ansi | sed -n 2p | sed 's/[[:space:]]*$//')" "[Opus]"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

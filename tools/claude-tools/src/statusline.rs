@@ -13,6 +13,7 @@ struct Input {
     model: Option<Model>,
     cost: Option<Cost>,
     context_window: Option<ContextWindow>,
+    effort: Option<Effort>,
 }
 
 #[derive(Deserialize)]
@@ -33,6 +34,17 @@ struct Cost {
 #[derive(Deserialize)]
 struct ContextWindow {
     used_percentage: Option<f64>,
+    /// Everything currently in the window, cache reads and writes included.
+    total_input_tokens: Option<u64>,
+    /// The current model's limit — 200000, or 1000000 on a long-context model.
+    context_window_size: Option<u64>,
+}
+
+/// Only present when the current model supports reasoning effort, so its
+/// absence is normal rather than an error.
+#[derive(Deserialize)]
+struct Effort {
+    level: Option<String>,
 }
 
 /// Written by claude/hooks/approval_classifier.py on every classification attempt.
@@ -77,6 +89,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Line 2: session state (collect parts, join with " · ")
     let mut session_parts: Vec<String> = Vec::new();
     if let Some(s) = format_model_str(input.model.as_ref()) {
+        session_parts.push(s);
+    }
+    if let Some(s) = format_effort_str(input.effort.as_ref()) {
         session_parts.push(s);
     }
     if let Some(s) = format_context_usage_str(input.context_window.as_ref()) {
@@ -244,9 +259,27 @@ fn format_model_str(model: Option<&Model>) -> Option<String> {
     Some(format!("\x1b[34m[{}]\x1b[0m", name))
 }
 
-/// Context usage percentage from `context_window.used_percentage` (pre-computed by Claude Code).
+/// Compact token count: "845" under a thousand, "123k", "1.0M".
+/// The `k` branch stops below 999_500 so a value that would round to "1000k"
+/// renders as "1.0M" instead.
+/// Parity: claude/statusline.sh::format_tokens
+pub fn format_tokens(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 999_500 {
+        format!("{}k", ((n as f64) / 1_000.0).round() as u64)
+    } else {
+        format!("{:.1}M", (n as f64) / 1_000_000.0)
+    }
+}
+
+/// Context usage from `context_window` (pre-computed by Claude Code): absolute
+/// tokens against the model's window, plus the percentage that drives the colour.
+/// Renders "ctx:123k/200k 62%", degrading to "ctx:123k 62%" without a window
+/// size and to "ctx:62%" without a token count.
 fn format_context_usage_str(context_window: Option<&ContextWindow>) -> Option<String> {
-    let pct = context_window.and_then(|cw| cw.used_percentage)?.round() as u64;
+    let cw = context_window?;
+    let pct = cw.used_percentage?.round() as u64;
     if pct == 0 {
         return None;
     }
@@ -257,7 +290,30 @@ fn format_context_usage_str(context_window: Option<&ContextWindow>) -> Option<St
     } else {
         "\x1b[32m" // Green
     };
-    Some(format!("{}ctx:{}%\x1b[0m", color, pct))
+
+    let body = match cw.total_input_tokens.filter(|t| *t > 0) {
+        Some(tokens) => match cw.context_window_size.filter(|s| *s > 0) {
+            Some(size) => format!("{}/{} {}%", format_tokens(tokens), format_tokens(size), pct),
+            None => format!("{} {}%", format_tokens(tokens), pct),
+        },
+        None => format!("{}%", pct),
+    };
+    Some(format!("{}ctx:{}\x1b[0m", color, body))
+}
+
+/// Live reasoning effort from `effort.level`. Dim for the everyday levels;
+/// yellow for xhigh/max, which cost enough to be worth noticing.
+/// Parity: claude/statusline.sh (EFFORT LEVEL section)
+fn format_effort_str(effort: Option<&Effort>) -> Option<String> {
+    let level = effort
+        .and_then(|e| e.level.as_deref())
+        .map(str::trim)
+        .filter(|l| !l.is_empty())?;
+    let color = match level {
+        "xhigh" | "max" => "\x1b[33m", // Yellow
+        _ => "\x1b[2m",                // Dim
+    };
+    Some(format!("{}effort:{}\x1b[0m", color, level))
 }
 
 /// The dotfiles checkout root, for reading config/secrets-global.conf.

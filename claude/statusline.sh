@@ -4,7 +4,8 @@
 #
 # Displays on up to 3 lines:
 # Line 1 (location): Machine name (SSH) + profiles + directory + git branch
-# Line 2 (session): Model name + context % + duration + approval-classifier state
+# Line 2 (session): Model name + reasoning effort + context tokens/% + duration
+#                   + approval-classifier state
 # Line 3 (usage): 5h and 7d API usage bars (cached, from /api/oauth/usage)
 #
 # Receives JSON via stdin from Claude Code.
@@ -87,19 +88,75 @@ if [ -n "$model_name" ]; then
 fi
 
 # ============================================================================
-# CONTEXT USAGE (truncated to integer, color-coded by threshold)
+# REASONING EFFORT (only emitted for models that support it)
+# Parity: tools/claude-tools/src/statusline.rs::format_effort_str
 # ============================================================================
+effort_info=""
+# Trimmed at the edges only, matching Rust's str::trim — `tr -d '[:space:]'`
+# would also collapse interior whitespace and diverge from the primary.
+effort_level=$(echo "$input" | jq -r '.effort.level // empty' \
+  | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+if [ -n "$effort_level" ]; then
+  case "$effort_level" in
+    # Yellow for the levels that cost enough to be worth noticing; dim otherwise
+    xhigh|max) effort_info="$(printf '\033[33m')effort:${effort_level}$(printf '\033[0m')" ;;
+    *)         effort_info="$(printf '\033[2m')effort:${effort_level}$(printf '\033[0m')" ;;
+  esac
+fi
+
+# ============================================================================
+# CONTEXT USAGE (absolute tokens + %, color-coded by threshold)
+# Parity: tools/claude-tools/src/statusline.rs::format_context_usage_str
+# ============================================================================
+
+# Compact token count: "845" under a thousand, "123k", "1.0M". The k branch
+# stops below 999500 so a value that would round to "1000k" renders as "1.0M".
+# Parity: tools/claude-tools/src/statusline.rs::format_tokens
+format_tokens() {
+  local n="$1"
+  if [ "$n" -lt 1000 ]; then
+    printf '%d' "$n"
+  elif [ "$n" -lt 999500 ]; then
+    printf '%dk' $(( (n + 500) / 1000 ))
+  else
+    # LC_ALL=C: the Rust primary always emits a '.' decimal point, so a
+    # comma-decimal locale here would silently break parity ("1,5M" vs "1.5M").
+    LC_ALL=C awk -v n="$n" 'BEGIN { printf "%.1fM", n / 1000000 }'
+  fi
+}
+
 context_info=""
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
-if [ -n "$used_pct" ] && [ "$used_pct" != "0" ]; then
-  used_int=${used_pct%.*}
+used_int=0
+# Round rather than truncate — the Rust primary uses f64::round, and a
+# truncating fallback would disagree with it on every fractional percentage.
+[ -n "$used_pct" ] && used_int=$(LC_ALL=C awk -v p="$used_pct" 'BEGIN { printf "%d", int(p + 0.5) }')
+# Gate on the ROUNDED value, not the raw string. 0.4 rounds to 0, and Rust's
+# `.round() as u64` saturates a negative to 0 — both hide the segment there, so
+# testing the raw string for "0" would render "ctx:0%" / "ctx:-4%" where the
+# primary renders nothing.
+if [ "$used_int" -gt 0 ] 2>/dev/null; then
   if [ "$used_int" -ge 90 ] 2>/dev/null; then
-    context_info="$(printf '\033[31m')ctx:${used_int}%$(printf '\033[0m')"
+    ctx_color=$(printf '\033[31m')
   elif [ "$used_int" -ge 70 ] 2>/dev/null; then
-    context_info="$(printf '\033[33m')ctx:${used_int}%$(printf '\033[0m')"
+    ctx_color=$(printf '\033[33m')
   else
-    context_info="$(printf '\033[32m')ctx:${used_int}%$(printf '\033[0m')"
+    ctx_color=$(printf '\033[32m')
   fi
+
+  ctx_tokens=$(echo "$input" | jq -r '.context_window.total_input_tokens // empty')
+  ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // empty')
+  if [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
+    ctx_body="$(format_tokens "$ctx_tokens")"
+    if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null; then
+      ctx_body="${ctx_body}/$(format_tokens "$ctx_size")"
+    fi
+    ctx_body="${ctx_body} ${used_int}%"
+  else
+    ctx_body="${used_int}%"
+  fi
+
+  context_info="${ctx_color}ctx:${ctx_body}$(printf '\033[0m')"
 fi
 
 # ============================================================================
@@ -177,9 +234,10 @@ fi
 # Line 1: location
 printf "%s%s\033[2m\033[36m%s\033[0m%s" "$machine_prefix" "$profiles_info" "$dir" "$git_info"
 
-# Line 2: session state (model · ctx · duration)
+# Line 2: session state (model · effort · ctx · duration)
 session_parts=()
 [ -n "$model_info" ] && session_parts+=("$model_info")
+[ -n "$effort_info" ] && session_parts+=("$effort_info")
 [ -n "$context_info" ] && session_parts+=("$context_info")
 [ -n "$duration_info" ] && session_parts+=("$duration_info")
 [ -n "$classifier_info" ] && session_parts+=("$classifier_info")
