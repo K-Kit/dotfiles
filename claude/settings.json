@@ -379,7 +379,7 @@
     ],
     "defaultMode": "auto"
   },
-  "model": "opus",
+  "model": "fable",
   "fallbackModel": [
     "fable"
   ],
@@ -801,32 +801,24 @@
     "commit-commands@claude-plugins-official": false,
     "context7@claude-plugins-official": false,
     "core@ai-safety-plugins": true,
-    "dev-browser@dev-browser-marketplace": false,
-    "figma@claude-plugins-official": false,
     "frontend-design@claude-plugins-official": false,
-    "gopls-lsp@claude-plugins-official": true,
     "hookify@claude-plugins-official": true,
-    "huggingface-skills@claude-plugins-official": false,
-    "imessage@claude-plugins-official": false,
     "llms-fetch-mcp@alignment-hive": true,
     "playground@claude-plugins-official": false,
     "playwright@claude-plugins-official": true,
-    "plugin-dev@claude-plugins-official": false,
     "pyright-lsp@claude-plugins-official": true,
-    "ralph-loop@claude-plugins-official": true,
     "remember@claude-plugins-official": true,
     "research@ai-safety-plugins": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
     "security-guidance@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,
-    "swift-lsp@claude-plugins-official": true,
     "telegram@claude-plugins-official": false,
-    "things-mcp@productivity-tools": false,
     "typescript-lsp@claude-plugins-official": true,
     "ui-ux-pro-max@ui-ux-pro-max-skill": true,
     "viz@ai-safety-plugins": true,
     "workflow@ai-safety-plugins": true,
-    "writing@ai-safety-plugins": true
+    "writing@ai-safety-plugins": true,
+    "dev-browser@dev-browser-marketplace": true
   },
   "extraKnownMarketplaces": {
     "ai-safety-plugins": {
@@ -853,12 +845,6 @@
         "repo": "crazytieguy/codex-plugin-cc"
       }
     },
-    "dev-browser-marketplace": {
-      "source": {
-        "source": "github",
-        "repo": "sawyerhood/dev-browser"
-      }
-    },
     "productivity-tools": {
       "source": {
         "source": "github",
@@ -869,6 +855,12 @@
       "source": {
         "source": "github",
         "repo": "nextlevelbuilder/ui-ux-pro-max-skill"
+      }
+    },
+    "dev-browser-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "sawyerhood/dev-browser"
       }
     }
   },
