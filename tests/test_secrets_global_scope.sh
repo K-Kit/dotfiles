@@ -2,9 +2,15 @@
 # Tests for global-scope BWS key disambiguation in dotfiles-secrets.
 # Run: bash tests/test_secrets_global_scope.sh
 #
-# Fully hermetic: fixture caches in a temp CACHE_DIR, fresh mtimes so nothing
-# refreshes against live BWS, and fake values throughout. No real secret is
-# ever read or printed by this suite.
+# Fully hermetic. The suite runs the helper under DOTFILES_SECRETS_BACKEND=fixture,
+# a test-only backend that reads secrets/meta/raw from a fixture directory and
+# never touches the network. No real secret is read or printed here, and no BWS
+# token is required — this suite passes on a fresh clone with no credentials.
+#
+# It used to inject fixtures by pointing DOTFILES_SECRETS_CACHE_DIR at a temp
+# directory. That cache no longer exists, and the mechanism was unsafe anyway:
+# an empty value read as "unset" and fell back to the LIVE store. The fixture
+# backend dies instead of falling back, which is asserted below.
 
 set -uo pipefail
 
@@ -16,39 +22,30 @@ FAIL=0
 # Claude Code sandbox, and this keeps the fixture portable either way.
 TMP_ROOT="$(cd "$(dirname "$0")/.." && pwd)/tmp"
 mkdir -p "$TMP_ROOT"
-# Abort if the fixture cannot be created. Without `set -e` an empty FIXTURE would
-# make DOTFILES_SECRETS_CACHE_DIR="" below, which the helper reads as "unset" and
-# falls back to the LIVE cache — the suite would then exercise real secrets and
-# could surface one in a failure diagnostic.
 FIXTURE=$(mktemp -d "$TMP_ROOT/secrets-scope.XXXXXX") || {
     echo "could not create fixture dir under $TMP_ROOT" >&2; exit 1; }
 [[ -n "$FIXTURE" && -d "$FIXTURE" ]] || {
     echo "fixture dir is not usable: ${FIXTURE:-<empty>}" >&2; exit 1; }
 trap 'rm -rf "$FIXTURE"' EXIT
 
-# The helper checks for a BWS token before it ever reads these caches, so without
-# a fake one the whole suite would exit early on any machine lacking live BWS
-# credentials (CI, a fresh clone) — passing here only because this box has one.
-export BWS_ACCESS_TOKEN="fixture-token-not-real"
-
-# --- fixture caches --------------------------------------------------------
+# --- fixture data ----------------------------------------------------------
 # Two ANTHROPIC keys (ambiguous), one HF_TOKEN (unambiguous), and one key whose
 # label contains both " - " and ":" to prove the parser handles real labels.
 b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 
-cat > "$FIXTURE/secrets.bws.cache" <<EOF
+cat > "$FIXTURE/secrets" <<EOF
 ANTHROPIC_API_KEY=fake-anthropic-alpha
 HF_TOKEN=fake-hf
 RUNPOD_API_KEY=fake-runpod-one
 EOF
 
 printf '%s\n' \
-    "ANTHROPIC_API_KEY	ANTHROPIC_API_KEY - alpha	" \
-    "ANTHROPIC_API_KEY	ANTHROPIC_API_KEY - beta gamma	" \
-    "HF_TOKEN	HF_TOKEN	" \
-    "RUNPOD_API_KEY	RUNPOD_API_KEY - one:Two	" \
-    "RUNPOD_API_KEY	RUNPOD_API_KEY - three	" \
-    > "$FIXTURE/meta.bws.cache"
+    "ANTHROPIC_API_KEY	ANTHROPIC_API_KEY - alpha		uuid-alpha" \
+    "ANTHROPIC_API_KEY	ANTHROPIC_API_KEY - beta gamma		uuid-beta" \
+    "HF_TOKEN	HF_TOKEN		uuid-hf" \
+    "RUNPOD_API_KEY	RUNPOD_API_KEY - one:Two		uuid-rp1" \
+    "RUNPOD_API_KEY	RUNPOD_API_KEY - three		uuid-rp3" \
+    > "$FIXTURE/meta"
 
 printf '%s\n' \
     "ANTHROPIC_API_KEY - alpha	$(b64 fake-anthropic-alpha)		uuid-alpha" \
@@ -56,7 +53,7 @@ printf '%s\n' \
     "HF_TOKEN	$(b64 fake-hf)		uuid-hf" \
     "RUNPOD_API_KEY - one:Two	$(b64 fake-runpod-one)		uuid-rp1" \
     "RUNPOD_API_KEY - three	$(b64 fake-runpod-three)		uuid-rp3" \
-    > "$FIXTURE/raw.bws.cache"
+    > "$FIXTURE/raw"
 
 # Run the binary against the fixtures with a given secrets-global.conf body.
 # Prints "<exit status>\n<stdout>\n---STDERR---\n<stderr>".
@@ -65,8 +62,8 @@ run_with_conf() {
     printf '%s\n' "$conf_body" > "$FIXTURE/scope.conf"
     local out err rc=0
     err="$FIXTURE/stderr.txt"
-    out=$(DOTFILES_SECRETS_BACKEND=bws \
-          DOTFILES_SECRETS_CACHE_DIR="$FIXTURE" \
+    out=$(DOTFILES_SECRETS_BACKEND=fixture \
+          DOTFILES_SECRETS_FIXTURE_DIR="$FIXTURE" \
           DOTFILES_SECRETS_GLOBAL_CONF="$FIXTURE/scope.conf" \
           "$BIN" "$@" 2>"$err") || rc=$?
     printf '%s\n%s\n---STDERR---\n%s\n' "$rc" "$out" "$(cat "$err")"
@@ -79,7 +76,17 @@ check() {
     else
         FAIL=$((FAIL + 1))
         printf 'FAIL: %s\n  wanted to contain: %s\n  got: %s\n' \
-            "$desc" "$want" "$(printf '%s' "$got" | head -6 | tr '\n' '|')"
+            "$desc" "$want" "$(printf '%s' "$got" | head -8 | tr '\n' '|')"
+    fi
+}
+
+check_not() {
+    local desc="$1" got="$2" unwanted="$3"
+    if [[ "$got" != *"$unwanted"* ]]; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        printf 'FAIL: %s\n  should NOT contain: %s\n' "$desc" "$unwanted"
     fi
 }
 
@@ -96,6 +103,7 @@ check "says ambiguous"        "$R" "Ambiguous env name 'ANTHROPIC_API_KEY'"
 check "lists candidate alpha" "$R" "ANTHROPIC_API_KEY - alpha"
 check "lists candidate beta"  "$R" "ANTHROPIC_API_KEY - beta gamma"
 check "points at the conf"    "$R" "scope.conf"
+check "suggests secrets-use"  "$R" "secrets-use ANTHROPIC_API_KEY"
 
 echo "=== declared key that does not exist -> dies, does not fall through ==="
 R=$(run_with_conf 'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - typo' shell ANTHROPIC_API_KEY)
@@ -117,11 +125,7 @@ R=$(run_with_conf '# nothing declared' shell --all)
 check "exit 0"                  "$R" $'0\n'
 check "still exports HF_TOKEN"  "$R" "fake-hf"
 check "warns about the skip"    "$R" "skipping ambiguous env name 'ANTHROPIC_API_KEY'"
-if [[ "$R" == *"export ANTHROPIC_API_KEY"* ]]; then
-    FAIL=$((FAIL + 1)); echo "FAIL: --all exported an ambiguous undeclared key"
-else
-    PASS=$((PASS + 1))
-fi
+check_not "did not export the ambiguous key" "$R" "export ANTHROPIC_API_KEY"
 
 echo "=== --all with a declaration exports the declared one ==="
 R=$(run_with_conf 'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - alpha' shell --all)
@@ -160,12 +164,130 @@ R=$(run_with_conf '# ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - alpha' shell ANTHRO
 check "non-zero exit"  "$R" $'1\n'
 check "says ambiguous" "$R" "Ambiguous env name"
 
+# --- R1: ordered preference lists with active/blocked state -----------------
+
+echo "=== preference order: first ACTIVE line wins ==="
+R=$(run_with_conf "$(printf '%s\n' \
+        'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - alpha' \
+        'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - beta gamma')" shell ANTHROPIC_API_KEY)
+check "exit 0"             "$R" $'0\n'
+check "resolves to alpha"  "$R" "fake-anthropic-alpha"
+
+echo "=== a blocked first choice is skipped, next active is promoted ==="
+R=$(run_with_conf "$(printf '%s\n' \
+        'ANTHROPIC_API_KEY = !ANTHROPIC_API_KEY - alpha' \
+        'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - beta gamma')" shell ANTHROPIC_API_KEY)
+check "exit 0"                 "$R" $'0\n'
+check "resolves to beta"       "$R" "fake-anthropic-beta"
+check_not "did not use blocked alpha" "$R" "fake-anthropic-alpha"
+
+echo "=== '!' with a space after it is still blocked ==="
+R=$(run_with_conf "$(printf '%s\n' \
+        'ANTHROPIC_API_KEY = ! ANTHROPIC_API_KEY - alpha' \
+        'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - beta gamma')" shell ANTHROPIC_API_KEY)
+check "resolves to beta"       "$R" "fake-anthropic-beta"
+check_not "did not use blocked alpha" "$R" "fake-anthropic-alpha"
+
+echo "=== every declared key blocked -> dies, tells you to unblock ==="
+R=$(run_with_conf "$(printf '%s\n' \
+        'ANTHROPIC_API_KEY = !ANTHROPIC_API_KEY - alpha' \
+        'ANTHROPIC_API_KEY = !ANTHROPIC_API_KEY - beta gamma')" shell ANTHROPIC_API_KEY)
+check "non-zero exit"        "$R" $'1\n'
+check "says all blocked"     "$R" "Every declared key for 'ANTHROPIC_API_KEY' is blocked"
+check "suggests --activate"  "$R" "--activate"
+check_not "does not exit 0"  "$R" $'0\n'
+
+echo "=== scope-entries reports order and state ==="
+R=$(run_with_conf "$(printf '%s\n' \
+        'ANTHROPIC_API_KEY = !ANTHROPIC_API_KEY - alpha' \
+        'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - beta gamma')" scope-entries ANTHROPIC_API_KEY)
+check "exit 0"           "$R" $'0\n'
+check "alpha is blocked" "$R" $'blocked\tANTHROPIC_API_KEY - alpha'
+check "beta is active"   "$R" $'active\tANTHROPIC_API_KEY - beta gamma'
+
+echo "=== a blocked key is never auto-unblocked by resolution ==="
+# Resolving through a blocked entry must leave the conf byte-identical:
+# failover is a human action, never a side effect of a lookup.
+CONF_BEFORE=$(cat "$FIXTURE/scope.conf")
+run_with_conf "$CONF_BEFORE" shell ANTHROPIC_API_KEY >/dev/null
+if [[ "$(cat "$FIXTURE/scope.conf")" == "$CONF_BEFORE" ]]; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1)); echo "FAIL: resolution mutated secrets-global.conf"
+fi
+
+# --- R6: the fixture backend must never fall through to a live store --------
+
+echo "=== fixture backend with no fixture dir -> hard error, no live fallback ==="
+err=$(DOTFILES_SECRETS_BACKEND=fixture "$BIN" shell HF_TOKEN 2>&1); rc=$?
+check "non-zero exit"        "$rc" "1"
+check "names the missing var" "$err" "DOTFILES_SECRETS_FIXTURE_DIR"
+check "says it refuses to fall back" "$err" "refusing to fall back"
+
+echo "=== fixture backend pointed at a nonexistent dir -> hard error ==="
+err=$(DOTFILES_SECRETS_BACKEND=fixture DOTFILES_SECRETS_FIXTURE_DIR="$FIXTURE/nope" \
+      "$BIN" shell HF_TOKEN 2>&1); rc=$?
+check "non-zero exit"  "$rc" "1"
+check "names the dir"  "$err" "fixture directory does not exist"
+
+echo "=== no cache is written anywhere during a resolution ==="
+# The whole point of R6: a resolution must not put a plaintext secret on disk.
+# Assert on what this run DID, not on machine state — a leftover directory from
+# the pre-R6 implementation is a deployment cleanup, and failing the suite for
+# it would make a green run depend on which machine it happens to be on.
+CACHE_DIR_OLD="$HOME/.cache/dotfiles-secrets"
+[[ -d "$CACHE_DIR_OLD" ]] && EXISTED_BEFORE=true || EXISTED_BEFORE=false
+run_with_conf 'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - alpha' shell ANTHROPIC_API_KEY >/dev/null
+if [[ -d "$CACHE_DIR_OLD" && "$EXISTED_BEFORE" == false ]]; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL: resolution created $CACHE_DIR_OLD (R6 requires no plaintext cache)"
+else
+    PASS=$((PASS + 1))
+    [[ "$EXISTED_BEFORE" == true ]] && \
+        echo "  note: $CACHE_DIR_OLD predates this run — remove it (pre-R6 leftover)"
+fi
+
 echo "=== a missing conf file is not an error for unambiguous names ==="
 rm -f "$FIXTURE/scope.conf"
-out=$(DOTFILES_SECRETS_BACKEND=bws DOTFILES_SECRETS_CACHE_DIR="$FIXTURE" \
+out=$(DOTFILES_SECRETS_BACKEND=fixture DOTFILES_SECRETS_FIXTURE_DIR="$FIXTURE" \
       DOTFILES_SECRETS_GLOBAL_CONF="$FIXTURE/nonexistent.conf" \
       "$BIN" shell HF_TOKEN 2>/dev/null)
 check "exports HF without a conf" "$out" "fake-hf"
+
+echo "=== the conf resolves to the MAIN checkout, not a worktree copy ==="
+# R1 calls the conf the single per-machine authority "for every scope". The conf
+# is gitignored, so a worktree never has one; a binary that resolved it relative
+# to its own tree would find nothing and hard-error on every ambiguous name.
+# setup-envrc also bakes this binary's absolute path into a repo's .envrc, so a
+# worktree-relative answer outlives the worktree that produced it.
+WT_ROOT="$FIXTURE/wt-test"
+mkdir -p "$WT_ROOT/main"
+(
+    cd "$WT_ROOT/main" || exit 1
+    git init -q .
+    git config user.email t@example.com
+    git config user.name t
+    mkdir -p custom_bins scripts/helpers config
+    cp "$BIN" custom_bins/dotfiles-secrets
+    cp "$(dirname "$(dirname "$BIN")")/scripts/helpers/dotfiles_secrets.sh" scripts/helpers/
+    git add -f custom_bins scripts >/dev/null 2>&1
+    git commit -qm init >/dev/null 2>&1
+    git worktree add -q ../wt -b wt-branch >/dev/null 2>&1
+) >/dev/null 2>&1
+
+if [[ -x "$WT_ROOT/wt/custom_bins/dotfiles-secrets" ]]; then
+    got=$(DOTFILES_SECRETS_BACKEND=fixture \
+          "$WT_ROOT/wt/custom_bins/dotfiles-secrets" scope-conf-path 2>/dev/null)
+    # Resolve symlinks on the expectation: macOS /var -> /private/var.
+    want="$(cd "$WT_ROOT/main" && pwd -P)/config/secrets-global.conf"
+    check "worktree resolves to main checkout" "$got" "$want"
+
+    got=$(DOTFILES_SECRETS_BACKEND=fixture \
+          "$WT_ROOT/main/custom_bins/dotfiles-secrets" scope-conf-path 2>/dev/null)
+    check "main checkout resolves to itself"   "$got" "$want"
+else
+    echo "  SKIP: could not create a git worktree fixture"
+fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

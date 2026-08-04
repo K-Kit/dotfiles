@@ -231,7 +231,7 @@ This setup includes extensive [Claude Code](https://docs.anthropic.com/en/docs/c
 - **`docs/`** — On-demand knowledge loaded by skills (research methodology, async patterns, tmux, agent teams)
 - **`agents/`** — Personal agents (kept lean — most specialized agents live in plugins like `ai-safety-plugins`)
 - **`skills/`** — Project-level slash commands: `/commit`, `/merge-worktree`, `/jobs`, `/modal`, `/log-gap`, `/recall-feedback`, `/mv-repo`, etc.
-- **`hooks/`** — 40+ PreToolUse/PostToolUse/SessionStart scripts: auto-classify, secret blocking, modern-tool nudges, post-rebase guards, network audit
+- **`hooks/`** — 40+ PreToolUse/PostToolUse/SessionStart scripts: approval classifier, secret blocking, modern-tool nudges, post-rebase guards, network audit
 - **`templates/`** — Context profiles (`contexts/profiles.yaml`), research spec template
 
 **Smart merge preserves your data** - if `~/.claude` already exists, credentials, history, and cache are automatically restored after symlinking.

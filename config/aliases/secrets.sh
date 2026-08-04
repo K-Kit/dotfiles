@@ -1,4 +1,5 @@
 # aliases/secrets.sh — BWS encrypted secrets management, snippet sync, Mouseless sync
+# shellcheck shell=bash
 
 # shellcheck source=/dev/null
 source "$DOT_DIR/scripts/helpers/dotfiles_secrets.sh"
@@ -106,8 +107,10 @@ _secrets_edit_bws_fzf() {
     done
 
     if $mutated; then
-        dotfiles-secrets cache-clear >/dev/null 2>&1
-        echo "Cache cleared. Run 'direnv reload' in projects to pick up changes."
+        # Secrets resolve live from BWS on every call, so there is nothing to
+        # invalidate. A shell that already exported the old value keeps it until
+        # direnv re-evaluates.
+        echo "Done. Run 'direnv reload' in a project to re-export the new value."
     fi
 }
 secrets-init() {

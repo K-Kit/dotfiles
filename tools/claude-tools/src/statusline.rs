@@ -35,6 +35,18 @@ struct ContextWindow {
     used_percentage: Option<f64>,
 }
 
+/// Written by claude/hooks/approval_classifier.py on every classification attempt.
+#[derive(Deserialize)]
+struct ClassifierHealth {
+    backend: Option<String>,
+    ts: Option<u64>,
+}
+
+/// Past this age the health file is treated as absent. The hook rewrites it on
+/// every classification, so an active session refreshes it constantly; a
+/// degraded marker left over from this morning is noise, not news.
+const CLASSIFIER_HEALTH_MAX_AGE_SECS: u64 = 6 * 3600;
+
 // --- Main entry point ---
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -71,6 +83,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         session_parts.push(s);
     }
     if let Some(s) = format_duration_str(&input.cost) {
+        session_parts.push(s);
+    }
+    if let Some(s) = format_classifier_str() {
         session_parts.push(s);
     }
     if !session_parts.is_empty() {
@@ -243,6 +258,81 @@ fn format_context_usage_str(context_window: Option<&ContextWindow>) -> Option<St
         "\x1b[32m" // Green
     };
     Some(format!("{}ctx:{}%\x1b[0m", color, pct))
+}
+
+/// The dotfiles checkout root, for reading config/secrets-global.conf.
+/// `~/.claude` is a symlink into the checkout, so it doubles as a locator when
+/// DOT_DIR is not exported (Claude Code spawns the statusline, not a shell).
+fn dotfiles_root() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("DOT_DIR") {
+        if !dir.is_empty() {
+            return Some(std::path::PathBuf::from(dir));
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    let target = std::fs::read_link(std::path::PathBuf::from(home).join(".claude")).ok()?;
+    target.parent().map(|p| p.to_path_buf())
+}
+
+/// Short label of the ANTHROPIC_API_KEY that config/secrets-global.conf makes
+/// active — "ANTHROPIC_API_KEY - mats" renders as "mats". Mirrors the resolver
+/// in custom_bins/dotfiles-secrets: first line for the name whose value is not
+/// prefixed with `!` (blocked) wins.
+fn active_anthropic_key_label() -> Option<String> {
+    let conf = dotfiles_root()?.join("config/secrets-global.conf");
+    let content = std::fs::read_to_string(conf).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name.trim() != "ANTHROPIC_API_KEY" {
+            continue;
+        }
+        let value = value.trim();
+        if value.starts_with('!') {
+            continue; // blocked key — keep looking down the preference list
+        }
+        return Some(match value.split_once(" - ") {
+            Some((_, desc)) => desc.trim().to_string(),
+            None => String::new(),
+        });
+    }
+    None
+}
+
+/// Which backend last served an auto-approval, and on which key.
+/// Healthy renders dim and minimal; anything else is meant to be noticed.
+fn format_classifier_str() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::PathBuf::from(home)
+        .join(".cache/claude/approval-classifier-health.json");
+    let health: ClassifierHealth = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let backend = health.backend.as_deref()?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    if now.saturating_sub(health.ts.unwrap_or(0)) > CLASSIFIER_HEALTH_MAX_AGE_SECS {
+        return None;
+    }
+
+    let label = active_anthropic_key_label().unwrap_or_default();
+    match backend {
+        "api" if label.is_empty() => Some("\x1b[2mauto\x1b[0m".to_string()),
+        "api" => Some(format!("\x1b[2mauto:{}\x1b[0m", label)),
+        // Deliberately does NOT name a key. `label` is the conf's preferred key,
+        // but with-anthropic-key.sh defers to an already-exported ANTHROPIC_API_KEY,
+        // so the key that actually failed may be a different one — naming the wrong
+        // key as down is worse than naming none. The healthy line still shows it.
+        "subscription" => Some("\x1b[33mauto:sub\x1b[0m \x1b[2m(api down)\x1b[0m".to_string()),
+        "dead" => Some("\x1b[31m🔴auto\x1b[0m".to_string()),
+        _ => None,
+    }
 }
 
 /// Session duration from `cost.total_duration_ms`.

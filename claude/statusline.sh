@@ -4,7 +4,7 @@
 #
 # Displays on up to 3 lines:
 # Line 1 (location): Machine name (SSH) + profiles + directory + git branch
-# Line 2 (session): Model name + context % + duration
+# Line 2 (session): Model name + context % + duration + approval-classifier state
 # Line 3 (usage): 5h and 7d API usage bars (cached, from /api/oauth/usage)
 #
 # Receives JSON via stdin from Claude Code.
@@ -117,6 +117,61 @@ if [ "$duration_ms" -gt 60000 ] 2>/dev/null; then
 fi
 
 # ============================================================================
+# APPROVAL CLASSIFIER (which backend last auto-approved, and on which key)
+# Parity: tools/claude-tools/src/statusline.rs::format_classifier_str
+# ============================================================================
+classifier_info=""
+classifier_health="$HOME/.cache/claude/approval-classifier-health.json"
+if [ -f "$classifier_health" ]; then
+  # The hook rewrites this on every classification; past 6h treat it as absent
+  # so a stale degraded marker doesn't linger.
+  health_ts=$(jq -r '.ts // 0' "$classifier_health" 2>/dev/null || echo 0)
+  now_ts=$(date +%s)
+  if [ $((now_ts - health_ts)) -le 21600 ]; then
+    backend=$(jq -r '.backend // ""' "$classifier_health" 2>/dev/null)
+
+    # Short label of the active ANTHROPIC_API_KEY, mirroring the resolver in
+    # custom_bins/dotfiles-secrets: first line whose value is not `!`-blocked.
+    key_label=""
+    conf_root="${DOT_DIR:-}"
+    [ -z "$conf_root" ] && conf_root=$(dirname "$(readlink "$HOME/.claude" 2>/dev/null)" 2>/dev/null)
+    if [ -n "$conf_root" ] && [ -f "$conf_root/config/secrets-global.conf" ]; then
+      key_label=$(awk -F= '
+        /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+        {
+          name = $1; sub(/^[[:space:]]+/, "", name); sub(/[[:space:]]+$/, "", name)
+          if (name != "ANTHROPIC_API_KEY") next
+          value = substr($0, index($0, "=") + 1)
+          sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value)
+          if (value ~ /^!/) next
+          idx = index(value, " - ")
+          print (idx ? substr(value, idx + 3) : "")
+          exit
+        }' "$conf_root/config/secrets-global.conf" 2>/dev/null)
+    fi
+
+    case "$backend" in
+      api)
+        if [ -n "$key_label" ]; then
+          classifier_info="$(printf '\033[2m')auto:${key_label}$(printf '\033[0m')"
+        else
+          classifier_info="$(printf '\033[2m')auto$(printf '\033[0m')"
+        fi
+        ;;
+      subscription)
+        # Deliberately does NOT name a key — with-anthropic-key.sh defers to an
+        # already-exported ANTHROPIC_API_KEY, so the conf's preferred key may not
+        # be the one that failed. Naming the wrong key as down is worse than none.
+        classifier_info="$(printf '\033[33m')auto:sub$(printf '\033[0m') $(printf '\033[2m')(api down)$(printf '\033[0m')"
+        ;;
+      dead)
+        classifier_info="$(printf '\033[31m')🔴auto$(printf '\033[0m')"
+        ;;
+    esac
+  fi
+fi
+
+# ============================================================================
 # OUTPUT: Line 1 (location) + Line 2 (session)
 # ============================================================================
 # Line 1: location
@@ -127,6 +182,7 @@ session_parts=()
 [ -n "$model_info" ] && session_parts+=("$model_info")
 [ -n "$context_info" ] && session_parts+=("$context_info")
 [ -n "$duration_info" ] && session_parts+=("$duration_info")
+[ -n "$classifier_info" ] && session_parts+=("$classifier_info")
 if [ ${#session_parts[@]} -gt 0 ]; then
   printf "\n"
   for i in "${!session_parts[@]}"; do

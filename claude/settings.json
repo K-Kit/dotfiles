@@ -395,8 +395,8 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/with-anthropic-key.sh python3 $HOME/.claude/hooks/auto_classify.py",
-            "timeout": 15
+            "command": "$HOME/.claude/hooks/with-anthropic-key.sh python3 $HOME/.claude/hooks/approval_classifier.py",
+            "timeout": 30
           }
         ]
       }
@@ -465,6 +465,11 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/nudge_syspath.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/nudge_statusline_parity.sh",
             "timeout": 5
           }
         ]
