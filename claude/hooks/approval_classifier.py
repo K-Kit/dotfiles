@@ -43,10 +43,42 @@ TIMEOUT_SECONDS = 8  # API backend — fail fast so the fallback gets real room
 # the budget too; the hook's clock started before any of this ran.
 _STARTED_MONOTONIC = time.monotonic()
 
+# ...but the hook's clock started even earlier than THAT. The configured command
+# is `with-anthropic-key.sh python3 approval_classifier.py`, and the wrapper does
+# a live `dotfiles-secrets shell ANTHROPIC_API_KEY` (a network BWS call, ~0.5s
+# typical and unbounded on a slow link) before exec'ing Python. Timing only from
+# import overstates what is left, and the overstatement lands exactly where it
+# hurts: a fallback started with "enough" budget gets killed mid-flight, writing
+# no health file — the silent-stale case the budget exists to prevent.
+#
+# The wrapper stamps HOOK_START_ENV before doing any work; anything unparseable,
+# negative, or larger than the whole budget is treated as 0 rather than trusted.
+HOOK_START_ENV = "APPROVAL_CLASSIFIER_HOOK_START"
+
+
+def _pre_python_elapsed() -> float:
+    """Seconds burned by the wrapper before this interpreter started."""
+    raw = os.environ.get(HOOK_START_ENV, "")
+    if not raw:
+        return 0.0
+    try:
+        elapsed = time.time() - float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    # Clock skew, a stale inherited value, or a wrapper that never ran would all
+    # show up as nonsense here. Clamp instead of letting it distort the budget.
+    if not 0.0 <= elapsed <= TOTAL_BUDGET_SECONDS:
+        return 0.0
+    return elapsed
+
+
+_PRE_PYTHON_SECONDS = _pre_python_elapsed()
+
 
 def remaining_budget() -> float:
     """Seconds left before the hook deadline, minus the epilogue reserve."""
-    return TOTAL_BUDGET_SECONDS - (time.monotonic() - _STARTED_MONOTONIC)
+    spent = _PRE_PYTHON_SECONDS + (time.monotonic() - _STARTED_MONOTONIC)
+    return TOTAL_BUDGET_SECONDS - spent
 
 # --- Subscription fallback (second backend) ---
 # When the API-key path fails for ANY reason (no key, 401/403, 429, provider
@@ -973,11 +1005,18 @@ def classify_via_subscription(
     # repo point the classifier deciding its own auto-approvals at an endpoint
     # that always answers "allow". The API backend cannot be redirected this way
     # (it hardcodes API_URL), so this is fallback-specific.
+    # CLAUDE_CODE_USE_* is the provider-selector namespace (BEDROCK, VERTEX,
+    # FOUNDRY, ...). Stripping the credentials alone is not enough: a selector
+    # left set keeps the child routed at that provider, so the fallback either
+    # errors or answers from somewhere that is not the subscription this backend
+    # exists to reach. Matched by prefix rather than by an explicit list, because
+    # an enumeration silently stops covering the case the day a new selector is
+    # added — and the failure would be silent auto-approvals from an unintended
+    # provider.
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith("ANTHROPIC_")
-        and k not in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
+        if not k.startswith("ANTHROPIC_") and not k.startswith("CLAUDE_CODE_USE_")
     }
     env[NESTED_ENV] = "1"
 

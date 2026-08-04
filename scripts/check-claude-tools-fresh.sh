@@ -65,21 +65,55 @@ done < <(git -C "$REPO_ROOT" ls-files 'custom_bins/claude-tools-*')
 # not tracked as an asset and it still exits 0. Two bytes do catch it.
 WRAPPER="$REPO_ROOT/custom_bins/claude-tools"
 clobbered=false
-if [[ -f "$WRAPPER" ]] && [[ "$(head -c2 "$WRAPPER" 2>/dev/null)" != '#!' ]]; then
+wrapper_problem=""
+if [[ ! -f "$WRAPPER" ]]; then
+    # Absent is not "fine". An earlier version only tested the first two bytes of
+    # an existing file, so a deleted or chmod-ed dispatcher left clobbered=false
+    # and --strict could report everything up to date while `claude-tools` could
+    # not run at all.
     clobbered=true
+    wrapper_problem="missing"
+elif [[ ! -x "$WRAPPER" ]]; then
+    clobbered=true
+    wrapper_problem="not executable"
+elif [[ "$(head -c2 "$WRAPPER" 2>/dev/null)" != '#!' ]]; then
+    clobbered=true
+    wrapper_problem="a raw binary, not the dispatch wrapper"
 fi
 
 # SHA256SUMS is the trust anchor bootstrap_claude_tools verifies prebuilt
 # downloads against. A rebuilt-but-unrecorded asset makes a fresh machine
 # reject the very binary this repo ships.
+# Portable hashing: macOS ships `shasum`, not `sha256sum`. Without this, every
+# asset hashes to the empty string on a Mac and the check cries wolf about all of
+# them — a guard nobody trusts is a guard nobody reads.
+# scripts/shared/helpers.sh has _sha256_of, but it cannot be reused here: it is
+# zsh and exits unless config.sh was sourced first. This stays standalone so it
+# is safe to call from a hook.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
 SUMS="$SRC_DIR/SHA256SUMS"
 badsums=()
+no_hasher=false
 if [[ -f "$SUMS" ]]; then
-    while read -r want name; do
-        [[ -n "$name" ]] || continue
-        got=$(sha256sum "$REPO_ROOT/custom_bins/$name" 2>/dev/null | cut -d' ' -f1)
-        [[ "$got" == "$want" ]] || badsums+=("$name")
-    done < "$SUMS"
+    if ! sha256_of "$SUMS" >/dev/null; then
+        # Report the absence rather than reporting every asset as mismatched.
+        no_hasher=true
+    else
+        while read -r want name; do
+            [[ -n "$name" ]] || continue
+            got=$(sha256_of "$REPO_ROOT/custom_bins/$name" || true)
+            [[ "$got" == "$want" ]] || badsums+=("$name")
+        done < "$SUMS"
+    fi
 fi
 
 # Uncommitted source edits are a softer signal: nothing is stale *yet*, but
@@ -87,13 +121,17 @@ fi
 dirty_src=$(git -C "$REPO_ROOT" status --porcelain -- tools/claude-tools/src 2>/dev/null)
 
 if [[ ${#stale[@]} -eq 0 && -z "$dirty_src" ]] \
-    && [[ "$clobbered" == "false" && ${#badsums[@]} -eq 0 ]]; then
+    && [[ "$clobbered" == "false" && ${#badsums[@]} -eq 0 && "$no_hasher" == "false" ]]; then
     $QUIET || echo "claude-tools binaries are up to date with the source"
     exit 0
 fi
 
+if [[ "$no_hasher" == "true" ]]; then
+    echo "⚠ neither sha256sum nor shasum is available — SHA256SUMS was NOT verified."
+fi
+
 if [[ "$clobbered" == "true" ]]; then
-    echo "🔴 custom_bins/claude-tools is NOT the dispatch wrapper — it looks like a raw binary."
+    echo "🔴 custom_bins/claude-tools is $wrapper_problem — it must be the dispatch wrapper."
     echo "  The statusline runs this path on every platform. Restore the wrapper:"
     echo "    git show e7c2de0:custom_bins/claude-tools > custom_bins/claude-tools && chmod +x custom_bins/claude-tools"
     echo "  Rebuilds belong in custom_bins/claude-tools-<platform>, never here."
