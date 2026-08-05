@@ -58,9 +58,10 @@ assert_contains "-r enables remote control" "--remote-control" "$out"
 # `--remote-control [name]` takes an OPTIONAL argument, so a bare
 # `--remote-control` followed by the prompt would consume the prompt as the
 # session name and start an agent with no seed at all. The name must always be
-# supplied explicitly. This assertion is the guard on that invariant.
+# supplied, and as ONE token — see the option-boundary section below for why the
+# space-separated spelling this assertion used to require was a gate bypass.
 # shellcheck disable=SC2016
-assert_contains "remote control is never bare" '--remote-control "$CLAUDE_SPAWN_RC_NAME"' "$out"
+assert_contains "remote control is never bare" '--remote-control="$CLAUDE_SPAWN_RC_NAME"' "$out"
 
 out=$("$SPAWN" --dry-run -n my-rc-name "x" 2>&1)
 assert_contains "-n implies remote control" "--remote-control" "$out"
@@ -80,6 +81,32 @@ assert_contains "gate: override actually yolos" "--dangerously-skip-permissions"
 out=$("$SPAWN" --dry-run -y "x" 2>&1); code=$?
 assert_exit     "yolo alone allowed"  0 "$code"
 assert_contains "yolo alone skips perms" "--dangerously-skip-permissions" "$out"
+
+# --- gate: option-shaped values must not become options ---------------------
+#
+# The bypass this guards: `--remote-control [name]` takes an OPTIONAL argument,
+# so an optional-arg option does not consume a dash-prefixed token. Spelling the
+# name as a separate word meant `-n --dangerously-skip-permissions` reached
+# Claude as TWO options — Remote Control plus skip-permissions — while this
+# script still believed yolo=false, so gate 2 never fired. The gate was checking
+# its own variables, not the argv it was about to build.
+
+# This is the attack verbatim: the name is an option, and yolo is never set.
+out=$("$SPAWN" --dry-run -n --dangerously-skip-permissions "x" 2>&1)
+assert_not_contains "rc name cannot smuggle a flag" "--dangerously-skip-permissions" "$out"
+assert_contains     "rc name is defanged, not rejected" "remote control: dangerously-skip-permissions" "$out"
+
+# The single-token form is what makes the above impossible: no value of the name
+# can split into a second argument.
+out=$("$SPAWN" --dry-run -r "x" 2>&1)
+# shellcheck disable=SC2016  # asserting the literal, unexpanded text
+assert_contains "rc name is one token" '--remote-control="$CLAUDE_SPAWN_RC_NAME"' "$out"
+
+# A dash-leading prompt is a prompt, not a flag.
+out=$("$SPAWN" --dry-run -- "--dangerously-skip-permissions" 2>&1)
+# shellcheck disable=SC2016  # asserting the literal, unexpanded text
+assert_contains "prompt is terminated by --" '-- "$CLAUDE_SPAWN_PROMPT"' "$out"
+assert_not_contains "dash-leading prompt is not a flag" "claude --dangerously" "$out"
 
 # --- gate: recursion depth --------------------------------------------------
 
@@ -105,6 +132,15 @@ assert_contains "bad --dir explains"    "not a directory" "$out"
 
 out=$("$SPAWN" --dry-run --bogus-flag "x" 2>&1); code=$?
 assert_exit "unknown flag is an error" 1 "$code"
+
+# A value-taking flag in final position used to fail `shift 2`, which under
+# `set -e` exits 1 with nothing on stderr. The diagnostic is the point here.
+out=$("$SPAWN" --dry-run --dir 2>&1); code=$?
+assert_exit     "trailing --dir is an error"  1 "$code"
+assert_contains "trailing --dir explains"     "needs a value" "$out"
+
+out=$("$SPAWN" --dry-run -s 2>&1); code=$?
+assert_contains "trailing -s explains"        "needs a value" "$out"
 
 out=$(printf 'from stdin' | "$SPAWN" --dry-run - 2>&1); code=$?
 assert_exit     "stdin prompt accepted" 0 "$code"
@@ -141,7 +177,19 @@ fi
 # Skipped without a reachable tmux server (CI, or a sandbox that denies the
 # tmux socket) — skipping is reported, never silently passed.
 
-probe_dir=$(mktemp -d 2>/dev/null || echo "")
+# $TMPDIR is not always writable — under Claude Code's Linux sandbox it points at
+# a read-only /run/user/<uid>, and mktemp with no -p fails outright. That used to
+# skip the probe silently on exactly the machine this tool is developed on, which
+# made the one test that runs real code the one test that never ran. Try the
+# obvious roots in turn instead of giving up on the first.
+probe_dir=""
+for probe_root in "${TMPDIR:-}" /tmp/claude /tmp "$SCRIPT_DIR/../tmp"; do
+  [[ -n "$probe_root" ]] || continue
+  mkdir -p "$probe_root" 2>/dev/null || continue
+  probe_dir=$(mktemp -d -p "$probe_root" 2>/dev/null || echo "")
+  [[ -n "$probe_dir" && -d "$probe_dir" ]] && break
+  probe_dir=""
+done
 probe_session="claude-spawn-argvprobe-$$"
 
 # Without this guard an unwritable TMPDIR leaves probe_dir empty, and every
@@ -179,10 +227,25 @@ mkdir -p "$probe_dir/zdot"
 : >"$probe_dir/zdot/.zshrc"
 : >"$probe_dir/zdot/.zshenv"
 
-# The server inherits this environment at start, and passes it to every pane —
-# PATH and ZDOTDIR are not in tmux's update-environment, so seeding them here is
-# the way they reach the agent.
-if ! PATH="$probe_dir/bin:$PATH" ZDOTDIR="$probe_dir/zdot" tmux start-server 2>/dev/null; then
+# EXPORTED, not set as a one-shot prefix on `tmux start-server`. A tmux server
+# with no sessions exits almost immediately, so the prefixed server was usually
+# gone by the time `eval "$argv"` ran; the eval then started a FRESH server from
+# this shell's own environment, where the real claude() wrapper and the real
+# binary both win. The "safe" probe could therefore launch a genuine detached
+# agent, sit through its timeout, and report only that the stub was not invoked.
+# Exporting means every server started from here inherits the stub, whichever
+# one the eval'd command ends up talking to.
+export PATH="$probe_dir/bin:$PATH"
+export ZDOTDIR="$probe_dir/zdot"
+
+# Belt and braces: if `claude` does not resolve to the stub, something about the
+# shadowing assumption is wrong and the next step would start a real agent.
+# Refuse to run rather than find out by launching one.
+resolved_claude=$(command -v claude 2>/dev/null || echo "")
+if [[ "$resolved_claude" != "$probe_dir/bin/claude" ]]; then
+  bad "argv probe: stub shadows the real claude" \
+      "claude resolves to '${resolved_claude:-<nothing>}', refusing to run the probe"
+elif ! tmux start-server 2>/dev/null; then
   printf '  SKIP argv probe (cannot start a tmux server here)\n'
 else
   # Deliberately hostile: spaces, double quotes, and a `$var` that must survive
@@ -211,7 +274,11 @@ else
     else
       assert_contains     "argv probe: prompt arrives verbatim" "ARG:$probe_prompt" "$got"
       assert_contains     "argv probe: depth propagates"        "DEPTH:1" "$got"
-      assert_not_contains "argv probe: no stray flags"          "ARG:--" "$got"
+      # `--` is deliberate (it protects a dash-leading prompt), so the check is
+      # not "no dashes" but "none of the capability flags we did not ask for".
+      assert_contains     "argv probe: option terminator present" "ARG:--" "$got"
+      assert_not_contains "argv probe: no skip-permissions" "skip-permissions" "$got"
+      assert_not_contains "argv probe: no remote control"   "remote-control" "$got"
     fi
   fi
   tmux kill-server 2>/dev/null || true

@@ -18,6 +18,8 @@ claude-spawn -d ~/code/some-repo "Investigate the flaky test in tests/test_auth.
 
 Creates a detached session named `some-repo-MMDD-HHMM` running Claude Code in that directory with the prompt already submitted. Local-only: Remote Control is off unless asked for.
 
+**A directory inside a git repo becomes the repo root.** The `claude()` wrapper cds to the git root before launching (so `plansDirectory` resolves), which means `-d ~/code/repo/packages/api` starts the agent at `~/code/repo` with the whole repository in view, not just that package. `claude-spawn` prints a note when this applies. If the task must stay narrow, say so in the prompt — the working directory will not do it for you.
+
 `claude-spawn --help` for the full list. The ones that matter:
 
 | Flag | When |
@@ -36,9 +38,11 @@ Creates a detached session named `some-repo-MMDD-HHMM` running Claude Code in th
 
 **`-y` together with `-r` is refused** unless you add `--allow-remote-yolo`. An unrestricted agent that is also drivable from off-machine is the one combination worth stopping to think about; either alone is ordinary.
 
-**Spawning from inside a spawned session is refused** (`CLAUDE_SPAWN_DEPTH`). This caps fan-out at one generation. `--allow-nested` overrides it, but if you're hitting this, check that you meant to.
+**Spawning from inside a spawned session is refused** (`CLAUDE_SPAWN_DEPTH`). `--allow-nested` overrides it, but if you're hitting this, check that you meant to. Note what this is: an inherited environment variable. It stops accidental fan-out — the failure mode where a seeded agent reads a task as "spawn more agents" and you find twelve tmux sessions. It is not a containment boundary, because anything running in that session can unset it.
 
 **Every spawn is logged** to `~/.local/state/claude-spawn/spawn.log` — timestamp, session, directory, flags, and a truncated SHA-256 of the prompt. The prompt text itself is never written to disk. An unexpected session can be traced back to a known spawn.
+
+The prompt is hashed in the log but it is *not* hidden from the machine: it sits in the command's argv while `tmux new-session` runs, so `ps` shows it to any local user during that window. Don't seed with something you would not paste into a shared terminal.
 
 The log is append-only and nothing reaps it — one short line per spawn, so it will not matter for years, but it is not self-limiting either. Truncate it by hand if it ever does, or wire it into the same daily hook as `claude-jobs-reap`.
 

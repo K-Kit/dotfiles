@@ -19,6 +19,10 @@
 #   the session environment; the pane inherits it at fork, so we clear it from
 #   the session environment immediately afterwards and it never lingers in
 #   `tmux show-environment` or in shell history.
+#   It is NOT hidden, though: the prompt sits in this script's argv for the
+#   duration of the `tmux new-session` call, so it is readable via `ps` by
+#   anyone on the box for that window. The audit log hashes the prompt; `ps`
+#   does not. Treat the seed prompt as visible to local users, not secret.
 #
 # SECURITY — read before widening any default:
 #   A spawned session outlives the session that created it, the human never
@@ -26,7 +30,10 @@
 #   That combination, not skip-permissions on its own, is what makes this
 #   sharper than typing `claude` yourself. Hence the gates:
 #     * Remote Control is OPT-IN — a spawned session is local-only by default
-#     * recursion depth cap    — a spawned agent cannot spawn again
+#     * recursion depth cap    — a spawned agent does not spawn again by
+#                                default. This is an inherited env var, so it
+#                                stops accidental fan-out, not a determined
+#                                agent that unsets or overrides it.
 #     * --yolo + --remote-control refused unless explicitly acknowledged
 #     * every spawn is appended to an audit log (prompt hashed, never stored)
 #   Never pass untrusted text (file contents, web pages, issue bodies) as the
@@ -100,14 +107,21 @@ dry_run=false
 print_tmux_command=false
 positional=()
 
+# A value-taking flag given as the last argument would otherwise leave the value
+# empty and then fail `shift 2`, which under `set -e` exits with no message at
+# all. Fail loudly instead: "claude-spawn --dir" should say what is wrong.
+need_val() {
+  [[ $# -ge 2 && -n "$2" ]] || die "option $1 needs a value"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -d|--dir)      dir="${2:-}";        shift 2 ;;
-    -s|--session)  session="${2:-}";    shift 2 ;;
-    -w|--window)   window="${2:-}";     shift 2 ;;
+    -d|--dir)      need_val "$@"; dir="$2";        shift 2 ;;
+    -s|--session)  need_val "$@"; session="$2";    shift 2 ;;
+    -w|--window)   need_val "$@"; window="$2";     shift 2 ;;
     -r|--remote-control) remote_control=true; shift ;;
-    -n|--rc-name)  rc_name="${2:-}"; remote_control=true; shift 2 ;;
-    --prompt-file) prompt_file="${2:-}"; shift 2 ;;
+    -n|--rc-name)  need_val "$@"; rc_name="$2"; remote_control=true; shift 2 ;;
+    --prompt-file) need_val "$@"; prompt_file="$2"; shift 2 ;;
     --auto)        auto_resume=true;    shift ;;
     -y|--yolo)     yolo=true;           shift ;;
     -a|--attach)   attach=true;         shift ;;
@@ -167,6 +181,23 @@ dir="${dir:-$PWD}"
 [[ -d "$dir" ]] || die "not a directory: $dir"
 dir=$(cd "$dir" && pwd -P)
 
+# The pane starts in $dir, but the claude() wrapper we deliberately invoke via
+# `zsh -ic` cds to the git root first (config/aliases/claude.sh) so that
+# plansDirectory resolves. For a subdirectory of a repo that means the agent
+# does NOT begin where you pointed it — a task scoped to one package starts with
+# the whole repository in view. That is the wrapper's documented behaviour, not
+# a bug to fix here, but it is surprising enough to say out loud rather than let
+# someone infer scope from the -d they passed.
+effective_dir="$dir"
+if ! git_root=$(cd "$dir" && git rev-parse --show-toplevel 2>/dev/null); then
+  git_root=""
+fi
+if [[ -n "$git_root" && "$git_root" != "$dir" ]]; then
+  effective_dir="$git_root"
+  printf '%s: note: %s is inside a git repo; the agent will start at the repo root %s\n' \
+    "$PROG" "$dir" "$git_root" >&2
+fi
+
 # ------------------------------------------------------------------- naming
 
 sanitize() {
@@ -201,7 +232,12 @@ if tmux_has "$session"; then
 fi
 
 window="${window:-$session}"
-rc_name="${rc_name:-$session}"
+# Sanitised for the same reason as the session name, plus one more: an
+# option-shaped rc_name is how gate 2 was bypassed. sanitize() strips leading
+# dashes, so `-n --dangerously-skip-permissions` can no longer reach Claude as
+# a flag even if the `--remote-control=` spelling below were ever loosened.
+rc_name=$(sanitize "${rc_name:-$session}")
+[[ -n "$rc_name" ]] || die "remote control name is empty after sanitising"
 
 if [[ "$auto_resume" == true ]]; then
   # Resolve the prefix at runtime rather than hard-coding "auto-": tmux-resume
@@ -229,23 +265,41 @@ inner='claude'
 if [[ "$yolo" == true ]]; then
   inner+=' --dangerously-skip-permissions'
 fi
-# `--remote-control [name]` takes an OPTIONAL argument. Passing it bare would
-# make it swallow the following positional as the session name, so the agent
-# would start with no seed prompt and a session named after the task text.
-# The name is therefore always supplied, never omitted.
+# `--remote-control [name]` takes an OPTIONAL argument, which makes the obvious
+# spelling unsafe in two different ways.
+#
+# Passing it bare lets it swallow the following positional as the session name,
+# so the agent starts with no seed prompt and a session named after the task.
+#
+# Passing the name as a SEPARATE word is worse, and was a live gate bypass here.
+# An optional-argument option does not consume a dash-prefixed token, so
+# `--remote-control "$RC_NAME"` with a name of `--dangerously-skip-permissions`
+# reaches Claude as two options: Remote Control *and* skip-permissions. Gate 2
+# never fires, because from this script's point of view yolo is still false —
+# the exact combination it exists to refuse, assembled after the check.
+# Verified against the installed CLI: `claude --remote-control --bogus` reports
+# `unknown option '--bogus'`, i.e. the flag was parsed, not consumed as a name.
+#
+# `--remote-control=<name>` is a single token, so no value of the name can
+# become an option. rc_name is also sanitised at assignment; both, because
+# either alone would silently become load-bearing.
 if [[ "$remote_control" == true ]]; then
   # shellcheck disable=SC2016
-  inner+=' --remote-control "$CLAUDE_SPAWN_RC_NAME"'
+  inner+=' --remote-control="$CLAUDE_SPAWN_RC_NAME"'
 fi
+# `--` ends option parsing, so a seed prompt that begins with a dash is a prompt
+# rather than a flag. Without it, `claude-spawn -- ... "--foo"` hands Claude an
+# option chosen by whoever wrote the prompt text.
 # shellcheck disable=SC2016
-inner+=' "$CLAUDE_SPAWN_PROMPT"'
+inner+=' -- "$CLAUDE_SPAWN_PROMPT"'
 
 # `exec zsh` keeps the pane alive as a usable shell after the agent exits.
 cmd="zsh -ic '${inner}; exec zsh'"
 
-# Build the tmux invocation as an array so that what --dry-run prints and what
-# actually runs are the same value, not two hand-kept-in-sync spellings. Tests
-# eval the printed form, so a divergence here would fail them.
+# Build the tmux invocation once, as an array. The launch below runs this same
+# array and --print-tmux-command prints it, so there is no second spelling to
+# keep in sync — which is what lets the argv-probe test eval the printed form
+# and have that mean something about what actually runs.
 tmux_args=(
   new-session -d
   -s "$session"
@@ -271,6 +325,9 @@ fi
 
 if [[ "$dry_run" == true ]]; then
   printf 'dir:            %s\n' "$dir"
+  if [[ "$effective_dir" != "$dir" ]]; then
+    printf 'agent starts in: %s (git root)\n' "$effective_dir"
+  fi
   printf 'tmux session:   %s\n' "$session"
   printf 'tmux window:    %s\n' "$window"
   printf 'remote control: %s\n' "$([[ "$remote_control" == true ]] && echo "$rc_name" || echo disabled)"
@@ -304,18 +361,16 @@ printf '%s\tsession=%s\tdir=%s\trc=%s\tyolo=%s\tdepth=%s\tprompt_sha=%s\n' \
 
 # ---------------------------------------------------------------- launch
 
-tmux new-session -d -s "$session" -n "$window" -c "$dir" \
-  -e "CLAUDE_SPAWN_PROMPT=$prompt" \
-  -e "CLAUDE_SPAWN_RC_NAME=$rc_name" \
-  -e "CLAUDE_SPAWN_DEPTH=$((depth + 1))" \
-  "$cmd"
+tmux "${tmux_args[@]}"
 
 # The pane inherited the environment at fork, so clearing it here leaves the
 # running agent untouched while keeping the prompt out of `show-environment`.
 tmux set-environment -t "=$session" -u CLAUDE_SPAWN_PROMPT 2>/dev/null || true
 
 printf '%s: session %s in %s\n' "$PROG" "$session" "$dir"
-[[ "$remote_control" == true ]] && printf '%s: remote control as %s\n' "$PROG" "$rc_name"
+if [[ "$remote_control" == true ]]; then
+  printf '%s: remote control as %s\n' "$PROG" "$rc_name"
+fi
 
 if [[ "$attach" == true ]]; then
   if [[ -n "${TMUX:-}" ]]; then
