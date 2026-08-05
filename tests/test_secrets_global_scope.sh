@@ -289,5 +289,69 @@ else
     echo "  SKIP: could not create a git worktree fixture"
 fi
 
+# --- duplicate-warning suppression follows the machine conf -----------------
+# The warning lives in load_secrets_bws's parser, which the fixture backend
+# bypasses, so these cases run the REAL bws path against a fake `bws` binary.
+
+echo "=== duplicate env name, declared in conf -> no warning ==="
+FAKE_BIN="$FIXTURE/fakebin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/bws" <<'FAKEBWS'
+#!/usr/bin/env bash
+# Fake bws: only supports `bws --color no secret list`.
+cat <<'JSON'
+[
+  {"id": "uuid-alpha", "key": "ANTHROPIC_API_KEY - alpha", "value": "fake-a", "note": ""},
+  {"id": "uuid-beta",  "key": "ANTHROPIC_API_KEY - beta gamma", "value": "fake-b", "note": ""},
+  {"id": "uuid-rp1",   "key": "RUNPOD_API_KEY - one:Two", "value": "fake-r1", "note": ""},
+  {"id": "uuid-rp3",   "key": "RUNPOD_API_KEY - three", "value": "fake-r3", "note": ""},
+  {"id": "uuid-hf",    "key": "HF_TOKEN", "value": "fake-hf", "note": ""}
+]
+JSON
+FAKEBWS
+chmod +x "$FAKE_BIN/bws"
+
+# Runs `keys` (any value-loading command works) on the real bws path with the
+# fake binary. TMPDIR points into the fixture: the real path mktemps a stderr
+# capture file, and the ambient TMPDIR may be unwritable under the sandbox.
+run_fake_bws() {
+    local conf_body="$1"
+    printf '%s\n' "$conf_body" > "$FIXTURE/scope.conf"
+    PATH="$FAKE_BIN:$PATH" TMPDIR="$FIXTURE" \
+        BWS_ACCESS_TOKEN=fake-token \
+        DOTFILES_SECRETS_BACKEND=bws \
+        DOTFILES_SECRETS_GLOBAL_CONF="$FIXTURE/scope.conf" \
+        "$BIN" keys 2>&1
+}
+
+R=$(run_fake_bws 'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - beta gamma')
+check     "keys still lists the name"          "$R" "ANTHROPIC_API_KEY"
+check_not "no warning for the declared name"   "$R" "duplicate env name 'ANTHROPIC_API_KEY'"
+check     "still warns for undeclared RUNPOD"  "$R" "duplicate env name 'RUNPOD_API_KEY'"
+check     "warning suggests secrets-use"       "$R" "secrets-use RUNPOD_API_KEY"
+
+echo "=== blocked-only conf entry does not suppress the warning ==="
+R=$(run_fake_bws 'ANTHROPIC_API_KEY = !ANTHROPIC_API_KEY - beta gamma')
+check "blocked-only name still warns" "$R" "duplicate env name 'ANTHROPIC_API_KEY'"
+
+echo "=== stale declaration (mapped key gone from BWS) still warns ==="
+R=$(run_fake_bws 'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - deleted')
+check "stale mapping still warns"   "$R" "duplicate env name 'ANTHROPIC_API_KEY'"
+check "warning names the stale key" "$R" "ANTHROPIC_API_KEY - deleted"
+check "stale warning suggests re-pick" "$R" "secrets-use ANTHROPIC_API_KEY"
+
+echo "=== blocked lines then a stale active line still warns ==="
+R=$(run_fake_bws "$(printf '%s\n' \
+        'ANTHROPIC_API_KEY = !ANTHROPIC_API_KEY - alpha' \
+        'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - deleted')")
+check "stale-after-blocked warns" "$R" "duplicate env name 'ANTHROPIC_API_KEY'"
+
+echo "=== both names declared -> silent ==="
+R=$(run_fake_bws "$(printf '%s\n' \
+        'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - alpha' \
+        'RUNPOD_API_KEY = RUNPOD_API_KEY - three')")
+check_not "no ANTHROPIC warning" "$R" "duplicate env name 'ANTHROPIC_API_KEY'"
+check_not "no RUNPOD warning"    "$R" "duplicate env name 'RUNPOD_API_KEY'"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
