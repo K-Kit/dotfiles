@@ -190,7 +190,10 @@ probe_dir=""
 for probe_root in "${TMPDIR:-}" /tmp/claude /tmp "$SCRIPT_DIR/../tmp"; do
   [[ -n "$probe_root" ]] || continue
   mkdir -p "$probe_root" 2>/dev/null || continue
-  probe_dir=$(mktemp -d -p "$probe_root" 2>/dev/null || echo "")
+  # A full template rather than `mktemp -d -p <dir>`: -p is GNU-only, so on
+  # stock macOS every root failed and the probe skipped — silently, on a
+  # platform this repo supports.
+  probe_dir=$(mktemp -d "$probe_root/claude-spawn-probe.XXXXXX" 2>/dev/null || echo "")
   [[ -n "$probe_dir" && -d "$probe_dir" ]] && break
   probe_dir=""
 done

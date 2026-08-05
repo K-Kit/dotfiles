@@ -23,10 +23,15 @@
 #     * the pane therefore unsets its own copy, in the command string, before
 #       the agent starts; otherwise the seed stays in /proc/<pid>/environ for
 #       the life of the agent and every child inherits it
-#   It is NOT hidden, though: the prompt sits in this script's argv for the
-#   duration of the `tmux new-session` call, so it is readable via `ps` by
-#   anyone on the box for that window. The audit log hashes the prompt; `ps`
-#   does not. Treat the seed prompt as visible to local users, not secret.
+#   It is NOT hidden, though, and the exposure is not brief. The seed is passed
+#   to the agent as a positional argument, so it sits in the LONG-LIVED Claude
+#   process's argv and is readable via `ps` or /proc/<pid>/cmdline by any local
+#   user for as long as that session runs — not merely while `tmux new-session`
+#   executes. Claude Code takes its prompt positionally, so this is inherent to
+#   seeding rather than something the transport choice can avoid.
+#   The audit log hashes the prompt; `ps` does not. Treat the seed as visible to
+#   every local user for the lifetime of the session, and never seed with a
+#   secret.
 #
 # SECURITY — read before widening any default:
 #   A spawned session outlives the session that created it, the human never

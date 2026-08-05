@@ -42,7 +42,7 @@ Creates a detached session named `some-repo-MMDD-HHMM` running Claude Code in th
 
 **Every spawn is logged** to `~/.local/state/claude-spawn/spawn.log` — timestamp, session, directory, flags, and a truncated SHA-256 of the prompt. The prompt text itself is never written to disk. An unexpected session can be traced back to a known spawn.
 
-The prompt is hashed in the log but it is *not* hidden from the machine: it sits in the command's argv while `tmux new-session` runs, so `ps` shows it to any local user during that window. Don't seed with something you would not paste into a shared terminal.
+The prompt is hashed in the log but it is *not* hidden from the machine, and not only for a moment: it is passed to the agent positionally, so it stays in the running Claude process's argv and any local user can read it from `ps` or `/proc/<pid>/cmdline` for as long as the session lives. Claude Code takes its prompt positionally, so seeding inherently means this. Don't put anything in a seed prompt that you would not paste into a shared terminal.
 
 The log is append-only and nothing reaps it — one short line per spawn, so it will not matter for years, but it is not self-limiting either. Truncate it by hand if it ever does, or wire it into the same daily hook as `claude-jobs-reap`.
 

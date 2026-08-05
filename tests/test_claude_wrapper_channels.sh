@@ -28,13 +28,43 @@ bad() { printf '  FAIL %s\n     %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
 printf 'claude() wrapper: --channels vs the -- terminator\n'
 
+# `timeout` is GNU-only; stock macOS has neither it nor gtimeout unless coreutils
+# is installed. Without a fallback the hang test below simply would not run on
+# macOS — and a hang test that does not run on the platform is worse than none,
+# because the suite still reports green. Returns 124 on timeout, like GNU.
+run_limited() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+    return $?
+  fi
+  "$@" &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ "$waited" -ge "$secs" ]]; then
+      kill -9 "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      return 124
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$pid"
+  return $?
+}
+
 # A NON-git temp dir, so the wrapper's auto-cd-to-git-root does not relocate us
 # and change which .claude/channels directory is detected.
 d=""
 for root in /tmp/claude /tmp "${TMPDIR:-}"; do
   [[ -n "$root" ]] || continue
   mkdir -p "$root" 2>/dev/null || continue
-  d=$(mktemp -d -p "$root" 2>/dev/null) && [[ -d "$d" ]] && break
+  # Full template, not `-p`: that flag is GNU-only and this must run on macOS.
+  d=$(mktemp -d "$root/claude-wrapper-test.XXXXXX" 2>/dev/null) && [[ -d "$d" ]] && break
   d=""
 done
 if [[ -z "$d" ]]; then
@@ -104,7 +134,7 @@ fi
 # `--` must stop the wrapper reading further arguments as its own.
 : >"$d/argv.txt"
 printf 'activate_venv() { :; }\nsource %s\nclaude -- -t\n' "$WRAPPER" >"$d/t-case.zsh"
-timeout 10 zsh "$d/t-case.zsh" >/dev/null 2>&1
+run_limited 10 zsh "$d/t-case.zsh" >/dev/null 2>&1
 t_rc=$?
 
 # Judge by what the agent received, not by exit status — the wrapper can exit
