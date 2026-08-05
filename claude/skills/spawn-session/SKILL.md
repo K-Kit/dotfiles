@@ -40,6 +40,8 @@ Creates a detached session named `some-repo-MMDD-HHMM` running Claude Code in th
 
 **Every spawn is logged** to `~/.local/state/claude-spawn/spawn.log` — timestamp, session, directory, flags, and a truncated SHA-256 of the prompt. The prompt text itself is never written to disk. An unexpected session can be traced back to a known spawn.
 
+The log is append-only and nothing reaps it — one short line per spawn, so it will not matter for years, but it is not self-limiting either. Truncate it by hand if it ever does, or wire it into the same daily hook as `claude-jobs-reap`.
+
 ## Never seed with untrusted text
 
 Do not pipe a web page, an issue body, a PR description, or a file you did not write into the seed prompt. A fresh agent has no conversation context to weigh an injected instruction against, which makes it a softer target than a session that has been running for an hour. If the task is "act on this issue", pass the issue *reference* and let the spawned agent fetch it with its own judgement intact.
