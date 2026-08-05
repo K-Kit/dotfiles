@@ -131,5 +131,93 @@ else
   bad "dry-run writes no audit entry" "audit log grew from $before to $after lines"
 fi
 
+# --- the emitted argv actually works ----------------------------------------
+#
+# Everything above greps a printed string, which only proves the script says the
+# right thing. This runs what the script emits, with a stub on PATH standing in
+# for the real agent, and reads back what the agent would have received. That
+# closes the gap between "I believe it emits X" and "X does the right thing".
+#
+# Skipped without a reachable tmux server (CI, or a sandbox that denies the
+# tmux socket) — skipping is reported, never silently passed.
+
+probe_dir=$(mktemp -d 2>/dev/null || echo "")
+probe_session="claude-spawn-argvprobe-$$"
+
+# Without this guard an unwritable TMPDIR leaves probe_dir empty, and every
+# "$probe_dir/..." below becomes an absolute path at the filesystem root — the
+# stub would be written to /bin/claude. Refuse rather than build on an empty
+# prefix.
+if [[ -z "$probe_dir" || ! -d "$probe_dir" ]]; then
+  printf '  SKIP argv probe (no writable temp directory)\n'
+  printf '\n%d passed, %d failed\n' "$pass" "$fail"
+  [[ "$fail" -eq 0 ]]
+  exit $?
+fi
+
+# A private tmux server, so the probe cannot collide with, inherit from, or
+# leave anything behind in the user's real one. TMUX_TMPDIR picks the socket
+# directory, and the eval'd command inherits it, so it reaches this server too.
+export TMUX_TMPDIR="$probe_dir/tmux"
+mkdir -p "$TMUX_TMPDIR"
+chmod 700 "$TMUX_TMPDIR"
+
+# Stub `claude`, recording what the agent would actually have received.
+mkdir -p "$probe_dir/bin"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'printf "ARG:%%s\\n" "$@" >"%s/argv.txt"\n' "$probe_dir"
+  # shellcheck disable=SC2016  # writing a script; expansion happens when it runs
+  printf 'printf "DEPTH:%%s\\n" "${CLAUDE_SPAWN_DEPTH:-unset}" >>"%s/argv.txt"\n' "$probe_dir"
+} >"$probe_dir/bin/claude"
+chmod +x "$probe_dir/bin/claude"
+
+# The real claude() is a zsh *function*, and a function beats a PATH entry. An
+# empty ZDOTDIR means `zsh -ic` defines no such function, so the stub wins and
+# the probe never launches a real agent.
+mkdir -p "$probe_dir/zdot"
+: >"$probe_dir/zdot/.zshrc"
+: >"$probe_dir/zdot/.zshenv"
+
+# The server inherits this environment at start, and passes it to every pane —
+# PATH and ZDOTDIR are not in tmux's update-environment, so seeding them here is
+# the way they reach the agent.
+if ! PATH="$probe_dir/bin:$PATH" ZDOTDIR="$probe_dir/zdot" tmux start-server 2>/dev/null; then
+  printf '  SKIP argv probe (cannot start a tmux server here)\n'
+else
+  # Deliberately hostile: spaces, double quotes, and a `$var` that must survive
+  # every shell layer unexpanded.
+  # shellcheck disable=SC2016
+  probe_prompt='multi word "quoted" $notexpanded'
+
+  # Ask the script for its own tmux invocation, then run exactly that. This is
+  # the whole point: no hand-transcribed copy sits between test and artifact.
+  argv=$("$SPAWN" --print-tmux-command -s "$probe_session" -d "$probe_dir" "$probe_prompt" 2>&1)
+
+  if [[ "$argv" != tmux\ * ]]; then
+    bad "argv probe: script emits a tmux command" "got: $argv"
+  else
+    eval "$argv" 2>/dev/null
+
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [[ -s "$probe_dir/argv.txt" ]] && break
+      sleep 0.5
+    done
+
+    got=$(cat "$probe_dir/argv.txt" 2>/dev/null || echo "")
+
+    if [[ -z "$got" ]]; then
+      bad "argv probe: the emitted command reaches the agent" "stub was never invoked"
+    else
+      assert_contains     "argv probe: prompt arrives verbatim" "ARG:$probe_prompt" "$got"
+      assert_contains     "argv probe: depth propagates"        "DEPTH:1" "$got"
+      assert_not_contains "argv probe: no stray flags"          "ARG:--" "$got"
+    fi
+  fi
+  tmux kill-server 2>/dev/null || true
+fi
+
+rm -rf "$probe_dir"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

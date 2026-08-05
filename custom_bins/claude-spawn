@@ -67,6 +67,10 @@ Options:
       --allow-nested     Permit spawning from inside a spawned session
       --allow-remote-yolo  Acknowledge --yolo together with Remote Control
       --dry-run          Print what would run, change nothing
+      --print-tmux-command  Print only the tmux invocation, shell-quoted and
+                         directly eval-able. Implies --dry-run. Lets a test
+                         exercise what this script actually emits rather than a
+                         hand-transcribed copy of it
   -h, --help             This text
 
 Exit codes:
@@ -93,6 +97,7 @@ attach=false
 allow_nested=false
 allow_remote_yolo=false
 dry_run=false
+print_tmux_command=false
 positional=()
 
 while [[ $# -gt 0 ]]; do
@@ -109,6 +114,7 @@ while [[ $# -gt 0 ]]; do
     --allow-nested) allow_nested=true;  shift ;;
     --allow-remote-yolo) allow_remote_yolo=true; shift ;;
     --dry-run)     dry_run=true;        shift ;;
+    --print-tmux-command) print_tmux_command=true; dry_run=true; shift ;;
     -h|--help)     usage; exit 0 ;;
     -)             prompt_from_stdin=true; shift ;;
     --)            shift; positional+=("$@"); break ;;
@@ -213,20 +219,55 @@ fi
 
 # Single quotes below are deliberate: $CLAUDE_SPAWN_PROMPT must survive bash and
 # sh unexpanded so that zsh expands it from the session environment.
+# Every conditional append below uses `if` rather than `[[ ]] && ...`. The `&&`
+# form is only safe while an unconditional statement follows it: move one to the
+# end of a block and `set -e` turns a false condition into a silent exit. For a
+# script whose failure mode is "launched an agent with the wrong flags", safe by
+# accident of ordering is not safe enough.
 # shellcheck disable=SC2016  # deferred expansion is the point
 inner='claude'
-[[ "$yolo" == true ]] && inner+=' --dangerously-skip-permissions'
+if [[ "$yolo" == true ]]; then
+  inner+=' --dangerously-skip-permissions'
+fi
 # `--remote-control [name]` takes an OPTIONAL argument. Passing it bare would
 # make it swallow the following positional as the session name, so the agent
 # would start with no seed prompt and a session named after the task text.
 # The name is therefore always supplied, never omitted.
-# shellcheck disable=SC2016
-[[ "$remote_control" == true ]] && inner+=' --remote-control "$CLAUDE_SPAWN_RC_NAME"'
+if [[ "$remote_control" == true ]]; then
+  # shellcheck disable=SC2016
+  inner+=' --remote-control "$CLAUDE_SPAWN_RC_NAME"'
+fi
 # shellcheck disable=SC2016
 inner+=' "$CLAUDE_SPAWN_PROMPT"'
 
 # `exec zsh` keeps the pane alive as a usable shell after the agent exits.
 cmd="zsh -ic '${inner}; exec zsh'"
+
+# Build the tmux invocation as an array so that what --dry-run prints and what
+# actually runs are the same value, not two hand-kept-in-sync spellings. Tests
+# eval the printed form, so a divergence here would fail them.
+tmux_args=(
+  new-session -d
+  -s "$session"
+  -n "$window"
+  -c "$dir"
+  -e "CLAUDE_SPAWN_PROMPT=$prompt"
+  -e "CLAUDE_SPAWN_RC_NAME=$rc_name"
+  -e "CLAUDE_SPAWN_DEPTH=$((depth + 1))"
+  "$cmd"
+)
+
+# Re-quoted with %q so the output is directly eval-able.
+quoted_tmux_command() {
+  printf 'tmux'
+  printf ' %q' "${tmux_args[@]}"
+  printf '\n'
+}
+
+if [[ "$print_tmux_command" == true ]]; then
+  quoted_tmux_command
+  exit 0
+fi
 
 if [[ "$dry_run" == true ]]; then
   printf 'dir:            %s\n' "$dir"
@@ -236,6 +277,8 @@ if [[ "$dry_run" == true ]]; then
   printf 'skip perms:     %s\n' "$yolo"
   printf 'prompt bytes:   %s\n' "${#prompt}"
   printf 'command:        %s\n' "$cmd"
+  printf 'tmux argv:      %s' "$(quoted_tmux_command)"
+  printf '\n'
   exit 0
 fi
 
