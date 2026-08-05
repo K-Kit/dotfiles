@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# claude-spawn — create a detached tmux session, cd into a directory, launch
+# Claude Code there, seed it with an initial prompt, and enable Remote Control.
+#
+# WHY A COMMAND STRING AND NOT `tmux send-keys`:
+#   Keys sent to a freshly created pane race the shell's startup — p10k and the
+#   zsh line editor can swallow or mangle them. Passing the command to
+#   new-session has no race at all.
+#
+# WHY `zsh -ic` AND NOT A BARE COMMAND:
+#   tmux runs a command string under a NON-interactive shell, which sources
+#   .zshenv only. The claude() wrapper (venv activation, git-root cd,
+#   CLAUDE_CODE_TASK_LIST_ID, channel auto-detect) is defined in config/aliases/
+#   claude.sh, sourced from .zshrc. Without -i you silently get the raw binary.
+#   Verified: `zsh -ic 'whence -w claude'` -> function; .zshenv defines nothing.
+#
+# WHY THE PROMPT TRAVELS AS AN ENV VAR:
+#   It sidesteps two levels of quoting (bash -> sh -> zsh). tmux `-e` sets it in
+#   the session environment; the pane inherits it at fork, so we clear it from
+#   the session environment immediately afterwards and it never lingers in
+#   `tmux show-environment` or in shell history.
+#
+# SECURITY — read before widening any default:
+#   A spawned session outlives the session that created it, the human never
+#   watched it start, and with Remote Control it is drivable from off-machine.
+#   That combination, not skip-permissions on its own, is what makes this
+#   sharper than typing `claude` yourself. Hence the gates:
+#     * Remote Control is OPT-IN — a spawned session is local-only by default
+#     * recursion depth cap    — a spawned agent cannot spawn again
+#     * --yolo + --remote-control refused unless explicitly acknowledged
+#     * every spawn is appended to an audit log (prompt hashed, never stored)
+#   Never pass untrusted text (file contents, web pages, issue bodies) as the
+#   seed prompt: a fresh agent has no conversation context to contradict an
+#   injected instruction, which makes it an easier mark than a warm session.
+
+set -euo pipefail
+
+PROG=${0##*/}
+AUDIT_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/claude-spawn/spawn.log"
+
+die() {
+  printf '%s: %s\n' "$PROG" "$1" >&2
+  exit "${2:-1}"
+}
+
+usage() {
+  cat <<'EOF'
+claude-spawn — spawn a tmux session running Claude Code with a seeded prompt.
+
+Usage:
+  claude-spawn [options] <prompt...>
+  claude-spawn [options] --prompt-file <path>
+  claude-spawn [options] -            # read the prompt from stdin
+
+Options:
+  -d, --dir <path>       Working directory for the agent (default: cwd)
+  -s, --session <name>   tmux session name (default: <dir>-MMDD-HHMM)
+  -w, --window <name>    tmux window name (default: session name)
+  -r, --remote-control   Enable Remote Control (OFF by default — a spawned
+                         session is local-only unless you ask for this)
+  -n, --rc-name <name>   Remote Control name; implies -r (default: session name)
+      --prompt-file <p>  Read the seed prompt from a file
+      --auto             Name the window with the tmux-resume opt-in prefix so
+                         a rate-limited session resumes itself unattended
+  -y, --yolo             Pass --dangerously-skip-permissions to the agent
+  -a, --attach           Attach (or switch-client) after creating the session
+      --allow-nested     Permit spawning from inside a spawned session
+      --allow-remote-yolo  Acknowledge --yolo together with Remote Control
+      --dry-run          Print what would run, change nothing
+  -h, --help             This text
+
+Exit codes:
+  0 ok   1 usage/runtime   3 session name already in use   4 refused by a gate
+EOF
+}
+
+# ---------------------------------------------------------------- arg parsing
+
+dir=""
+session=""
+window=""
+rc_name=""
+prompt=""
+prompt_file=""
+prompt_from_stdin=false
+have_prompt=false
+auto_resume=false
+yolo=false
+# Remote Control is opt-in: it widens a spawned session from local-tty-only to
+# account-reachable code execution, so it is never turned on by inference.
+remote_control=false
+attach=false
+allow_nested=false
+allow_remote_yolo=false
+dry_run=false
+positional=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d|--dir)      dir="${2:-}";        shift 2 ;;
+    -s|--session)  session="${2:-}";    shift 2 ;;
+    -w|--window)   window="${2:-}";     shift 2 ;;
+    -r|--remote-control) remote_control=true; shift ;;
+    -n|--rc-name)  rc_name="${2:-}"; remote_control=true; shift 2 ;;
+    --prompt-file) prompt_file="${2:-}"; shift 2 ;;
+    --auto)        auto_resume=true;    shift ;;
+    -y|--yolo)     yolo=true;           shift ;;
+    -a|--attach)   attach=true;         shift ;;
+    --allow-nested) allow_nested=true;  shift ;;
+    --allow-remote-yolo) allow_remote_yolo=true; shift ;;
+    --dry-run)     dry_run=true;        shift ;;
+    -h|--help)     usage; exit 0 ;;
+    -)             prompt_from_stdin=true; shift ;;
+    --)            shift; positional+=("$@"); break ;;
+    -*)            die "unknown option: $1" ;;
+    *)             positional+=("$1");   shift ;;
+  esac
+done
+
+# ------------------------------------------------------------------- prompt
+
+if [[ -n "$prompt_file" ]]; then
+  [[ -r "$prompt_file" ]] || die "prompt file not readable: $prompt_file"
+  prompt=$(<"$prompt_file")
+  have_prompt=true
+elif [[ "$prompt_from_stdin" == true ]]; then
+  prompt=$(cat)
+  have_prompt=true
+elif [[ ${#positional[@]} -gt 0 ]]; then
+  prompt="${positional[*]}"
+  have_prompt=true
+fi
+
+# An empty seed is legitimate (open an agent in a directory and type yourself),
+# but it must be asked for explicitly rather than arrived at by a dropped quote.
+if [[ "$have_prompt" == false ]]; then
+  usage >&2
+  die "no seed prompt given (pass one, or --prompt-file, or -)"
+fi
+
+# --------------------------------------------------------------------- gates
+
+# Gate 1 — recursion cap. The spawned session carries CLAUDE_SPAWN_DEPTH, so an
+# agent that was itself spawned cannot fan out another generation. This is the
+# cheapest and most effective limit on uncontrolled spread.
+depth="${CLAUDE_SPAWN_DEPTH:-0}"
+if [[ "$depth" -ge 1 && "$allow_nested" != true ]]; then
+  die "refusing to spawn from inside a spawned session (depth=$depth). Pass --allow-nested if you meant it." 4
+fi
+
+# Gate 2 — the genuinely dangerous shape is an unrestricted agent that is also
+# drivable from off-machine. Either alone is ordinary; together they need a
+# deliberate acknowledgement.
+if [[ "$yolo" == true && "$remote_control" == true && "$allow_remote_yolo" != true ]]; then
+  die "refusing --yolo together with --remote-control: that is an unrestricted agent drivable from off-machine. Drop one, or pass --allow-remote-yolo if you mean it." 4
+fi
+
+# ----------------------------------------------------------------- directory
+
+dir="${dir:-$PWD}"
+[[ -d "$dir" ]] || die "not a directory: $dir"
+dir=$(cd "$dir" && pwd -P)
+
+# ------------------------------------------------------------------- naming
+
+sanitize() {
+  # tmux treats "." and ":" as target separators; keep names free of both.
+  printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//'
+}
+
+session_explicit=true
+if [[ -z "$session" ]]; then
+  session_explicit=false
+  session="$(sanitize "${dir##*/}")-$(date -u +%m%d-%H%M)"
+fi
+session=$(sanitize "$session")
+[[ -n "$session" ]] || die "session name is empty after sanitising"
+
+tmux_has() { tmux has-session -t "=$1" 2>/dev/null; }
+
+if tmux_has "$session"; then
+  if [[ "$session_explicit" == true ]]; then
+    die "tmux session already exists: $session (pick another with -s)" 3
+  fi
+  # A derived name collides only when spawning twice in the same minute.
+  base="$session"
+  session=""
+  for n in 2 3 4 5 6 7 8 9; do
+    if ! tmux_has "${base}-${n}"; then
+      session="${base}-${n}"
+      break
+    fi
+  done
+  [[ -n "$session" ]] || die "too many sessions named like $base" 3
+fi
+
+window="${window:-$session}"
+rc_name="${rc_name:-$session}"
+
+if [[ "$auto_resume" == true ]]; then
+  # Resolve the prefix at runtime rather than hard-coding "auto-": tmux-resume
+  # treats an empty prefix as "sending disabled", and hard-coding would rename
+  # windows to a prefix the gate rejects while reporting success.
+  optin_prefix="$(tmux-resume --print-optin-prefix 2>/dev/null || true)"
+  if [[ -z "$optin_prefix" ]]; then
+    printf '%s: warning: tmux-resume opt-in prefix is empty; auto-resume is disabled, window not renamed\n' "$PROG" >&2
+  else
+    [[ "$window" == "$optin_prefix"* ]] || window="${optin_prefix}${window}"
+  fi
+fi
+
+# ----------------------------------------------------- build the inner command
+
+# Single quotes below are deliberate: $CLAUDE_SPAWN_PROMPT must survive bash and
+# sh unexpanded so that zsh expands it from the session environment.
+# shellcheck disable=SC2016  # deferred expansion is the point
+inner='claude'
+[[ "$yolo" == true ]] && inner+=' --dangerously-skip-permissions'
+# shellcheck disable=SC2016
+[[ "$remote_control" == true ]] && inner+=' --remote-control "$CLAUDE_SPAWN_RC_NAME"'
+# shellcheck disable=SC2016
+inner+=' "$CLAUDE_SPAWN_PROMPT"'
+
+# `exec zsh` keeps the pane alive as a usable shell after the agent exits.
+cmd="zsh -ic '${inner}; exec zsh'"
+
+if [[ "$dry_run" == true ]]; then
+  printf 'dir:            %s\n' "$dir"
+  printf 'tmux session:   %s\n' "$session"
+  printf 'tmux window:    %s\n' "$window"
+  printf 'remote control: %s\n' "$([[ "$remote_control" == true ]] && echo "$rc_name" || echo disabled)"
+  printf 'skip perms:     %s\n' "$yolo"
+  printf 'prompt bytes:   %s\n' "${#prompt}"
+  printf 'command:        %s\n' "$cmd"
+  exit 0
+fi
+
+# ------------------------------------------------------------------- audit log
+
+prompt_sha() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -c1-16
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | cut -c1-16
+  else
+    printf 'nohash'
+  fi
+}
+
+# The prompt itself is never written to disk — only a short hash, so a surprise
+# session can be traced back to a known spawn without persisting its contents.
+mkdir -p "$(dirname "$AUDIT_LOG")"
+printf '%s\tsession=%s\tdir=%s\trc=%s\tyolo=%s\tdepth=%s\tprompt_sha=%s\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$session" "$dir" \
+  "$([[ "$remote_control" == true ]] && echo "$rc_name" || echo -)" \
+  "$yolo" "$depth" "$(prompt_sha "$prompt")" >>"$AUDIT_LOG"
+
+# ---------------------------------------------------------------- launch
+
+tmux new-session -d -s "$session" -n "$window" -c "$dir" \
+  -e "CLAUDE_SPAWN_PROMPT=$prompt" \
+  -e "CLAUDE_SPAWN_RC_NAME=$rc_name" \
+  -e "CLAUDE_SPAWN_DEPTH=$((depth + 1))" \
+  "$cmd"
+
+# The pane inherited the environment at fork, so clearing it here leaves the
+# running agent untouched while keeping the prompt out of `show-environment`.
+tmux set-environment -t "=$session" -u CLAUDE_SPAWN_PROMPT 2>/dev/null || true
+
+printf '%s: session %s in %s\n' "$PROG" "$session" "$dir"
+[[ "$remote_control" == true ]] && printf '%s: remote control as %s\n' "$PROG" "$rc_name"
+
+if [[ "$attach" == true ]]; then
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t "=$session"
+  else
+    tmux attach-session -t "=$session"
+  fi
+else
+  printf '%s: attach with: tmux attach -t %s\n' "$PROG" "$session"
+fi
