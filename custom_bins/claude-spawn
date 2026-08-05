@@ -370,8 +370,16 @@ inner+=' -- "$_seed"'
 # settings file — left a perfectly healthy shell behind and this script happily
 # reported a spawned session. The caller could not tell an agent from a leftover
 # prompt. The pane now says so, and the launch path below waits briefly for it.
+#
+# The `-e` test is the disarm: the launcher creates this file empty before the
+# launch and deletes it once its startup window closes, so the pane can only
+# report during that window. Without it, an agent exited hours later — Ctrl-C —
+# recreated a status file nobody would ever clean up, and once the PID was
+# reused a later healthy spawn read that stale file and declared failure.
+# Existing-and-empty means armed; non-empty means the agent failed; absent means
+# nobody is listening any more.
 # shellcheck disable=SC2016
-inner+='; _rc=$?; if [[ $_rc -ne 0 ]]; then printf %s "$_rc" >"$CLAUDE_SPAWN_STATUS_FILE" 2>/dev/null; fi'
+inner+='; _rc=$?; if [[ $_rc -ne 0 && -e "$CLAUDE_SPAWN_STATUS_FILE" ]]; then printf %s "$_rc" >"$CLAUDE_SPAWN_STATUS_FILE" 2>/dev/null; fi'
 
 # Where the pane reports an agent that failed to start. Under the state dir
 # rather than a world-writable temp root, so another local user cannot plant a
@@ -470,6 +478,12 @@ fi
 chmod 600 "$AUDIT_LOG" 2>/dev/null || true
 
 # ---------------------------------------------------------------- launch
+
+# Arm the startup-status channel: empty means "listening". Created fresh, which
+# also clears any file a previous run with this PID left behind.
+rm -f "$status_file"
+: >"$status_file"
+chmod 600 "$status_file" 2>/dev/null || true
 
 tmux "${tmux_args[@]}"
 

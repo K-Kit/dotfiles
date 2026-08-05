@@ -385,14 +385,17 @@ elif ! tmux new-session -d -s "${probe_session}-holder" sleep 600 2>/dev/null; t
       # shell and used to be reported as a successful spawn. The pane must say
       # when the agent failed — and must stay quiet when it did not.
       export CLAUDE_SPAWN_STATUS_FILE="$probe_dir/status"
-      rm -f "$CLAUDE_SPAWN_STATUS_FILE"
+
+      # Armed: the file exists and is empty, which is how the launcher says it
+      # is still listening.
+      : >"$CLAUDE_SPAWN_STATUS_FILE"
       printf '#!/usr/bin/env bash\nexit 7\n' >"$probe_dir/bin/claude"
       chmod +x "$probe_dir/bin/claude"
       eval "$inner_local </dev/null" >/dev/null 2>&1 || true
       assert_contains "startup failure is reported" "7" \
         "$(cat "$CLAUDE_SPAWN_STATUS_FILE" 2>/dev/null || echo "")"
 
-      rm -f "$CLAUDE_SPAWN_STATUS_FILE"
+      : >"$CLAUDE_SPAWN_STATUS_FILE"
       printf '#!/usr/bin/env bash\nexit 0\n' >"$probe_dir/bin/claude"
       chmod +x "$probe_dir/bin/claude"
       eval "$inner_local </dev/null" >/dev/null 2>&1 || true
@@ -400,6 +403,20 @@ elif ! tmux new-session -d -s "${probe_session}-holder" sleep 600 2>/dev/null; t
         bad "healthy agent reports nothing" "status file written for a clean exit"
       else
         ok "healthy agent reports nothing"
+      fi
+
+      # Disarmed: the launcher has closed its window and removed the file. A
+      # late nonzero exit — Ctrl-C hours later — must NOT recreate it, or the
+      # leftover would outlive the run and, once the PID was reused, make a
+      # healthy spawn report failure.
+      rm -f "$CLAUDE_SPAWN_STATUS_FILE"
+      printf '#!/usr/bin/env bash\nexit 7\n' >"$probe_dir/bin/claude"
+      chmod +x "$probe_dir/bin/claude"
+      eval "$inner_local </dev/null" >/dev/null 2>&1 || true
+      if [[ -e "$CLAUDE_SPAWN_STATUS_FILE" ]]; then
+        bad "late exit does not resurrect the status file" "file recreated after disarm"
+      else
+        ok "late exit does not resurrect the status file"
       fi
       unset CLAUDE_SPAWN_STATUS_FILE
     fi
