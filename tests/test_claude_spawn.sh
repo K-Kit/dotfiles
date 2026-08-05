@@ -246,7 +246,41 @@ if [[ "$resolved_claude" != "$probe_dir/bin/claude" ]]; then
   bad "argv probe: stub shadows the real claude" \
       "claude resolves to '${resolved_claude:-<nothing>}', refusing to run the probe"
 elif ! tmux start-server 2>/dev/null; then
-  printf '  SKIP argv probe (cannot start a tmux server here)\n'
+  # No tmux (CI, or a sandbox that denies the unix socket). Rather than skip
+  # outright and report green, exercise the layer we still can: run the inner
+  # `zsh -ic ...` string the script itself emits, with the prompt supplied the
+  # way tmux would have supplied it. That covers the quoting claim — the part
+  # most likely to break — and leaves only tmux's own -e delivery untested.
+  printf '  NOTE tmux unavailable; running the zsh-layer fallback instead\n'
+
+  # shellcheck disable=SC2016  # the unexpanded $var is the hostile input
+  fallback_prompt='multi word "quoted" $notexpanded'
+  # Read the inner command out of the script's own dry-run rather than
+  # transcribing it, for the same anti-drift reason as the full probe.
+  inner=$("$SPAWN" --dry-run -r -s fallback-sess -d "$probe_dir" "$fallback_prompt" 2>/dev/null \
+          | sed -n 's/^command:[[:space:]]*//p')
+
+  if [[ -z "$inner" ]]; then
+    bad "zsh-layer probe: script emits an inner command" "dry-run printed no 'command:' line"
+  else
+    export CLAUDE_SPAWN_PROMPT="$fallback_prompt"
+    export CLAUDE_SPAWN_RC_NAME="fallback-rc"
+    export CLAUDE_SPAWN_DEPTH=1
+    # </dev/null so the trailing `exec zsh` sees EOF and exits.
+    eval "$inner </dev/null" >/dev/null 2>&1 || true
+
+    got=$(cat "$probe_dir/argv.txt" 2>/dev/null || echo "")
+    if [[ -z "$got" ]]; then
+      bad "zsh-layer probe: the emitted command reaches the agent" "stub was never invoked"
+    else
+      assert_contains     "zsh-layer probe: prompt arrives verbatim" "ARG:$fallback_prompt" "$got"
+      assert_contains     "zsh-layer probe: option terminator present" "ARG:--" "$got"
+      assert_contains     "zsh-layer probe: rc name is one token" "ARG:--remote-control=" "$got"
+      assert_not_contains "zsh-layer probe: no skip-permissions" "skip-permissions" "$got"
+    fi
+    unset CLAUDE_SPAWN_PROMPT CLAUDE_SPAWN_RC_NAME CLAUDE_SPAWN_DEPTH
+  fi
+  printf '  NOTE tmux -e delivery is NOT covered by the fallback\n'
 else
   # Deliberately hostile: spaces, double quotes, and a `$var` that must survive
   # every shell layer unexpanded.
