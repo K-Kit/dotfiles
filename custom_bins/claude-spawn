@@ -416,9 +416,23 @@ prompt_sha() {
   fi
 }
 
-# The prompt itself is never written to disk — only a short hash, so a surprise
-# session can be traced back to a known spawn without persisting its contents.
-mkdir -p "$(dirname "$AUDIT_LOG")"
+# This log holds only a hash of the prompt, never its text, so a surprise
+# session can be traced back to a known spawn without the log itself carrying
+# the contents. (The seed still reaches the Claude transcript by the ordinary
+# route — that is a separate exposure, documented in the header.)
+#
+# Created explicitly private rather than at the ambient umask. A common 002 or
+# 022 umask would otherwise leave a record of every directory, session name,
+# yolo and Remote Control flag readable by other local accounts — and under a
+# shared group with 002, editable by them, which is a poor property for the
+# thing whose job is to be the trustworthy account of what was spawned.
+audit_dir="$(dirname "$AUDIT_LOG")"
+mkdir -p "$audit_dir"
+chmod 700 "$audit_dir" 2>/dev/null || true
+if [[ ! -e "$AUDIT_LOG" ]]; then
+  : >"$AUDIT_LOG"
+fi
+chmod 600 "$AUDIT_LOG" 2>/dev/null || true
 printf '%s\tsession=%s\tdir=%s\trc=%s\tyolo=%s\tdepth=%s\tprompt_sha=%s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$session" "$dir" \
   "$([[ "$remote_control" == true ]] && echo "$rc_name" || echo -)" \
@@ -428,10 +442,16 @@ printf '%s\tsession=%s\tdir=%s\trc=%s\tyolo=%s\tdepth=%s\tprompt_sha=%s\n' \
 
 tmux "${tmux_args[@]}"
 
-# Keeps the prompt out of `show-environment` and out of any pane forked into
-# this session later. It does NOT clean the pane just created — that one unsets
-# its own copy in the command string, which is the half that actually matters.
+# Keeps these out of `show-environment` and out of any pane forked into this
+# session later. Neither cleans the pane just created — that one unsets its own
+# copies in the command string, which is the half that actually matters.
+#
+# The channel-suppression flag needs the same treatment for the opposite reason:
+# the in-pane unset only fixed the original pane, so a second pane opened in the
+# session later would inherit it and silently launch `claude` with its
+# Telegram/iMessage channels disabled, with nothing to explain why.
 tmux set-environment -t "=$session" -u CLAUDE_SPAWN_PROMPT 2>/dev/null || true
+tmux set-environment -t "=$session" -u CLAUDE_SPAWN_NO_AUTO_CHANNELS 2>/dev/null || true
 
 printf '%s: session %s in %s\n' "$PROG" "$session" "$dir"
 if [[ "$remote_control" == true ]]; then
