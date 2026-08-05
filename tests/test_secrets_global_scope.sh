@@ -314,6 +314,10 @@ chmod +x "$FAKE_BIN/bws"
 # Runs `keys` (any value-loading command works) on the real bws path with the
 # fake binary. TMPDIR points into the fixture: the real path mktemps a stderr
 # capture file, and the ambient TMPDIR may be unwritable under the sandbox.
+# Streams are captured separately — warnings belong on stderr, and a warning
+# leaking to stdout would corrupt the dotenv/meta/raw split — and the exit
+# status is kept, so a case that warns must also prove `keys` still succeeded.
+# Sets FAKE_RC / FAKE_OUT (stdout) / FAKE_ERR (stderr).
 run_fake_bws() {
     local conf_body="$1"
     printf '%s\n' "$conf_body" > "$FIXTURE/scope.conf"
@@ -321,37 +325,46 @@ run_fake_bws() {
         BWS_ACCESS_TOKEN=fake-token \
         DOTFILES_SECRETS_BACKEND=bws \
         DOTFILES_SECRETS_GLOBAL_CONF="$FIXTURE/scope.conf" \
-        "$BIN" keys 2>&1
+        "$BIN" keys > "$FIXTURE/fake.out" 2> "$FIXTURE/fake.err"
+    FAKE_RC=$?
+    FAKE_OUT=$(<"$FIXTURE/fake.out")
+    FAKE_ERR=$(<"$FIXTURE/fake.err")
 }
 
-R=$(run_fake_bws 'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - beta gamma')
-check     "keys still lists the name"          "$R" "ANTHROPIC_API_KEY"
-check_not "no warning for the declared name"   "$R" "duplicate env name 'ANTHROPIC_API_KEY'"
-check     "still warns for undeclared RUNPOD"  "$R" "duplicate env name 'RUNPOD_API_KEY'"
-check     "warning suggests secrets-use"       "$R" "secrets-use RUNPOD_API_KEY"
+run_fake_bws 'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - beta gamma'
+check     "keys exits 0"                       "$FAKE_RC" "0"
+check     "keys still lists the name"          "$FAKE_OUT" "ANTHROPIC_API_KEY"
+check_not "no warning on stdout"               "$FAKE_OUT" "WARNING"
+check_not "no warning for the declared name"   "$FAKE_ERR" "duplicate env name 'ANTHROPIC_API_KEY'"
+check     "still warns for undeclared RUNPOD"  "$FAKE_ERR" "duplicate env name 'RUNPOD_API_KEY'"
+check     "warning suggests secrets-use"       "$FAKE_ERR" "secrets-use RUNPOD_API_KEY"
 
 echo "=== blocked-only conf entry does not suppress the warning ==="
-R=$(run_fake_bws 'ANTHROPIC_API_KEY = !ANTHROPIC_API_KEY - beta gamma')
-check "blocked-only name still warns" "$R" "duplicate env name 'ANTHROPIC_API_KEY'"
+run_fake_bws 'ANTHROPIC_API_KEY = !ANTHROPIC_API_KEY - beta gamma'
+check "blocked-only name still warns" "$FAKE_ERR" "duplicate env name 'ANTHROPIC_API_KEY'"
 
 echo "=== stale declaration (mapped key gone from BWS) still warns ==="
-R=$(run_fake_bws 'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - deleted')
-check "stale mapping still warns"   "$R" "duplicate env name 'ANTHROPIC_API_KEY'"
-check "warning names the stale key" "$R" "ANTHROPIC_API_KEY - deleted"
-check "stale warning suggests re-pick" "$R" "secrets-use ANTHROPIC_API_KEY"
+run_fake_bws 'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - deleted'
+check "stale mapping warns but keys still exits 0" "$FAKE_RC" "0"
+check "keys output survives the stale warning" "$FAKE_OUT" "ANTHROPIC_API_KEY"
+check "stale mapping still warns"   "$FAKE_ERR" "duplicate env name 'ANTHROPIC_API_KEY'"
+check "warning names the stale key" "$FAKE_ERR" "ANTHROPIC_API_KEY - deleted"
+check "stale warning suggests re-pick" "$FAKE_ERR" "secrets-use ANTHROPIC_API_KEY"
 
 echo "=== blocked lines then a stale active line still warns ==="
-R=$(run_fake_bws "$(printf '%s\n' \
+run_fake_bws "$(printf '%s\n' \
         'ANTHROPIC_API_KEY = !ANTHROPIC_API_KEY - alpha' \
-        'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - deleted')")
-check "stale-after-blocked warns" "$R" "duplicate env name 'ANTHROPIC_API_KEY'"
+        'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - deleted')"
+check "stale-after-blocked warns" "$FAKE_ERR" "duplicate env name 'ANTHROPIC_API_KEY'"
 
 echo "=== both names declared -> silent ==="
-R=$(run_fake_bws "$(printf '%s\n' \
+run_fake_bws "$(printf '%s\n' \
         'ANTHROPIC_API_KEY = ANTHROPIC_API_KEY - alpha' \
-        'RUNPOD_API_KEY = RUNPOD_API_KEY - three')")
-check_not "no ANTHROPIC warning" "$R" "duplicate env name 'ANTHROPIC_API_KEY'"
-check_not "no RUNPOD warning"    "$R" "duplicate env name 'RUNPOD_API_KEY'"
+        'RUNPOD_API_KEY = RUNPOD_API_KEY - three')"
+check     "all-declared keys exits 0"      "$FAKE_RC" "0"
+check     "all-declared still lists names" "$FAKE_OUT" "HF_TOKEN"
+check_not "no ANTHROPIC warning" "$FAKE_ERR" "duplicate env name 'ANTHROPIC_API_KEY'"
+check_not "no RUNPOD warning"    "$FAKE_ERR" "duplicate env name 'RUNPOD_API_KEY'"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
