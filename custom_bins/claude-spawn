@@ -188,6 +188,12 @@ dir=$(cd "$dir" && pwd -P)
 # the whole repository in view. That is the wrapper's documented behaviour, not
 # a bug to fix here, but it is surprising enough to say out loud rather than let
 # someone infer scope from the -d they passed.
+#
+# effective_dir is INFORMATIONAL ONLY. tmux is still told `-c "$dir"` and the
+# pane really does start there; it is the wrapper that cds afterwards. Nothing
+# below should switch to effective_dir — doing so would move the pane and change
+# behaviour rather than describe it. It exists so the message and the dry-run
+# can tell the truth about where the agent ends up.
 effective_dir="$dir"
 if ! git_root=$(cd "$dir" && git rev-parse --show-toplevel 2>/dev/null); then
   git_root=""
