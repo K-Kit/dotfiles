@@ -88,6 +88,11 @@ assert_contains "gate: override actually yolos" "--dangerously-skip-permissions"
 out=$("$SPAWN" --dry-run -y "x" 2>&1)
 assert_contains "yolo suppresses auto channels" "CLAUDE_SPAWN_NO_AUTO_CHANNELS=1" "$out"
 assert_contains "yolo says channels suppressed" "auto channels:  suppressed" "$out"
+# The suppression is scoped to the seeded agent, not to the pane: it must be
+# cleared before `exec zsh`, or every later hand-run `claude` in that pane comes
+# up with its channels silently disabled.
+assert_contains "suppression cleared before the retained shell" \
+  "unset CLAUDE_SPAWN_NO_AUTO_CHANNELS; exec zsh" "$out"
 
 # Acknowledging the combination restores the wrapper's normal behaviour.
 out=$("$SPAWN" --dry-run -y -r --allow-remote-yolo "x" 2>&1)

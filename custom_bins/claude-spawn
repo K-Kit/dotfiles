@@ -339,7 +339,13 @@ inner+=' -- "$_seed"'
 
 # `exec zsh` keeps the pane alive as a usable shell after the agent exits. It
 # replaces this shell, so _seed does not survive into it either.
-cmd="zsh -ic '${inner}; exec zsh'"
+#
+# CLAUDE_SPAWN_NO_AUTO_CHANNELS does survive an exec, though, and it must not:
+# it is scoped to THIS seeded agent, not to the pane. Left set, every `claude`
+# the user later runs by hand in that pane would silently come up with its
+# Telegram/iMessage channels disabled, with nothing on screen explaining why.
+# Cleared after the agent exits and before the shell is retained.
+cmd="zsh -ic '${inner}; unset CLAUDE_SPAWN_NO_AUTO_CHANNELS; exec zsh'"
 
 # Build the tmux invocation once, as an array. The launch below runs this same
 # array and --print-tmux-command prints it, so there is no second spelling to
