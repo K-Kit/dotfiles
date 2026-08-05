@@ -342,6 +342,21 @@ fi
 if [[ "$remote_control" == true ]]; then
   # shellcheck disable=SC2016
   inner+=' --remote-control="$CLAUDE_SPAWN_RC_NAME"'
+else
+  # "Opt-in" has to mean opting in from a known state, and the deployed
+  # claude/settings.json sets "remoteControlAtStartup": true. Omitting
+  # --remote-control therefore did NOT produce a local-only agent: every default
+  # spawn was remotely reachable, `-y` rebuilt the exact combination gate 2
+  # refuses, and the audit log recorded rc=- while saying otherwise.
+  # The gate was reading its own flags again, not the environment the agent
+  # would actually start in. Override the setting explicitly for a local-only
+  # spawn instead of assuming the absence of a flag means the absence of the
+  # capability.
+  #
+  # Double quotes inside, never single: this whole string is embedded in the
+  # single-quoted `zsh -ic '...'` below, so a single quote here would terminate
+  # it. JSON needs none.
+  inner+=' --settings "{\"remoteControlAtStartup\":false}"'
 fi
 # `--` ends option parsing, so a seed prompt that begins with a dash is a prompt
 # rather than a flag. Without it, `claude-spawn -- ... "--foo"` hands Claude an
@@ -372,6 +387,11 @@ tmux_args=(
   -e "CLAUDE_SPAWN_RC_NAME=$rc_name"
   -e "CLAUDE_SPAWN_DEPTH=$((depth + 1))"
   -e "CLAUDE_SPAWN_NO_AUTO_CHANNELS=$([[ "$suppress_channels" == true ]] && echo 1 || echo 0)"
+  # Blanked, not inherited. The claude() wrapper exports CLAUDE_CODE_TASK_LIST_ID
+  # after starting any session, so without this the detached agent would join the
+  # task list of whichever session spawned it and the two would read and mutate
+  # it concurrently. Empty makes the wrapper generate a fresh one.
+  -e "CLAUDE_CODE_TASK_LIST_ID="
   "$cmd"
 )
 

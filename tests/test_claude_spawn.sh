@@ -67,6 +67,14 @@ assert_contains "-r enables remote control" "--remote-control" "$out"
 # shellcheck disable=SC2016
 assert_contains "remote control is never bare" '--remote-control="$CLAUDE_SPAWN_RC_NAME"' "$out"
 
+# The deployed settings turn Remote Control on at startup, so a local-only spawn
+# must actively switch it off; asking for it must NOT.
+assert_not_contains "-r does not disable remote control" "remoteControlAtStartup" "$out"
+
+out=$("$SPAWN" --dry-run "x" 2>&1)
+assert_contains "local-only spawn disables rc at startup" \
+  'remoteControlAtStartup\":false' "$out"
+
 out=$("$SPAWN" --dry-run -n my-rc-name "x" 2>&1)
 assert_contains "-n implies remote control" "--remote-control" "$out"
 assert_contains "-n sets the name"          "remote control: my-rc-name" "$out"
@@ -351,6 +359,26 @@ elif ! tmux new-session -d -s "${probe_session}-holder" sleep 600 2>/dev/null; t
       assert_not_contains "zsh-layer probe: no skip-permissions" "skip-permissions" "$got"
       # The seed must not survive in the agent's environment.
       assert_contains     "zsh-layer probe: seed cleared from env" "SEEDENV:unset" "$got"
+    fi
+
+    # A second run WITHOUT -r, which is the local-only path. The settings JSON
+    # travels through bash and zsh quoting, and this is the only check that it
+    # reaches the agent as valid JSON rather than a mangled string — the whole
+    # point of it being there is that the deployed settings enable Remote
+    # Control at startup, so a default spawn is not local-only without it.
+    # --allow-nested because CLAUDE_SPAWN_DEPTH=1 is exported just above for the
+    # depth-propagation check, and the recursion gate would otherwise refuse.
+    inner_local=$("$SPAWN" --dry-run --allow-nested -s fallback-local -d "$probe_dir" "$fallback_prompt" 2>/dev/null \
+                  | sed -n 's/^command:[[:space:]]*//p')
+    if [[ -z "$inner_local" ]]; then
+      bad "zsh-layer probe: local-only command emitted" "dry-run printed no 'command:' line"
+    else
+      : >"$probe_dir/argv.txt"
+      export CLAUDE_SPAWN_PROMPT="$fallback_prompt"
+      eval "$inner_local </dev/null" >/dev/null 2>&1 || true
+      got_local=$(cat "$probe_dir/argv.txt" 2>/dev/null || echo "")
+      assert_contains "zsh-layer probe: rc disabled explicitly" \
+        'ARG:{"remoteControlAtStartup":false}' "$got_local"
     fi
     unset CLAUDE_SPAWN_PROMPT CLAUDE_SPAWN_RC_NAME CLAUDE_SPAWN_DEPTH
   fi
