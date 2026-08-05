@@ -142,13 +142,19 @@ for backend in api subscription dead; do
     check "bash: $backend at 2h is unknown" "$(render_bash | classifier_segment)" "auto?"
 done
 
-echo "=== the 15m boundary itself, from both sides ==="
-write_health dead 900             # exactly at the cutoff — still fresh
-check "rust: 900s is still fresh" "$(render_rust | classifier_segment)" "auto"
-check "bash: 900s is still fresh" "$(render_bash | classifier_segment)" "auto"
-write_health dead 901             # one second past
-check "rust: 901s is stale" "$(render_rust | classifier_segment)" "auto?"
-check "bash: 901s is stale" "$(render_bash | classifier_segment)" "auto?"
+echo "=== the 15m cutoff separates the two states, from both sides ==="
+# Deliberately NOT 900/901. write_health stamps `now - age`, but the renderer
+# reads the clock again a moment later, so an exact-boundary fixture flips to
+# the wrong side whenever the two land in different wall-clock seconds — the
+# assertion would fail a few times an hour for no reason. Neither implementation
+# exposes a clock to inject, so the honest fix is margin, not precision: 60s
+# either side is unambiguous while still pinning the cutoff between them.
+write_health dead 840             # 14m — comfortably fresh
+check "rust: 840s is fresh" "$(render_rust | classifier_segment)" "auto"
+check "bash: 840s is fresh" "$(render_bash | classifier_segment)" "auto"
+write_health dead 960             # 16m — comfortably stale
+check "rust: 960s is stale" "$(render_rust | classifier_segment)" "auto?"
+check "bash: 960s is stale" "$(render_bash | classifier_segment)" "auto?"
 
 echo "=== stale renders dim, so it recedes rather than shouting like dead ==="
 write_health dead 7200
