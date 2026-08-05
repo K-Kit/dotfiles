@@ -55,6 +55,13 @@ assert_contains "uses an interactive shell" "zsh -ic" "$out"
 out=$("$SPAWN" --dry-run -r "x" 2>&1)
 assert_contains "-r enables remote control" "--remote-control" "$out"
 
+# `--remote-control [name]` takes an OPTIONAL argument, so a bare
+# `--remote-control` followed by the prompt would consume the prompt as the
+# session name and start an agent with no seed at all. The name must always be
+# supplied explicitly. This assertion is the guard on that invariant.
+# shellcheck disable=SC2016
+assert_contains "remote control is never bare" '--remote-control "$CLAUDE_SPAWN_RC_NAME"' "$out"
+
 out=$("$SPAWN" --dry-run -n my-rc-name "x" 2>&1)
 assert_contains "-n implies remote control" "--remote-control" "$out"
 assert_contains "-n sets the name"          "remote control: my-rc-name" "$out"

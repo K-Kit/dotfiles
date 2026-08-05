@@ -216,6 +216,10 @@ fi
 # shellcheck disable=SC2016  # deferred expansion is the point
 inner='claude'
 [[ "$yolo" == true ]] && inner+=' --dangerously-skip-permissions'
+# `--remote-control [name]` takes an OPTIONAL argument. Passing it bare would
+# make it swallow the following positional as the session name, so the agent
+# would start with no seed prompt and a session named after the task text.
+# The name is therefore always supplied, never omitted.
 # shellcheck disable=SC2016
 [[ "$remote_control" == true ]] && inner+=' --remote-control "$CLAUDE_SPAWN_RC_NAME"'
 # shellcheck disable=SC2016
