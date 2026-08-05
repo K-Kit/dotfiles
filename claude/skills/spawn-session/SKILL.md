@@ -16,7 +16,11 @@ disable-model-invocation: true
 claude-spawn -d ~/code/some-repo "Investigate the flaky test in tests/test_auth.py and propose a fix"
 ```
 
-Creates a detached session named `some-repo-MMDD-HHMM` running Claude Code in that directory with the prompt already submitted. Local-only: Remote Control is off unless asked for.
+Creates a detached session named `some-repo-MMDD-HHMM` running Claude Code in that directory with the prompt already submitted.
+
+**It is the session you would have started by hand.** `claude-spawn` aims to be exactly `cd <dir> && claude "<prompt>"`, differing only in being detached, in tmux, and seeded without typing. Your Claude configuration applies unchanged — so if your settings enable Remote Control at startup, or the directory has a Telegram/iMessage channel configured, the spawned session has those too. `-r` asks for Remote Control explicitly; **omitting it does not make the session local-only**, it just means this tool did not ask for it.
+
+The session ends when the agent does — no shell is left behind, so a finished spawn stops showing up as something still running.
 
 **A directory inside a git repo becomes the repo root.** The `claude()` wrapper cds to the git root before launching (so `plansDirectory` resolves), which means `-d ~/code/repo/packages/api` starts the agent at `~/code/repo` with the whole repository in view, not just that package. `claude-spawn` prints a note when this applies. If the task must stay narrow, say so in the prompt — the working directory will not do it for you.
 
@@ -34,9 +38,9 @@ Creates a detached session named `some-repo-MMDD-HHMM` running Claude Code in th
 
 ## The gates, and why
 
-**Remote Control is opt-in.** It widens a session from local-tty-only to account-reachable code execution. That is a real capability increase and it is never inferred — pass `-r` or `-n <name>`.
+**The gates are speed bumps, not guarantees.** They catch a combination you stated explicitly and would regret. They do not neutralise capability your own configuration grants — an earlier version tried, and the list of routes to neutralise only grew: every new way to reach a session was a silent hole until someone reviewed for it, and suppressing them quietly countermanded settings chosen on purpose.
 
-**`-y` together with `-r` is refused** unless you add `--allow-remote-yolo`. An unrestricted agent that is also drivable from off-machine is the one combination worth stopping to think about; either alone is ordinary.
+**`-y` together with `-r` is refused** unless you add `--allow-remote-yolo`. An unrestricted agent that is also drivable from off-machine is the one combination worth stopping to think about; either alone is ordinary. Note this checks the *flags you passed*, not the capability that results — see the paragraph above.
 
 **Spawning from inside a spawned session is refused** (`CLAUDE_SPAWN_DEPTH`). `--allow-nested` overrides it, but if you're hitting this, check that you meant to. Note what this is: an inherited environment variable. It stops accidental fan-out — the failure mode where a seeded agent reads a task as "spawn more agents" and you find twelve tmux sessions. It is not a containment boundary, because anything running in that session can unset it.
 
@@ -59,5 +63,14 @@ Three things fail silently if you script this yourself with `tmux new-session` +
 1. **`send-keys` races the shell.** Keys sent to a new pane land before the zsh line editor is ready and get swallowed or mangled. The script uses Claude Code's positional `[prompt]` argument instead — no timing element at all.
 2. **A bare command string loses the `claude()` wrapper.** tmux runs command strings under a non-interactive shell, which sources `.zshenv` only, and `.zshenv` does not source aliases. You silently get the raw binary without venv activation, git-root cd, `CLAUDE_CODE_TASK_LIST_ID`, or channel auto-detection. The script uses `zsh -ic`.
 3. **Quoting the prompt through bash → sh → zsh eats it.** The script passes it as a tmux session environment variable (`new-session -e`) and clears it from the session environment immediately after, so no quoting layer ever sees the text and it never lingers in `tmux show-environment`.
+
+## A seed is an argument, exactly as if you typed it
+
+The seed goes to Claude positionally, with no option terminator, because that is what a hand-typed session does. Two consequences worth knowing rather than being surprised by:
+
+- A seed that *is* a subcommand name runs that subcommand. `claude-spawn "doctor"` runs `claude doctor`, just as typing it would. Verified against Claude Code 2.1.222.
+- A seed starting with a dash is read as an option.
+
+An earlier version put `--` before the seed to prevent both. It was removed: it made the spawned session behave *differently* from one you start yourself, and it pushed the `claude()` wrapper's auto-detected `--channels` past the terminator, silently disabling the channel. If a seed might collide, phrase it as a sentence — "run the doctor command" rather than "doctor".
 
 `claude --tmux` is not an alternative — it requires `--worktree`, so it cannot target an arbitrary directory.

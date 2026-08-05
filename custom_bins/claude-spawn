@@ -188,20 +188,15 @@ if [[ "$yolo" == true && "$remote_control" == true && "$allow_remote_yolo" != tr
   die "refusing --yolo together with --remote-control: that is an unrestricted agent drivable from off-machine. Drop one, or pass --allow-remote-yolo if you mean it." 4
 fi
 
-# ...and Remote Control is not the only way off-machine. The claude() wrapper
-# auto-enables a Telegram or iMessage channel whenever the target directory has
-# one configured, which is off-machine reachability by another name. Checking
-# only $remote_control let `claude-spawn -y` into a channel-enabled repo produce
-# precisely the shape gate 2 refuses — unrestricted AND remotely drivable —
-# because the capability was added after the check, by a different component.
-#
-# Suppressed rather than refused: whether a channel exists is the wrapper's
-# determination, and duplicating its detection here would drift out of sync.
-# Turning it off is deterministic and needs no second copy of that logic.
-suppress_channels=false
-if [[ "$yolo" == true && "$allow_remote_yolo" != true ]]; then
-  suppress_channels=true
-fi
+# That is the whole of the gating, on purpose. A spawned session is meant to be
+# the session you would have started by hand, so anything your configuration
+# grants a hand-started session — Remote Control at startup, an auto-enabled
+# Telegram or iMessage channel, auto-resume on a window-name prefix — it grants
+# this one too. Earlier versions tried to neutralise each of those routes and
+# the list only ever grew: every new way to reach a session was a silent hole
+# until someone reviewed for it, and suppressing them quietly countermanded
+# settings that were chosen deliberately. SKILL.md states the consequence
+# instead of the tool pretending to prevent it.
 
 # ----------------------------------------------------------------- directory
 
@@ -285,13 +280,13 @@ if [[ "$auto_resume" == true ]]; then
     window="${optin_prefix}${window}"
   fi
 elif [[ -n "$optin_prefix" && "$window" == "$optin_prefix"* ]]; then
-  # Unattended auto-resume is opt-in via --auto, but tmux-resume gates purely on
-  # the window-name prefix — it never sees our flags. So a name that merely
-  # happens to start with it (`-s auto-review`, or a directory called `auto-x`,
-  # which becomes the default session and window name) enrolled the session in
-  # unattended rate-limit resumption that was never asked for. Same shape as the
-  # other gates here: the capability arrives by a route the flag check does not
-  # cover. Neutralise the prefix and say so rather than silently opting in.
+  # The one deliberate exception to "behaves exactly like a hand-started
+  # session". tmux-resume gates purely on the window-name prefix and never sees
+  # our flags, so a name that merely happens to start with it — `-s auto-review`,
+  # or a directory called `auto-something`, which becomes the default name —
+  # would enrol the session in unattended rate-limit resumption nobody asked
+  # for. Unattended resumption is the one capability worth not acquiring by
+  # accident of naming, so the prefix is neutralised and the change reported.
   window="not-${window}"
   printf '%s: note: window name began with the auto-resume prefix %s but --auto was not passed; renamed to %s\n' \
     "$PROG" "$optin_prefix" "$window" >&2
@@ -336,28 +331,14 @@ inner+='; unset CLAUDECODE'
 # unsets what the previous .envrc set as well as exporting the new one, which is
 # why this is `direnv export` rather than a hand-written scrub.
 #
-# Fails CLOSED. Skipping the load when direnv is missing, or letting `eval
-# "$(direnv export)"` swallow a nonzero status, leaves the pane running with
-# whatever the server happened to hold — which for a secrets-per-project setup
-# is the failure mode this exists to prevent, arriving silently. The output is
-# captured before being evaluated so the exit status is actually observable
-# (eval of a command substitution reports eval's status, not direnv's), and
-# stderr is left alone so direnv's own diagnostics reach the pane.
-#
-# The no-direnv case only aborts when DIRENV_DIFF shows there IS inherited
-# direnv state to be wrong about; a machine that simply does not use direnv
-# spawns normally.
+# Best-effort, deliberately. A hand-started session on a machine without direnv
+# still starts, so a missing or failing direnv must not block the spawn —
+# refusing would itself be a behaviour a normal session does not have. This
+# restores the environment tmux failed to refresh; it does not add guarantees.
 # shellcheck disable=SC2016  # runs in the pane, not here
-inner+='; _envok=1'
-# shellcheck disable=SC2016
-inner+='; if command -v direnv >/dev/null 2>&1; then _de="$(direnv export zsh)" || _envok=0; if [[ $_envok -eq 1 ]]; then eval "$_de"; fi; elif [[ -n "${DIRENV_DIFF:-}" ]]; then _envok=0; fi'
+inner+='; if command -v direnv >/dev/null 2>&1; then eval "$(direnv export zsh 2>/dev/null)"; fi'
 
-# shellcheck disable=SC2016
-# No apostrophes in that message, deliberately: this whole string is embedded in
-# the single-quoted `zsh -ic '...'` below, and one apostrophe would terminate it
-# early and hand tmux a mangled command. Asserted by the tests.
-# shellcheck disable=SC2016
-inner+='; if [[ $_envok -ne 1 ]]; then print -u2 "claude-spawn: refusing to start: the direnv environment for this directory could not be loaded, so the agent would run with another project secrets"; _rc=90; else claude'
+inner+='; claude'
 if [[ "$yolo" == true ]]; then
   inner+=' --dangerously-skip-permissions'
 fi
@@ -382,27 +363,17 @@ fi
 if [[ "$remote_control" == true ]]; then
   # shellcheck disable=SC2016
   inner+=' --remote-control="$CLAUDE_SPAWN_RC_NAME"'
-else
-  # "Opt-in" has to mean opting in from a known state, and the deployed
-  # claude/settings.json sets "remoteControlAtStartup": true. Omitting
-  # --remote-control therefore did NOT produce a local-only agent: every default
-  # spawn was remotely reachable, `-y` rebuilt the exact combination gate 2
-  # refuses, and the audit log recorded rc=- while saying otherwise.
-  # The gate was reading its own flags again, not the environment the agent
-  # would actually start in. Override the setting explicitly for a local-only
-  # spawn instead of assuming the absence of a flag means the absence of the
-  # capability.
-  #
-  # Double quotes inside, never single: this whole string is embedded in the
-  # single-quoted `zsh -ic '...'` below, so a single quote here would terminate
-  # it. JSON needs none.
-  inner+=' --settings "{\"remoteControlAtStartup\":false}"'
 fi
-# `--` ends option parsing, so a seed prompt that begins with a dash is a prompt
-# rather than a flag. Without it, `claude-spawn -- ... "--foo"` hands Claude an
-# option chosen by whoever wrote the prompt text.
+# Positional, with no `--` terminator, because a hand-typed session has none.
+# The terminator used to be here to stop a dash-leading seed being read as an
+# option — but `claude "--foo"` behaves exactly that way when you type it, so
+# the terminator was making a spawned session behave DIFFERENTLY from a normal
+# one, which is the one thing this tool must not do. It also pushed the
+# wrapper's auto-detected --channels past the terminator and silently disabled
+# them. A seed matching a subcommand name (`doctor`) therefore runs that
+# subcommand, exactly as it would by hand; SKILL.md says so.
 # shellcheck disable=SC2016
-inner+=' -- "$_seed"'
+inner+=' "$_seed"'
 
 # Record the agent's exit status if it exits. `tmux new-session -d` only proves
 # a pane was created: the `;` chain runs `exec zsh` regardless, so an agent that
@@ -418,25 +389,20 @@ inner+=' -- "$_seed"'
 # reused a later healthy spawn read that stale file and declared failure.
 # Existing-and-empty means armed; non-empty means the agent failed; absent means
 # nobody is listening any more.
-# `fi` closes the environment guard above: either claude ran and $_rc is its
-# status, or the guard refused and set $_rc itself. Both report the same way.
 # shellcheck disable=SC2016
-inner+='; _rc=$?; fi; if [[ $_rc -ne 0 && -e "$CLAUDE_SPAWN_STATUS_FILE" ]]; then printf %s "$_rc" >"$CLAUDE_SPAWN_STATUS_FILE" 2>/dev/null; fi'
+inner+='; _rc=$?; if [[ $_rc -ne 0 && -e "$CLAUDE_SPAWN_STATUS_FILE" ]]; then printf %s "$_rc" >"$CLAUDE_SPAWN_STATUS_FILE" 2>/dev/null; fi'
 
 # Where the pane reports an agent that failed to start. Under the state dir
 # rather than a world-writable temp root, so another local user cannot plant a
 # status file and make a healthy spawn look broken.
 status_file="$(dirname "$AUDIT_LOG")/status.$$"
 
-# `exec zsh` keeps the pane alive as a usable shell after the agent exits. It
-# replaces this shell, so _seed does not survive into it either.
-#
-# CLAUDE_SPAWN_NO_AUTO_CHANNELS does survive an exec, though, and it must not:
-# it is scoped to THIS seeded agent, not to the pane. Left set, every `claude`
-# the user later runs by hand in that pane would silently come up with its
-# Telegram/iMessage channels disabled, with nothing on screen explaining why.
-# Cleared after the agent exits and before the shell is retained.
-cmd="zsh -ic '${inner}; unset CLAUDE_SPAWN_NO_AUTO_CHANNELS; exec zsh'"
+# No `exec zsh` afterwards: the pane exits when the agent does, which ends the
+# session. A retained shell kept the session alive indefinitely and it went on
+# appearing as a running agent long after the agent had finished — the tmux
+# session outliving its reason to exist is worse than losing the scrollback,
+# because it is indistinguishable from work still in progress.
+cmd="zsh -ic '${inner}'"
 
 # Build the tmux invocation once, as an array. The launch below runs this same
 # array and --print-tmux-command prints it, so there is no second spelling to
@@ -450,7 +416,6 @@ tmux_args=(
   -e "CLAUDE_SPAWN_PROMPT=$prompt"
   -e "CLAUDE_SPAWN_RC_NAME=$rc_name"
   -e "CLAUDE_SPAWN_DEPTH=$((depth + 1))"
-  -e "CLAUDE_SPAWN_NO_AUTO_CHANNELS=$([[ "$suppress_channels" == true ]] && echo 1 || echo 0)"
   # Blanked, not inherited. The claude() wrapper exports CLAUDE_CODE_TASK_LIST_ID
   # after starting any session, so without this the detached agent would join the
   # task list of whichever session spawned it and the two would read and mutate
@@ -481,7 +446,6 @@ if [[ "$dry_run" == true ]]; then
   printf 'tmux window:    %s\n' "$window"
   printf 'remote control: %s\n' "$([[ "$remote_control" == true ]] && echo "$rc_name" || echo disabled)"
   printf 'skip perms:     %s\n' "$yolo"
-  printf 'auto channels:  %s\n' "$([[ "$suppress_channels" == true ]] && echo "suppressed (yolo without --allow-remote-yolo)" || echo "wrapper default")"
   printf 'prompt bytes:   %s\n' "${#prompt}"
   printf 'command:        %s\n' "$cmd"
   printf 'tmux argv:      %s' "$(quoted_tmux_command)"
@@ -538,17 +502,12 @@ tmux "${tmux_args[@]}"
 # just created — that one unsets its own copies in the command string, which is
 # the half that actually matters.
 #
-# The channel-suppression flag needs the same treatment for the opposite reason:
-# the in-pane unset only fixed the original pane, so a second pane opened in the
-# session later would inherit it and silently launch `claude` with its
-# Telegram/iMessage channels disabled, with nothing to explain why.
 #
 # Ordering is the point. With the audit append above this, a failed append — a
 # full or read-only state filesystem — exited under `set -e` with the session
 # alive and the seed still sitting in its environment for later panes to pick
 # up. The security-relevant cleanup must not be downstream of a fallible write.
 tmux set-environment -t "=$session" -u CLAUDE_SPAWN_PROMPT 2>/dev/null || true
-tmux set-environment -t "=$session" -u CLAUDE_SPAWN_NO_AUTO_CHANNELS 2>/dev/null || true
 
 # Appended only now that tmux has actually created the session. Writing it
 # before the launch recorded sessions that never came into being — if tmux was

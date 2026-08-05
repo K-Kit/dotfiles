@@ -37,9 +37,10 @@ printf 'claude-spawn\n'
 
 out=$("$SPAWN" --dry-run "seed prompt" 2>&1)
 assert_contains     "default: builds a claude command"  "zsh -ic '" "$out"
-# Invoked inside the environment guard, so the agent only starts once the target
-# project's direnv environment has actually been established.
-assert_contains     "default: invokes claude"           "else claude " "$out"
+assert_contains     "default: invokes claude"           "; claude " "$out"
+# No retained shell: the pane exits with the agent so the tmux session ends
+# rather than lingering as something that looks like a running agent.
+assert_not_contains "default: no retained shell"        "exec zsh" "$out"
 # The seed is lifted out of the environment before the agent starts, so it does
 # not survive in /proc/<pid>/environ or reach the agent's children.
 assert_contains     "default: unsets the seed env var"  "unset CLAUDE_SPAWN_PROMPT" "$out"
@@ -86,14 +87,6 @@ assert_contains "-r enables remote control" "--remote-control" "$out"
 # shellcheck disable=SC2016
 assert_contains "remote control is never bare" '--remote-control="$CLAUDE_SPAWN_RC_NAME"' "$out"
 
-# The deployed settings turn Remote Control on at startup, so a local-only spawn
-# must actively switch it off; asking for it must NOT.
-assert_not_contains "-r does not disable remote control" "remoteControlAtStartup" "$out"
-
-out=$("$SPAWN" --dry-run "x" 2>&1)
-assert_contains "local-only spawn disables rc at startup" \
-  'remoteControlAtStartup\":false' "$out"
-
 out=$("$SPAWN" --dry-run -n my-rc-name "x" 2>&1)
 assert_contains "-n implies remote control" "--remote-control" "$out"
 assert_contains "-n sets the name"          "remote control: my-rc-name" "$out"
@@ -108,26 +101,12 @@ out=$("$SPAWN" --dry-run -y -r --allow-remote-yolo "x" 2>&1); code=$?
 assert_exit     "gate: yolo+rc overridable"    0 "$code"
 assert_contains "gate: override actually yolos" "--dangerously-skip-permissions" "$out"
 
-# Remote Control is not the only route off-machine: the claude() wrapper
-# auto-enables a Telegram/iMessage channel when the target repo has one. So a
-# bare `-y` into such a repo used to reconstruct the refused combination —
-# unrestricted AND remotely drivable — with the gate none the wiser.
+# The gate is a speed bump, not a guarantee: it refuses the one combination you
+# can state explicitly, and does not neutralise capability your own settings
+# grant. A spawned session is the session you would have started by hand.
 out=$("$SPAWN" --dry-run -y "x" 2>&1)
-assert_contains "yolo suppresses auto channels" "CLAUDE_SPAWN_NO_AUTO_CHANNELS=1" "$out"
-assert_contains "yolo says channels suppressed" "auto channels:  suppressed" "$out"
-# The suppression is scoped to the seeded agent, not to the pane: it must be
-# cleared before `exec zsh`, or every later hand-run `claude` in that pane comes
-# up with its channels silently disabled.
-assert_contains "suppression cleared before the retained shell" \
-  "unset CLAUDE_SPAWN_NO_AUTO_CHANNELS; exec zsh" "$out"
-
-# Acknowledging the combination restores the wrapper's normal behaviour.
-out=$("$SPAWN" --dry-run -y -r --allow-remote-yolo "x" 2>&1)
-assert_contains "acknowledged yolo keeps channels" "CLAUDE_SPAWN_NO_AUTO_CHANNELS=0" "$out"
-
-# A non-yolo spawn is ordinary and must not lose its channels.
-out=$("$SPAWN" --dry-run "x" 2>&1)
-assert_contains "plain spawn keeps channels" "CLAUDE_SPAWN_NO_AUTO_CHANNELS=0" "$out"
+assert_not_contains "yolo does not suppress channels" "NO_AUTO_CHANNELS" "$out"
+assert_not_contains "yolo does not override settings" "remoteControlAtStartup" "$out"
 
 # Either alone is ordinary and must not be blocked.
 out=$("$SPAWN" --dry-run -y "x" 2>&1); code=$?
@@ -154,11 +133,16 @@ out=$("$SPAWN" --dry-run -r "x" 2>&1)
 # shellcheck disable=SC2016  # asserting the literal, unexpanded text
 assert_contains "rc name is one token" '--remote-control="$CLAUDE_SPAWN_RC_NAME"' "$out"
 
-# A dash-leading prompt is a prompt, not a flag.
-out=$("$SPAWN" --dry-run -- "--dangerously-skip-permissions" 2>&1)
+# The seed is passed positionally with no terminator, exactly as a hand-typed
+# session would. `claude "--foo"` reads an option when you type it, so a spawned
+# session gets the same behaviour rather than a safer one — the terminator that
+# used to be here made the spawned session behave differently, and pushed the
+# wrapper's --channels past it into prompt text.
+out=$("$SPAWN" --dry-run "seed text" 2>&1)
 # shellcheck disable=SC2016  # asserting the literal, unexpanded text
-assert_contains "prompt is terminated by --" '-- "$_seed"' "$out"
-assert_not_contains "dash-leading prompt is not a flag" "claude --dangerously" "$out"
+assert_contains     "seed is positional"      '; claude "$_seed"' "$out"
+# shellcheck disable=SC2016  # asserting the literal, unexpanded text
+assert_not_contains "no option terminator"    '-- "$_seed"' "$out"
 
 # --- gate: unattended auto-resume is opt-in ---------------------------------
 #
@@ -396,8 +380,12 @@ elif ! tmux new-session -d -s "${probe_session}-holder" sleep 600 2>/dev/null; t
       export CLAUDE_SPAWN_PROMPT="$fallback_prompt"
       eval "$inner_local </dev/null" >/dev/null 2>&1 || true
       got_local=$(cat "$probe_dir/argv.txt" 2>/dev/null || echo "")
-      assert_contains "zsh-layer probe: rc disabled explicitly" \
-        'ARG:{"remoteControlAtStartup":false}' "$got_local"
+      # Nothing between the agent and its seed: no terminator, no settings
+      # override. What a hand-typed session would have received.
+      assert_contains     "zsh-layer probe: seed is the only argument" \
+        "ARG:$fallback_prompt" "$got_local"
+      assert_not_contains "zsh-layer probe: no settings override" \
+        "remoteControlAtStartup" "$got_local"
 
       # `tmux new-session -d` only proves a pane exists: the `;` chain runs
       # `exec zsh` regardless, so an agent that dies on startup leaves a healthy
