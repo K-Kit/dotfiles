@@ -155,8 +155,15 @@ claude() {
         fi
     fi
 
-    # Per-project channels: auto-detect and enable (session mode only)
-    if [[ "$_is_session" == true ]]; then
+    # Per-project channels: auto-detect and enable (session mode only).
+    #
+    # CLAUDE_SPAWN_NO_AUTO_CHANNELS is claude-spawn's remote-yolo gate reaching
+    # in here. A channel is off-machine reachability, so auto-enabling one for a
+    # --dangerously-skip-permissions session produces exactly the unrestricted,
+    # remotely-drivable agent that gate exists to refuse — it just arrives via
+    # this function instead of via --remote-control, which is why checking only
+    # that flag was not enough.
+    if [[ "$_is_session" == true && "${CLAUDE_SPAWN_NO_AUTO_CHANNELS:-}" != 1 ]]; then
         local channels=()
         if [[ -n "${DOTFILES_TELEGRAM_BOT_SECRET:-}" ]]; then
             export TELEGRAM_STATE_DIR="${TELEGRAM_STATE_DIR:-$PWD/.claude/channels/telegram}"

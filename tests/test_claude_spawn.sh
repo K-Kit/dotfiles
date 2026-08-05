@@ -81,6 +81,22 @@ out=$("$SPAWN" --dry-run -y -r --allow-remote-yolo "x" 2>&1); code=$?
 assert_exit     "gate: yolo+rc overridable"    0 "$code"
 assert_contains "gate: override actually yolos" "--dangerously-skip-permissions" "$out"
 
+# Remote Control is not the only route off-machine: the claude() wrapper
+# auto-enables a Telegram/iMessage channel when the target repo has one. So a
+# bare `-y` into such a repo used to reconstruct the refused combination —
+# unrestricted AND remotely drivable — with the gate none the wiser.
+out=$("$SPAWN" --dry-run -y "x" 2>&1)
+assert_contains "yolo suppresses auto channels" "CLAUDE_SPAWN_NO_AUTO_CHANNELS=1" "$out"
+assert_contains "yolo says channels suppressed" "auto channels:  suppressed" "$out"
+
+# Acknowledging the combination restores the wrapper's normal behaviour.
+out=$("$SPAWN" --dry-run -y -r --allow-remote-yolo "x" 2>&1)
+assert_contains "acknowledged yolo keeps channels" "CLAUDE_SPAWN_NO_AUTO_CHANNELS=0" "$out"
+
+# A non-yolo spawn is ordinary and must not lose its channels.
+out=$("$SPAWN" --dry-run "x" 2>&1)
+assert_contains "plain spawn keeps channels" "CLAUDE_SPAWN_NO_AUTO_CHANNELS=0" "$out"
+
 # Either alone is ordinary and must not be blocked.
 out=$("$SPAWN" --dry-run -y "x" 2>&1); code=$?
 assert_exit     "yolo alone allowed"  0 "$code"

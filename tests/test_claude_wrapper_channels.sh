@@ -188,6 +188,20 @@ else
   ok "bare -t refuses instead of launching"
 fi
 
+# The other half of the remote-yolo gate: claude-spawn sets this variable for an
+# unacknowledged --yolo, and the wrapper must actually honour it. A channel is
+# off-machine reach, so auto-enabling one for a skip-permissions session rebuilds
+# exactly the combination the gate refuses.
+: >"$d/argv.txt"
+printf 'activate_venv() { :; }\nexport CLAUDE_SPAWN_NO_AUTO_CHANNELS=1\nsource %s\nclaude -- "seed"\n' "$WRAPPER" >"$d/nochan.zsh"
+run_limited 10 zsh "$d/nochan.zsh" >/dev/null 2>&1
+got5=$(cat "$d/argv.txt" 2>/dev/null || echo "")
+case "$got5" in
+  *"ARG:--channels"*) bad "suppression flag disables auto channels" "channels still enabled: $got5" ;;
+  "") bad "suppression flag disables auto channels" "wrapper never reached the agent" ;;
+  *) ok "suppression flag disables auto channels" ;;
+esac
+
 cd / || true
 rm -rf "$d"
 

@@ -44,7 +44,11 @@
 #                                stops accidental fan-out, not a determined
 #                                agent that unsets or overrides it.
 #     * --yolo + --remote-control refused unless explicitly acknowledged
-#     * every spawn is appended to an audit log (prompt hashed, never stored)
+#     * every spawn is appended to an audit log (the LOG stores only a hash;
+#       the seed still reaches the Claude transcript as the first user message,
+#       so this is not a claim that the prompt stays off disk)
+#     * auto-detected channels are suppressed for an unacknowledged --yolo,
+#       because a channel is off-machine reach just as Remote Control is
 #   Never pass untrusted text (file contents, web pages, issue bodies) as the
 #   seed prompt: a fresh agent has no conversation context to contradict an
 #   injected instruction, which makes it an easier mark than a warm session.
@@ -182,6 +186,21 @@ fi
 # deliberate acknowledgement.
 if [[ "$yolo" == true && "$remote_control" == true && "$allow_remote_yolo" != true ]]; then
   die "refusing --yolo together with --remote-control: that is an unrestricted agent drivable from off-machine. Drop one, or pass --allow-remote-yolo if you mean it." 4
+fi
+
+# ...and Remote Control is not the only way off-machine. The claude() wrapper
+# auto-enables a Telegram or iMessage channel whenever the target directory has
+# one configured, which is off-machine reachability by another name. Checking
+# only $remote_control let `claude-spawn -y` into a channel-enabled repo produce
+# precisely the shape gate 2 refuses — unrestricted AND remotely drivable —
+# because the capability was added after the check, by a different component.
+#
+# Suppressed rather than refused: whether a channel exists is the wrapper's
+# determination, and duplicating its detection here would drift out of sync.
+# Turning it off is deterministic and needs no second copy of that logic.
+suppress_channels=false
+if [[ "$yolo" == true && "$allow_remote_yolo" != true ]]; then
+  suppress_channels=true
 fi
 
 # ----------------------------------------------------------------- directory
@@ -334,6 +353,7 @@ tmux_args=(
   -e "CLAUDE_SPAWN_PROMPT=$prompt"
   -e "CLAUDE_SPAWN_RC_NAME=$rc_name"
   -e "CLAUDE_SPAWN_DEPTH=$((depth + 1))"
+  -e "CLAUDE_SPAWN_NO_AUTO_CHANNELS=$([[ "$suppress_channels" == true ]] && echo 1 || echo 0)"
   "$cmd"
 )
 
@@ -358,6 +378,7 @@ if [[ "$dry_run" == true ]]; then
   printf 'tmux window:    %s\n' "$window"
   printf 'remote control: %s\n' "$([[ "$remote_control" == true ]] && echo "$rc_name" || echo disabled)"
   printf 'skip perms:     %s\n' "$yolo"
+  printf 'auto channels:  %s\n' "$([[ "$suppress_channels" == true ]] && echo "suppressed (yolo without --allow-remote-yolo)" || echo "wrapper default")"
   printf 'prompt bytes:   %s\n' "${#prompt}"
   printf 'command:        %s\n' "$cmd"
   printf 'tmux argv:      %s' "$(quoted_tmux_command)"

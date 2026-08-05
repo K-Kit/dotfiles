@@ -40,7 +40,9 @@ Creates a detached session named `some-repo-MMDD-HHMM` running Claude Code in th
 
 **Spawning from inside a spawned session is refused** (`CLAUDE_SPAWN_DEPTH`). `--allow-nested` overrides it, but if you're hitting this, check that you meant to. Note what this is: an inherited environment variable. It stops accidental fan-out — the failure mode where a seeded agent reads a task as "spawn more agents" and you find twelve tmux sessions. It is not a containment boundary, because anything running in that session can unset it.
 
-**Every spawn is logged** to `~/.local/state/claude-spawn/spawn.log` — timestamp, session, directory, flags, and a truncated SHA-256 of the prompt. The prompt text itself is never written to disk. An unexpected session can be traced back to a known spawn.
+**Every spawn is logged** to `~/.local/state/claude-spawn/spawn.log` — timestamp, session, directory, flags, and a truncated SHA-256 of the prompt. The prompt text is not written to *that log*, only its hash, so an unexpected session can be traced back to a known spawn without the log itself holding the text.
+
+That is a statement about the audit log and nothing else. The seed does reach disk by the ordinary route: it becomes the session's first user message, so it lands in the Claude transcript like anything else you type, and a positional invocation can also be captured in shell history. Hashing in the log narrows one exposure; it does not make the prompt ephemeral.
 
 The prompt is hashed in the log but it is *not* hidden from the machine, and not only for a moment: it is passed to the agent positionally, so it stays in the running Claude process's argv and any local user can read it from `ps` or `/proc/<pid>/cmdline` for as long as the session lives. Claude Code takes its prompt positionally, so seeding inherently means this. Don't put anything in a seed prompt that you would not paste into a shared terminal.
 
