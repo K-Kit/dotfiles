@@ -82,13 +82,20 @@ mkdir -p "$d/bin" "$d/.claude/channels/telegram"
   # shellcheck disable=SC2016  # writing a script; expansion happens when it runs
   printf 'case "$1" in\n'
   printf '  --version) echo "9.9.9 (test stub)"; exit 0 ;;\n'
-  printf '  --help)    exit 0 ;;\n'
+  # A realistic subcommand list. Without it the wrapper's subcommand cache is
+  # empty, nothing is ever classified as a subcommand, and the "seed equal to a
+  # subcommand" assertion below can never fail — i.e. it would prove nothing.
+  printf '  --help)    printf "  doctor Check health\\n  update Update\\n  mcp Manage\\n"; exit 0 ;;\n'
   printf 'esac\n'
   printf 'printf "ARG:%%s\\n" "$@" >"%s/argv.txt"\n' "$d"
 } >"$d/bin/claude"
 chmod +x "$d/bin/claude"
 
 export PATH="$d/bin:$PATH"
+# The wrapper caches its parsed subcommand list per version. Point that at the
+# temp dir so a run cannot read a real cache or leave one behind — the child
+# zsh scripts below inherit this.
+export XDG_CACHE_HOME="$d/cache"
 activate_venv() { :; }   # the wrapper calls this; keep the output clean
 
 cd "$d" || exit 1
@@ -148,6 +155,37 @@ else
     *"ARG:-t"*) ok "a seed of exactly -t reaches the agent" ;;
     *) bad "a seed of exactly -t reaches the agent" "argv was: ${got2:-<empty>}" ;;
   esac
+fi
+
+# A seed that happens to equal a subcommand name must stay a seed. The scan for
+# a subcommand used to skip `--` as just another dash-argument and then read the
+# seed itself, classifying `-- doctor` as `claude doctor` and dropping the
+# --channels option, so the spawned session silently could not be messaged.
+: >"$d/argv.txt"
+printf 'activate_venv() { :; }\nsource %s\nclaude -- doctor\n' "$WRAPPER" >"$d/sub-case.zsh"
+run_limited 10 zsh "$d/sub-case.zsh" >/dev/null 2>&1
+got3=$(cat "$d/argv.txt" 2>/dev/null || echo "")
+case "$got3" in
+  *"ARG:--channels"*) ok "a seed equal to a subcommand keeps channels" ;;
+  *) bad "a seed equal to a subcommand keeps channels" "argv was: ${got3:-<empty>}" ;;
+esac
+
+# `yn` is `yolo -t`, i.e. skip-permissions with a task flag. Bare `yn` supplies
+# no task name, and the wrapper must refuse rather than launch an unrestricted
+# session the user never finished asking for.
+: >"$d/argv.txt"
+printf 'activate_venv() { :; }\nsource %s\nclaude --dangerously-skip-permissions -t\n' "$WRAPPER" >"$d/yn-case.zsh"
+run_limited 10 zsh "$d/yn-case.zsh" >/dev/null 2>&1
+yn_rc=$?
+got4=$(cat "$d/argv.txt" 2>/dev/null || echo "")
+if [[ "$yn_rc" -eq 124 ]]; then
+  bad "bare -t refuses instead of launching" "wrapper hung"
+elif [[ -n "$got4" ]]; then
+  bad "bare -t refuses instead of launching" "launched anyway; argv: $got4"
+elif [[ "$yn_rc" -eq 0 ]]; then
+  bad "bare -t refuses instead of launching" "returned 0 without launching"
+else
+  ok "bare -t refuses instead of launching"
 fi
 
 cd / || true

@@ -56,11 +56,19 @@ claude() {
                 break
                 ;;
             -t|--task)
-                task_name="${2:-}"
-                # Guard the same hazard for a trailing `-t` with no value:
-                # `shift 2` with one argument left shifts nothing and returns
-                # non-zero, which is an infinite loop rather than an error.
-                if [[ $# -ge 2 ]]; then shift 2; else shift; fi
+                # Refuse rather than continue with an empty task name. `yn` is
+                # `yolo -t`, i.e. `claude --dangerously-skip-permissions -t`, so
+                # a bare `yn` reaches here with no value — and carrying on would
+                # launch a skip-permissions session that the user never
+                # completed the command for. (Before this guard existed the same
+                # input hung instead: `shift 2` with one argument left shifts
+                # nothing and returns non-zero, spinning the loop forever.)
+                if [[ $# -lt 2 ]]; then
+                    echo "claude: $1 requires a task name" >&2
+                    return 2
+                fi
+                task_name="$2"
+                shift 2
                 ;;
             *)
                 args+=("$1")
@@ -104,6 +112,15 @@ claude() {
     local _first_positional="" _skip_next=false
     for _a in "${args[@]}"; do
         if [[ "$_skip_next" == true ]]; then _skip_next=false; continue; fi
+        # Everything after `--` is prompt text, never a subcommand name. Without
+        # this the scan skipped the terminator as just another dash-argument and
+        # then read the seed itself: a spawned session seeded with exactly
+        # "doctor" was classified as `claude doctor`, so --channels was dropped
+        # and the session came up unable to receive messages.
+        if [[ "$_a" == "--" ]]; then
+            _first_positional=""
+            break
+        fi
         case "$_a" in
             --model|--agent|--agents|--resume|-r|--permission-mode|--settings| \
             --system-prompt|--system-prompt-file|--append-system-prompt|--append-system-prompt-file| \
