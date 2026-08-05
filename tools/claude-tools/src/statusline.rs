@@ -88,10 +88,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Line 2: session state (collect parts, join with " · ")
     let mut session_parts: Vec<String> = Vec::new();
-    if let Some(s) = format_model_str(input.model.as_ref()) {
-        session_parts.push(s);
-    }
-    if let Some(s) = format_effort_str(input.effort.as_ref()) {
+    if let Some(s) = format_model_str(input.model.as_ref(), input.effort.as_ref()) {
         session_parts.push(s);
     }
     if let Some(s) = format_context_usage_str(input.context_window.as_ref()) {
@@ -253,10 +250,17 @@ fn format_git_info(output: &mut String, cwd: &str) {
     }
 }
 
-/// Model display name in brackets.
-fn format_model_str(model: Option<&Model>) -> Option<String> {
+/// Model display name in brackets, with the reasoning effort folded in when the
+/// model reports one: "[Opus 5 (high)]". Effort keeps its own colour inside the
+/// blue bracket, so the bracket colour is re-opened after the suffix.
+/// Effort has no segment of its own — a payload with an effort but no model
+/// display name renders neither, which Claude Code never sends.
+fn format_model_str(model: Option<&Model>, effort: Option<&Effort>) -> Option<String> {
     let name = model.and_then(|m| m.display_name.as_deref()).filter(|n| !n.is_empty())?;
-    Some(format!("\x1b[34m[{}]\x1b[0m", name))
+    match format_effort_suffix(effort) {
+        Some(suffix) => Some(format!("\x1b[34m[{} {}\x1b[34m]\x1b[0m", name, suffix)),
+        None => Some(format!("\x1b[34m[{}]\x1b[0m", name)),
+    }
 }
 
 /// Compact token count: "845" under a thousand, "123k", "1.0M".
@@ -275,8 +279,9 @@ pub fn format_tokens(n: u64) -> String {
 
 /// Context usage from `context_window` (pre-computed by Claude Code): absolute
 /// tokens against the model's window, plus the percentage that drives the colour.
-/// Renders "ctx:123k/200k 62%", degrading to "ctx:123k 62%" without a window
-/// size and to "ctx:62%" without a token count.
+/// Renders "ctx:123k/200k (62%)", degrading to "ctx:123k (62%)" without a window
+/// size and to "ctx:62%" without a token count — the percentage only takes
+/// parentheses when it is qualifying a token count in front of it.
 fn format_context_usage_str(context_window: Option<&ContextWindow>) -> Option<String> {
     let cw = context_window?;
     let pct = cw.used_percentage?.round() as u64;
@@ -293,18 +298,20 @@ fn format_context_usage_str(context_window: Option<&ContextWindow>) -> Option<St
 
     let body = match cw.total_input_tokens.filter(|t| *t > 0) {
         Some(tokens) => match cw.context_window_size.filter(|s| *s > 0) {
-            Some(size) => format!("{}/{} {}%", format_tokens(tokens), format_tokens(size), pct),
-            None => format!("{} {}%", format_tokens(tokens), pct),
+            Some(size) => format!("{}/{} ({}%)", format_tokens(tokens), format_tokens(size), pct),
+            None => format!("{} ({}%)", format_tokens(tokens), pct),
         },
         None => format!("{}%", pct),
     };
     Some(format!("{}ctx:{}\x1b[0m", color, body))
 }
 
-/// Live reasoning effort from `effort.level`. Dim for the everyday levels;
-/// yellow for xhigh/max, which cost enough to be worth noticing.
-/// Parity: claude/statusline.sh (EFFORT LEVEL section)
-fn format_effort_str(effort: Option<&Effort>) -> Option<String> {
+/// Live reasoning effort from `effort.level`, as the parenthesised suffix that
+/// goes inside the model bracket. Dim for the everyday levels; yellow for
+/// xhigh/max, which cost enough to be worth noticing. Deliberately leaves the
+/// colour open — format_model_str re-opens blue for the closing bracket.
+/// Parity: claude/statusline.sh (REASONING EFFORT section)
+fn format_effort_suffix(effort: Option<&Effort>) -> Option<String> {
     let level = effort
         .and_then(|e| e.level.as_deref())
         .map(str::trim)
@@ -313,7 +320,7 @@ fn format_effort_str(effort: Option<&Effort>) -> Option<String> {
         "xhigh" | "max" => "\x1b[33m", // Yellow
         _ => "\x1b[2m",                // Dim
     };
-    Some(format!("{}effort:{}\x1b[0m", color, level))
+    Some(format!("{}({})", color, level))
 }
 
 /// The dotfiles checkout root, for reading config/secrets-global.conf.
@@ -378,14 +385,18 @@ fn format_classifier_str() -> Option<String> {
     }
 
     let label = active_anthropic_key_label().unwrap_or_default();
+    // The suffix after `auto-` names the BACKEND, not the key: `-ant` is the
+    // Anthropic API key path, `-sub` the subscription fallback. Keeping the two
+    // in the same position means a key that happened to be labelled "sub" can no
+    // longer read as the degraded state.
     match backend {
-        "api" if label.is_empty() => Some("\x1b[2mauto\x1b[0m".to_string()),
-        "api" => Some(format!("\x1b[2mauto:{}\x1b[0m", label)),
+        "api" if label.is_empty() => Some("\x1b[2mauto-ant\x1b[0m".to_string()),
+        "api" => Some(format!("\x1b[2mauto-ant:{}\x1b[0m", label)),
         // Deliberately does NOT name a key. `label` is the conf's preferred key,
         // but with-anthropic-key.sh defers to an already-exported ANTHROPIC_API_KEY,
         // so the key that actually failed may be a different one — naming the wrong
         // key as down is worse than naming none. The healthy line still shows it.
-        "subscription" => Some("\x1b[33mauto:sub\x1b[0m \x1b[2m(api down)\x1b[0m".to_string()),
+        "subscription" => Some("\x1b[33mauto-sub\x1b[0m \x1b[2m(api down)\x1b[0m".to_string()),
         "dead" => Some("\x1b[31m🔴auto\x1b[0m".to_string()),
         _ => None,
     }

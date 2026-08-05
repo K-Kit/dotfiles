@@ -4,8 +4,8 @@
 #
 # Displays on up to 3 lines:
 # Line 1 (location): Machine name (SSH) + profiles + directory + git branch
-# Line 2 (session): Model name + reasoning effort + context tokens/% + duration
-#                   + approval-classifier state
+# Line 2 (session): Model name (with reasoning effort) + context tokens/%
+#                   + duration + approval-classifier state
 # Line 3 (usage): 5h and 7d API usage bars (cached, from /api/oauth/usage)
 #
 # Receives JSON via stdin from Claude Code.
@@ -79,19 +79,13 @@ if git -C "$cwd" rev-parse --git-dir > /dev/null 2>&1; then
 fi
 
 # ============================================================================
-# MODEL NAME
-# ============================================================================
-model_info=""
-model_name=$(echo "$input" | jq -r '.model.display_name // empty')
-if [ -n "$model_name" ]; then
-  model_info="$(printf '\033[34m')[${model_name}]$(printf '\033[0m')"
-fi
-
-# ============================================================================
 # REASONING EFFORT (only emitted for models that support it)
-# Parity: tools/claude-tools/src/statusline.rs::format_effort_str
+# Rendered as the parenthesised suffix inside the model bracket, so it is
+# computed before the model. Deliberately leaves the colour open — the model
+# block re-opens blue for the closing bracket.
+# Parity: tools/claude-tools/src/statusline.rs::format_effort_suffix
 # ============================================================================
-effort_info=""
+effort_suffix=""
 # Trimmed at the edges only, matching Rust's str::trim — `tr -d '[:space:]'`
 # would also collapse interior whitespace and diverge from the primary.
 effort_level=$(echo "$input" | jq -r '.effort.level // empty' \
@@ -99,9 +93,25 @@ effort_level=$(echo "$input" | jq -r '.effort.level // empty' \
 if [ -n "$effort_level" ]; then
   case "$effort_level" in
     # Yellow for the levels that cost enough to be worth noticing; dim otherwise
-    xhigh|max) effort_info="$(printf '\033[33m')effort:${effort_level}$(printf '\033[0m')" ;;
-    *)         effort_info="$(printf '\033[2m')effort:${effort_level}$(printf '\033[0m')" ;;
+    xhigh|max) effort_suffix="$(printf '\033[33m')(${effort_level})" ;;
+    *)         effort_suffix="$(printf '\033[2m')(${effort_level})" ;;
   esac
+fi
+
+# ============================================================================
+# MODEL NAME (+ reasoning effort, when the model reports one): "[Opus 5 (high)]"
+# Effort has no segment of its own, so a payload with an effort but no display
+# name renders neither — which Claude Code never sends.
+# Parity: tools/claude-tools/src/statusline.rs::format_model_str
+# ============================================================================
+model_info=""
+model_name=$(echo "$input" | jq -r '.model.display_name // empty')
+if [ -n "$model_name" ]; then
+  if [ -n "$effort_suffix" ]; then
+    model_info="$(printf '\033[34m')[${model_name} ${effort_suffix}$(printf '\033[34m')]$(printf '\033[0m')"
+  else
+    model_info="$(printf '\033[34m')[${model_name}]$(printf '\033[0m')"
+  fi
 fi
 
 # ============================================================================
@@ -151,7 +161,9 @@ if [ "$used_int" -gt 0 ] 2>/dev/null; then
     if [ -n "$ctx_size" ] && [ "$ctx_size" -gt 0 ] 2>/dev/null; then
       ctx_body="${ctx_body}/$(format_tokens "$ctx_size")"
     fi
-    ctx_body="${ctx_body} ${used_int}%"
+    # Parenthesised only when it qualifies a token count in front of it; the
+    # bare-percentage branch below stays unadorned.
+    ctx_body="${ctx_body} (${used_int}%)"
   else
     ctx_body="${used_int}%"
   fi
@@ -207,19 +219,23 @@ if [ -f "$classifier_health" ]; then
         }' "$conf_root/config/secrets-global.conf" 2>/dev/null)
     fi
 
+    # The suffix after `auto-` names the BACKEND, not the key: `-ant` is the
+    # Anthropic API key path, `-sub` the subscription fallback. Keeping the two
+    # in the same position means a key labelled "sub" can no longer read as the
+    # degraded state.
     case "$backend" in
       api)
         if [ -n "$key_label" ]; then
-          classifier_info="$(printf '\033[2m')auto:${key_label}$(printf '\033[0m')"
+          classifier_info="$(printf '\033[2m')auto-ant:${key_label}$(printf '\033[0m')"
         else
-          classifier_info="$(printf '\033[2m')auto$(printf '\033[0m')"
+          classifier_info="$(printf '\033[2m')auto-ant$(printf '\033[0m')"
         fi
         ;;
       subscription)
         # Deliberately does NOT name a key — with-anthropic-key.sh defers to an
         # already-exported ANTHROPIC_API_KEY, so the conf's preferred key may not
         # be the one that failed. Naming the wrong key as down is worse than none.
-        classifier_info="$(printf '\033[33m')auto:sub$(printf '\033[0m') $(printf '\033[2m')(api down)$(printf '\033[0m')"
+        classifier_info="$(printf '\033[33m')auto-sub$(printf '\033[0m') $(printf '\033[2m')(api down)$(printf '\033[0m')"
         ;;
       dead)
         classifier_info="$(printf '\033[31m')🔴auto$(printf '\033[0m')"
@@ -234,10 +250,9 @@ fi
 # Line 1: location
 printf "%s%s\033[2m\033[36m%s\033[0m%s" "$machine_prefix" "$profiles_info" "$dir" "$git_info"
 
-# Line 2: session state (model · effort · ctx · duration)
+# Line 2: session state (model+effort · ctx · duration · classifier)
 session_parts=()
 [ -n "$model_info" ] && session_parts+=("$model_info")
-[ -n "$effort_info" ] && session_parts+=("$effort_info")
 [ -n "$context_info" ] && session_parts+=("$context_info")
 [ -n "$duration_info" ] && session_parts+=("$duration_info")
 [ -n "$classifier_info" ] && session_parts+=("$classifier_info")
