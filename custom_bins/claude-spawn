@@ -317,7 +317,28 @@ fi
 # CLAUDE_SPAWN_DEPTH is deliberately NOT unset — the recursion gate depends on
 # the spawned agent inheriting it.
 # shellcheck disable=SC2016  # deferred expansion is the point
-inner='_seed="$CLAUDE_SPAWN_PROMPT"; unset CLAUDE_SPAWN_PROMPT; claude'
+inner='_seed="$CLAUDE_SPAWN_PROMPT"; unset CLAUDE_SPAWN_PROMPT'
+
+# CLAUDECODE marks "already inside Claude Code". Running claude-spawn from a
+# Claude session exports it, tmux hands it to the pane, and the child CLI then
+# treats itself as a nested invocation and refuses to start — leaving exactly
+# the advertised-session-that-is-only-a-shell this script now detects. The repo
+# already strips it for the same reason in custom_bins/usage-ping and
+# claude/hooks/watchdog.sh.
+inner+='; unset CLAUDECODE'
+
+# Load the TARGET directory's direnv environment. `new-session -c "$dir"` sets
+# the working directory and nothing else: the pane inherits the tmux server's
+# global environment, which was fixed whenever that server first started. So a
+# spawn into project B, from a server started under project A, ran with A's
+# API keys — this repo scopes secrets per project precisely so that cannot
+# happen, and inheriting them silently defeats it. direnv's own diff mechanism
+# unsets what the previous .envrc set as well as exporting the new one, which is
+# why this is `direnv export` rather than a hand-written scrub.
+# shellcheck disable=SC2016  # runs in the pane, not here
+inner+='; if command -v direnv >/dev/null 2>&1; then eval "$(direnv export zsh 2>/dev/null)"; fi'
+
+inner+='; claude'
 if [[ "$yolo" == true ]]; then
   inner+=' --dangerously-skip-permissions'
 fi
@@ -484,6 +505,10 @@ chmod 600 "$AUDIT_LOG" 2>/dev/null || true
 rm -f "$status_file"
 : >"$status_file"
 chmod 600 "$status_file" 2>/dev/null || true
+# A failing tmux exits under `set -e` before the cleanup further down, which
+# would leave the armed file behind on every failed attempt. The trap covers
+# every exit path, and the explicit removals later are harmless repeats.
+trap 'rm -f "$status_file"' EXIT
 
 tmux "${tmux_args[@]}"
 

@@ -41,6 +41,13 @@ assert_contains     "default: invokes claude"           "; claude " "$out"
 # The seed is lifted out of the environment before the agent starts, so it does
 # not survive in /proc/<pid>/environ or reach the agent's children.
 assert_contains     "default: unsets the seed env var"  "unset CLAUDE_SPAWN_PROMPT" "$out"
+# Spawning from inside a Claude session exports CLAUDECODE=1; the pane inherits
+# it and the child CLI refuses to start as a nested invocation.
+assert_contains     "default: clears the nesting marker" "unset CLAUDECODE" "$out"
+# The pane inherits the tmux SERVER's environment, fixed whenever that server
+# started — so without this a spawn into one project can run with another
+# project's API keys.
+assert_contains     "default: loads target direnv env"  "direnv export zsh" "$out"
 assert_contains     "default: remote control disabled"  "remote control: disabled" "$out"
 assert_not_contains "default: no --remote-control flag" "--remote-control" "$out"
 assert_not_contains "default: no skip-permissions"      "--dangerously-skip-permissions" "$out"
