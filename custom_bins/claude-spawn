@@ -16,9 +16,13 @@
 #
 # WHY THE PROMPT TRAVELS AS AN ENV VAR:
 #   It sidesteps two levels of quoting (bash -> sh -> zsh). tmux `-e` sets it in
-#   the session environment; the pane inherits it at fork, so we clear it from
-#   the session environment immediately afterwards and it never lingers in
-#   `tmux show-environment` or in shell history.
+#   the session environment, so it never lingers in shell history.
+#   Clearing it takes TWO steps, and only doing the obvious one is a trap:
+#     * `tmux set-environment -u` edits the SESSION environment, which affects
+#       only panes forked later — the running pane keeps its inherited copy
+#     * the pane therefore unsets its own copy, in the command string, before
+#       the agent starts; otherwise the seed stays in /proc/<pid>/environ for
+#       the life of the agent and every child inherits it
 #   It is NOT hidden, though: the prompt sits in this script's argv for the
 #   duration of the `tmux new-session` call, so it is readable via `ps` by
 #   anyone on the box for that window. The audit log hashes the prompt; `ps`
@@ -266,8 +270,18 @@ fi
 # end of a block and `set -e` turns a false condition into a silent exit. For a
 # script whose failure mode is "launched an agent with the wrong flags", safe by
 # accident of ordering is not safe enough.
+# The seed is copied to a plain shell variable and the EXPORTED one is removed
+# before the agent starts. `tmux set-environment -u` after new-session does not
+# help here: it edits the tmux session environment, which only affects panes
+# forked later. This pane already has CLAUDE_SPAWN_PROMPT in its environment, so
+# without this the seed stays readable in /proc/<pid>/environ for the life of the
+# agent AND of the `exec zsh` that follows it, and every child process inherits
+# a copy. Unsetting inside the pane is the only thing that actually removes it.
+#
+# CLAUDE_SPAWN_DEPTH is deliberately NOT unset — the recursion gate depends on
+# the spawned agent inheriting it.
 # shellcheck disable=SC2016  # deferred expansion is the point
-inner='claude'
+inner='_seed="$CLAUDE_SPAWN_PROMPT"; unset CLAUDE_SPAWN_PROMPT; claude'
 if [[ "$yolo" == true ]]; then
   inner+=' --dangerously-skip-permissions'
 fi
@@ -297,9 +311,10 @@ fi
 # rather than a flag. Without it, `claude-spawn -- ... "--foo"` hands Claude an
 # option chosen by whoever wrote the prompt text.
 # shellcheck disable=SC2016
-inner+=' -- "$CLAUDE_SPAWN_PROMPT"'
+inner+=' -- "$_seed"'
 
-# `exec zsh` keeps the pane alive as a usable shell after the agent exits.
+# `exec zsh` keeps the pane alive as a usable shell after the agent exits. It
+# replaces this shell, so _seed does not survive into it either.
 cmd="zsh -ic '${inner}; exec zsh'"
 
 # Build the tmux invocation once, as an array. The launch below runs this same
@@ -369,8 +384,9 @@ printf '%s\tsession=%s\tdir=%s\trc=%s\tyolo=%s\tdepth=%s\tprompt_sha=%s\n' \
 
 tmux "${tmux_args[@]}"
 
-# The pane inherited the environment at fork, so clearing it here leaves the
-# running agent untouched while keeping the prompt out of `show-environment`.
+# Keeps the prompt out of `show-environment` and out of any pane forked into
+# this session later. It does NOT clean the pane just created — that one unsets
+# its own copy in the command string, which is the half that actually matters.
 tmux set-environment -t "=$session" -u CLAUDE_SPAWN_PROMPT 2>/dev/null || true
 
 printf '%s: session %s in %s\n' "$PROG" "$session" "$dir"

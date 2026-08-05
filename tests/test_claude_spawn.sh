@@ -36,7 +36,11 @@ printf 'claude-spawn\n'
 # --- defaults ---------------------------------------------------------------
 
 out=$("$SPAWN" --dry-run "seed prompt" 2>&1)
-assert_contains     "default: builds a claude command"  "zsh -ic 'claude " "$out"
+assert_contains     "default: builds a claude command"  "zsh -ic '" "$out"
+assert_contains     "default: invokes claude"           "; claude " "$out"
+# The seed is lifted out of the environment before the agent starts, so it does
+# not survive in /proc/<pid>/environ or reach the agent's children.
+assert_contains     "default: unsets the seed env var"  "unset CLAUDE_SPAWN_PROMPT" "$out"
 assert_contains     "default: remote control disabled"  "remote control: disabled" "$out"
 assert_not_contains "default: no --remote-control flag" "--remote-control" "$out"
 assert_not_contains "default: no skip-permissions"      "--dangerously-skip-permissions" "$out"
@@ -105,7 +109,7 @@ assert_contains "rc name is one token" '--remote-control="$CLAUDE_SPAWN_RC_NAME"
 # A dash-leading prompt is a prompt, not a flag.
 out=$("$SPAWN" --dry-run -- "--dangerously-skip-permissions" 2>&1)
 # shellcheck disable=SC2016  # asserting the literal, unexpanded text
-assert_contains "prompt is terminated by --" '-- "$CLAUDE_SPAWN_PROMPT"' "$out"
+assert_contains "prompt is terminated by --" '-- "$_seed"' "$out"
 assert_not_contains "dash-leading prompt is not a flag" "claude --dangerously" "$out"
 
 # --- gate: recursion depth --------------------------------------------------
@@ -225,6 +229,11 @@ mkdir -p "$probe_dir/bin"
   printf 'printf "ARG:%%s\\n" "$@" >"%s/argv.txt"\n' "$probe_dir"
   # shellcheck disable=SC2016  # writing a script; expansion happens when it runs
   printf 'printf "DEPTH:%%s\\n" "${CLAUDE_SPAWN_DEPTH:-unset}" >>"%s/argv.txt"\n' "$probe_dir"
+  # The agent must NOT still have the seed in its environment: tmux -e exports
+  # it, and `set-environment -u` does not reach an already-forked pane, so the
+  # pane has to unset its own copy before exec'ing us.
+  # shellcheck disable=SC2016
+  printf 'printf "SEEDENV:%%s\\n" "${CLAUDE_SPAWN_PROMPT:-unset}" >>"%s/argv.txt"\n' "$probe_dir"
 } >"$probe_dir/bin/claude"
 chmod +x "$probe_dir/bin/claude"
 
@@ -253,7 +262,12 @@ resolved_claude=$(command -v claude 2>/dev/null || echo "")
 if [[ "$resolved_claude" != "$probe_dir/bin/claude" ]]; then
   bad "argv probe: stub shadows the real claude" \
       "claude resolves to '${resolved_claude:-<nothing>}', refusing to run the probe"
-elif ! tmux start-server 2>/dev/null; then
+elif ! tmux new-session -d -s "${probe_session}-holder" sleep 600 2>/dev/null; then
+  # A holding session, not a bare `start-server`. tmux's `exit-empty` option
+  # defaults to ON, so start-server returns success and then the server exits
+  # again immediately for having no sessions — after which the socket check
+  # below found nothing and recorded a FAILURE rather than falling back. Owning
+  # one real session keeps the server up for the duration of the probe.
   # No tmux (CI, or a sandbox that denies the unix socket). Rather than skip
   # outright and report green, exercise the layer we still can: run the inner
   # `zsh -ic ...` string the script itself emits, with the prompt supplied the
@@ -285,6 +299,8 @@ elif ! tmux start-server 2>/dev/null; then
       assert_contains     "zsh-layer probe: option terminator present" "ARG:--" "$got"
       assert_contains     "zsh-layer probe: rc name is one token" "ARG:--remote-control=" "$got"
       assert_not_contains "zsh-layer probe: no skip-permissions" "skip-permissions" "$got"
+      # The seed must not survive in the agent's environment.
+      assert_contains     "zsh-layer probe: seed cleared from env" "SEEDENV:unset" "$got"
     fi
     unset CLAUDE_SPAWN_PROMPT CLAUDE_SPAWN_RC_NAME CLAUDE_SPAWN_DEPTH
   fi
@@ -332,6 +348,7 @@ else
       assert_contains     "argv probe: option terminator present" "ARG:--" "$got"
       assert_not_contains "argv probe: no skip-permissions" "skip-permissions" "$got"
       assert_not_contains "argv probe: no remote control"   "remote-control" "$got"
+      assert_contains     "argv probe: seed cleared from env" "SEEDENV:unset" "$got"
     fi
   fi
   # Scoped deliberately: only tear down a server we positively identified as

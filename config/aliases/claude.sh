@@ -47,9 +47,20 @@ claude() {
     local args=() task_name=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --)
+                # Everything after `--` is the caller's, not ours. Without this
+                # a seed prompt of exactly `-t` was parsed as OUR task flag; no
+                # value followed, the `shift 2` below failed without consuming
+                # anything, and the loop spun forever instead of launching.
+                args+=("$@")
+                break
+                ;;
             -t|--task)
-                task_name="$2"
-                shift 2
+                task_name="${2:-}"
+                # Guard the same hazard for a trailing `-t` with no value:
+                # `shift 2` with one argument left shifts nothing and returns
+                # non-zero, which is an infinite loop rather than an error.
+                if [[ $# -ge 2 ]]; then shift 2; else shift; fi
                 ;;
             *)
                 args+=("$1")

@@ -98,6 +98,28 @@ else
   fi
 fi
 
+# A seed prompt of exactly `-t` used to be parsed as the wrapper's OWN task
+# flag. No value followed, so `shift 2` shifted nothing and returned non-zero,
+# and the parse loop spun forever — the spawned session simply never started.
+# `--` must stop the wrapper reading further arguments as its own.
+: >"$d/argv.txt"
+printf 'activate_venv() { :; }\nsource %s\nclaude -- -t\n' "$WRAPPER" >"$d/t-case.zsh"
+timeout 10 zsh "$d/t-case.zsh" >/dev/null 2>&1
+t_rc=$?
+
+# Judge by what the agent received, not by exit status — the wrapper can exit
+# non-zero for reasons unrelated to this (venv activation, channel setup) and
+# that would mask the actual question. Only 124 means timeout, i.e. the hang.
+if [[ "$t_rc" -eq 124 ]]; then
+  bad "a seed of exactly -t terminates" "wrapper hung (timed out) — the parse loop is spinning"
+else
+  got2=$(cat "$d/argv.txt" 2>/dev/null || echo "")
+  case "$got2" in
+    *"ARG:-t"*) ok "a seed of exactly -t reaches the agent" ;;
+    *) bad "a seed of exactly -t reaches the agent" "argv was: ${got2:-<empty>}" ;;
+  esac
+fi
+
 cd / || true
 rm -rf "$d"
 
