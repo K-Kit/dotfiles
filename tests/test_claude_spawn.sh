@@ -37,7 +37,9 @@ printf 'claude-spawn\n'
 
 out=$("$SPAWN" --dry-run "seed prompt" 2>&1)
 assert_contains     "default: builds a claude command"  "zsh -ic '" "$out"
-assert_contains     "default: invokes claude"           "; claude " "$out"
+# Invoked inside the environment guard, so the agent only starts once the target
+# project's direnv environment has actually been established.
+assert_contains     "default: invokes claude"           "else claude " "$out"
 # The seed is lifted out of the environment before the agent starts, so it does
 # not survive in /proc/<pid>/environ or reach the agent's children.
 assert_contains     "default: unsets the seed env var"  "unset CLAUDE_SPAWN_PROMPT" "$out"
@@ -48,6 +50,16 @@ assert_contains     "default: clears the nesting marker" "unset CLAUDECODE" "$ou
 # started — so without this a spawn into one project can run with another
 # project's API keys.
 assert_contains     "default: loads target direnv env"  "direnv export zsh" "$out"
+
+# The inner command is embedded in `zsh -ic '...'`, so a single apostrophe
+# anywhere inside it terminates that string early and tmux receives a mangled
+# command. Easy to reintroduce the moment someone writes a possessive in a
+# diagnostic, so assert the invariant rather than trusting review to catch it.
+inner_cmd=$(printf '%s\n' "$out" | sed -n "s/^command:[[:space:]]*zsh -ic '\(.*\)'\$/\1/p")
+case "$inner_cmd" in
+  *"'"*) bad "inner command contains no apostrophe" "found one: $inner_cmd" ;;
+  *)     ok "inner command contains no apostrophe" ;;
+esac
 assert_contains     "default: remote control disabled"  "remote control: disabled" "$out"
 assert_not_contains "default: no --remote-control flag" "--remote-control" "$out"
 assert_not_contains "default: no skip-permissions"      "--dangerously-skip-permissions" "$out"

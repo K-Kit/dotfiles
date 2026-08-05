@@ -335,10 +335,29 @@ inner+='; unset CLAUDECODE'
 # happen, and inheriting them silently defeats it. direnv's own diff mechanism
 # unsets what the previous .envrc set as well as exporting the new one, which is
 # why this is `direnv export` rather than a hand-written scrub.
+#
+# Fails CLOSED. Skipping the load when direnv is missing, or letting `eval
+# "$(direnv export)"` swallow a nonzero status, leaves the pane running with
+# whatever the server happened to hold — which for a secrets-per-project setup
+# is the failure mode this exists to prevent, arriving silently. The output is
+# captured before being evaluated so the exit status is actually observable
+# (eval of a command substitution reports eval's status, not direnv's), and
+# stderr is left alone so direnv's own diagnostics reach the pane.
+#
+# The no-direnv case only aborts when DIRENV_DIFF shows there IS inherited
+# direnv state to be wrong about; a machine that simply does not use direnv
+# spawns normally.
 # shellcheck disable=SC2016  # runs in the pane, not here
-inner+='; if command -v direnv >/dev/null 2>&1; then eval "$(direnv export zsh 2>/dev/null)"; fi'
+inner+='; _envok=1'
+# shellcheck disable=SC2016
+inner+='; if command -v direnv >/dev/null 2>&1; then _de="$(direnv export zsh)" || _envok=0; if [[ $_envok -eq 1 ]]; then eval "$_de"; fi; elif [[ -n "${DIRENV_DIFF:-}" ]]; then _envok=0; fi'
 
-inner+='; claude'
+# shellcheck disable=SC2016
+# No apostrophes in that message, deliberately: this whole string is embedded in
+# the single-quoted `zsh -ic '...'` below, and one apostrophe would terminate it
+# early and hand tmux a mangled command. Asserted by the tests.
+# shellcheck disable=SC2016
+inner+='; if [[ $_envok -ne 1 ]]; then print -u2 "claude-spawn: refusing to start: the direnv environment for this directory could not be loaded, so the agent would run with another project secrets"; _rc=90; else claude'
 if [[ "$yolo" == true ]]; then
   inner+=' --dangerously-skip-permissions'
 fi
@@ -399,8 +418,10 @@ inner+=' -- "$_seed"'
 # reused a later healthy spawn read that stale file and declared failure.
 # Existing-and-empty means armed; non-empty means the agent failed; absent means
 # nobody is listening any more.
+# `fi` closes the environment guard above: either claude ran and $_rc is its
+# status, or the guard refused and set $_rc itself. Both report the same way.
 # shellcheck disable=SC2016
-inner+='; _rc=$?; if [[ $_rc -ne 0 && -e "$CLAUDE_SPAWN_STATUS_FILE" ]]; then printf %s "$_rc" >"$CLAUDE_SPAWN_STATUS_FILE" 2>/dev/null; fi'
+inner+='; _rc=$?; fi; if [[ $_rc -ne 0 && -e "$CLAUDE_SPAWN_STATUS_FILE" ]]; then printf %s "$_rc" >"$CLAUDE_SPAWN_STATUS_FILE" 2>/dev/null; fi'
 
 # Where the pane reports an agent that failed to start. Under the state dir
 # rather than a world-writable temp root, so another local user cannot plant a
@@ -569,6 +590,17 @@ if [[ -s "$status_file" ]]; then
   exit 5
 fi
 rm -f "$status_file"
+
+# An empty status file is not proof of life. If the pane died before reaching
+# the in-pane handler at all — zsh missing, an interactive startup file exiting,
+# the window closing — nothing was ever written, and reporting success would
+# hand the user a session name they cannot attach to. Ask tmux instead of
+# inferring it from the absence of bad news.
+if ! tmux has-session -t "=$session" 2>/dev/null; then
+  printf '%s: the tmux session %s did not survive startup; nothing to attach to\n' \
+    "$PROG" "$session" >&2
+  exit 5
+fi
 
 printf '%s: session %s in %s\n' "$PROG" "$session" "$dir"
 if [[ "$remote_control" == true ]]; then
