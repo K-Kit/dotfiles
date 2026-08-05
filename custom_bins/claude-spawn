@@ -453,14 +453,22 @@ if [[ ! -e "$AUDIT_LOG" ]]; then
   : >"$AUDIT_LOG"
 fi
 chmod 600 "$AUDIT_LOG" 2>/dev/null || true
-printf '%s\tsession=%s\tdir=%s\trc=%s\tyolo=%s\tdepth=%s\tprompt_sha=%s\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$session" "$dir" \
-  "$([[ "$remote_control" == true ]] && echo "$rc_name" || echo -)" \
-  "$yolo" "$depth" "$(prompt_sha "$prompt")" >>"$AUDIT_LOG"
 
 # ---------------------------------------------------------------- launch
 
 tmux "${tmux_args[@]}"
+
+# Appended only now that tmux has actually created the session. Writing it
+# before the launch recorded sessions that never came into being — if tmux was
+# missing or its socket unreachable, the script exited nonzero having already
+# claimed the spawn, and nothing in the file distinguished that entry from a
+# real one. A log whose job is to be the trustworthy account of what was
+# spawned cannot carry silent false positives. `set -e` means a failed launch
+# never reaches this line.
+printf '%s\tsession=%s\tdir=%s\trc=%s\tyolo=%s\tdepth=%s\tprompt_sha=%s\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$session" "$dir" \
+  "$([[ "$remote_control" == true ]] && echo "$rc_name" || echo -)" \
+  "$yolo" "$depth" "$(prompt_sha "$prompt")" >>"$AUDIT_LOG"
 
 # Keeps these out of `show-environment` and out of any pane forked into this
 # session later. Neither cleans the pane just created — that one unsets its own
