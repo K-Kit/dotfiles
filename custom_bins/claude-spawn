@@ -273,16 +273,28 @@ window="${window:-$session}"
 rc_name=$(sanitize "${rc_name:-$session}")
 [[ -n "$rc_name" ]] || die "remote control name is empty after sanitising"
 
+# Resolve the prefix at runtime rather than hard-coding "auto-": tmux-resume
+# treats an empty prefix as "sending disabled", and hard-coding would rename
+# windows to a prefix the gate rejects while reporting success.
+optin_prefix="$(tmux-resume --print-optin-prefix 2>/dev/null || true)"
+
 if [[ "$auto_resume" == true ]]; then
-  # Resolve the prefix at runtime rather than hard-coding "auto-": tmux-resume
-  # treats an empty prefix as "sending disabled", and hard-coding would rename
-  # windows to a prefix the gate rejects while reporting success.
-  optin_prefix="$(tmux-resume --print-optin-prefix 2>/dev/null || true)"
   if [[ -z "$optin_prefix" ]]; then
     printf '%s: warning: tmux-resume opt-in prefix is empty; auto-resume is disabled, window not renamed\n' "$PROG" >&2
-  else
-    [[ "$window" == "$optin_prefix"* ]] || window="${optin_prefix}${window}"
+  elif [[ "$window" != "$optin_prefix"* ]]; then
+    window="${optin_prefix}${window}"
   fi
+elif [[ -n "$optin_prefix" && "$window" == "$optin_prefix"* ]]; then
+  # Unattended auto-resume is opt-in via --auto, but tmux-resume gates purely on
+  # the window-name prefix — it never sees our flags. So a name that merely
+  # happens to start with it (`-s auto-review`, or a directory called `auto-x`,
+  # which becomes the default session and window name) enrolled the session in
+  # unattended rate-limit resumption that was never asked for. Same shape as the
+  # other gates here: the capability arrives by a route the flag check does not
+  # cover. Neutralise the prefix and say so rather than silently opting in.
+  window="not-${window}"
+  printf '%s: note: window name began with the auto-resume prefix %s but --auto was not passed; renamed to %s\n' \
+    "$PROG" "$optin_prefix" "$window" >&2
 fi
 
 # ----------------------------------------------------- build the inner command

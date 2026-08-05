@@ -133,6 +133,32 @@ out=$("$SPAWN" --dry-run -- "--dangerously-skip-permissions" 2>&1)
 assert_contains "prompt is terminated by --" '-- "$_seed"' "$out"
 assert_not_contains "dash-leading prompt is not a flag" "claude --dangerously" "$out"
 
+# --- gate: unattended auto-resume is opt-in ---------------------------------
+#
+# tmux-resume decides purely on the window-name prefix and never sees our flags,
+# so a name that merely starts with it enrolled the session in unattended
+# rate-limit resumption without --auto ever being passed.
+
+optin=$(tmux-resume --print-optin-prefix 2>/dev/null || echo "")
+if [[ -z "$optin" ]]; then
+  printf '  SKIP auto-resume prefix tests (tmux-resume reports no prefix)\n'
+else
+  out=$("$SPAWN" --dry-run -s "${optin}review" "x" 2>&1)
+  assert_not_contains "prefixed name does not opt in without --auto" \
+    "tmux window:    ${optin}review" "$out"
+  assert_contains "prefixed name is reported, not silently changed" \
+    "--auto was not passed" "$out"
+
+  # --auto must still work, and must not double-prefix an already-prefixed name.
+  out=$("$SPAWN" --dry-run --auto -s "${optin}review" "x" 2>&1)
+  assert_contains     "--auto keeps the prefix"    "tmux window:    ${optin}review" "$out"
+  assert_not_contains "--auto does not double it"  "${optin}${optin}" "$out"
+
+  # An ordinary name gains the prefix under --auto.
+  out=$("$SPAWN" --dry-run --auto -s plainname "x" 2>&1)
+  assert_contains "--auto prefixes a plain name" "tmux window:    ${optin}plainname" "$out"
+fi
+
 # --- gate: recursion depth --------------------------------------------------
 
 out=$(CLAUDE_SPAWN_DEPTH=1 "$SPAWN" --dry-run "x" 2>&1); code=$?
