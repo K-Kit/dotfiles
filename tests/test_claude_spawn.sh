@@ -206,6 +206,14 @@ fi
 # A private tmux server, so the probe cannot collide with, inherit from, or
 # leave anything behind in the user's real one. TMUX_TMPDIR picks the socket
 # directory, and the eval'd command inherits it, so it reaches this server too.
+#
+# TMUX must be unset first, and this is not cosmetic. Inside a tmux pane, $TMUX
+# names the live server's socket and takes precedence over TMUX_TMPDIR — so a
+# developer running this suite from their own tmux session would have had the
+# probe attach to THAT server (where the real claude, not the stub, is on PATH)
+# and then hit the unconditional `tmux kill-server` below, destroying every
+# session they had open. The private server is only private once TMUX is gone.
+unset TMUX TMUX_PANE
 export TMUX_TMPDIR="$probe_dir/tmux"
 mkdir -p "$TMUX_TMPDIR"
 chmod 700 "$TMUX_TMPDIR"
@@ -291,9 +299,20 @@ else
   # the whole point: no hand-transcribed copy sits between test and artifact.
   argv=$("$SPAWN" --print-tmux-command -s "$probe_session" -d "$probe_dir" "$probe_prompt" 2>&1)
 
+  # Prove the server we are about to drive is the private one before evaluating
+  # anything on it — and, more importantly, before the kill-server at the end of
+  # this block. If the socket is not under the probe directory, something has
+  # re-pointed tmux at a server we do not own, and killing it would take the
+  # user's sessions with it.
+  socket_path=$(tmux display-message -p '#{socket_path}' 2>/dev/null || echo "")
+
   if [[ "$argv" != tmux\ * ]]; then
     bad "argv probe: script emits a tmux command" "got: $argv"
+  elif [[ "$socket_path" != "$probe_dir"/* ]]; then
+    bad "argv probe: server is the private one" \
+        "socket is '${socket_path:-<unknown>}', not under $probe_dir; refusing to touch it"
   else
+    ok "argv probe: server is the private one"
     eval "$argv" 2>/dev/null
 
     for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -315,7 +334,12 @@ else
       assert_not_contains "argv probe: no remote control"   "remote-control" "$got"
     fi
   fi
-  tmux kill-server 2>/dev/null || true
+  # Scoped deliberately: only tear down a server we positively identified as
+  # ours. An unconditional kill-server here is what would have destroyed the
+  # user's sessions in the TMUX-inherited case.
+  if [[ -n "$socket_path" && "$socket_path" == "$probe_dir"/* ]]; then
+    tmux -S "$socket_path" kill-server 2>/dev/null || true
+  fi
 fi
 
 rm -rf "$probe_dir"

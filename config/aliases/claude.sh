@@ -152,7 +152,26 @@ claude() {
             channels+=(plugin:imessage@claude-plugins-official)
         fi
         if [[ ${#channels[@]} -gt 0 ]]; then
-            args+=(--channels "${channels[@]}")
+            # Insert BEFORE a `--` terminator when the caller supplied one.
+            # Appending unconditionally put these flags AFTER `--`, where they
+            # stop being options and become prompt text — silently: the session
+            # came up with no channel and the extra words glued onto the prompt.
+            # claude-spawn passes `--` so that a dash-leading seed prompt cannot
+            # turn into a flag, and any other caller doing the same is entitled
+            # to the same handling.
+            local -a _pre _post
+            local _seen_term=false _a
+            for _a in "${args[@]}"; do
+                if [[ "$_seen_term" == false && "$_a" == "--" ]]; then
+                    _seen_term=true
+                fi
+                if [[ "$_seen_term" == true ]]; then
+                    _post+=("$_a")
+                else
+                    _pre+=("$_a")
+                fi
+            done
+            args=("${_pre[@]}" --channels "${channels[@]}" "${_post[@]}")
         fi
     fi
 
