@@ -379,6 +379,29 @@ elif ! tmux new-session -d -s "${probe_session}-holder" sleep 600 2>/dev/null; t
       got_local=$(cat "$probe_dir/argv.txt" 2>/dev/null || echo "")
       assert_contains "zsh-layer probe: rc disabled explicitly" \
         'ARG:{"remoteControlAtStartup":false}' "$got_local"
+
+      # `tmux new-session -d` only proves a pane exists: the `;` chain runs
+      # `exec zsh` regardless, so an agent that dies on startup leaves a healthy
+      # shell and used to be reported as a successful spawn. The pane must say
+      # when the agent failed — and must stay quiet when it did not.
+      export CLAUDE_SPAWN_STATUS_FILE="$probe_dir/status"
+      rm -f "$CLAUDE_SPAWN_STATUS_FILE"
+      printf '#!/usr/bin/env bash\nexit 7\n' >"$probe_dir/bin/claude"
+      chmod +x "$probe_dir/bin/claude"
+      eval "$inner_local </dev/null" >/dev/null 2>&1 || true
+      assert_contains "startup failure is reported" "7" \
+        "$(cat "$CLAUDE_SPAWN_STATUS_FILE" 2>/dev/null || echo "")"
+
+      rm -f "$CLAUDE_SPAWN_STATUS_FILE"
+      printf '#!/usr/bin/env bash\nexit 0\n' >"$probe_dir/bin/claude"
+      chmod +x "$probe_dir/bin/claude"
+      eval "$inner_local </dev/null" >/dev/null 2>&1 || true
+      if [[ -s "$CLAUDE_SPAWN_STATUS_FILE" ]]; then
+        bad "healthy agent reports nothing" "status file written for a clean exit"
+      else
+        ok "healthy agent reports nothing"
+      fi
+      unset CLAUDE_SPAWN_STATUS_FILE
     fi
     unset CLAUDE_SPAWN_PROMPT CLAUDE_SPAWN_RC_NAME CLAUDE_SPAWN_DEPTH
   fi

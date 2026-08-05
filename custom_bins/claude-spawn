@@ -364,6 +364,20 @@ fi
 # shellcheck disable=SC2016
 inner+=' -- "$_seed"'
 
+# Record the agent's exit status if it exits. `tmux new-session -d` only proves
+# a pane was created: the `;` chain runs `exec zsh` regardless, so an agent that
+# died on startup — a channel's state materialisation returning 1, a bad
+# settings file — left a perfectly healthy shell behind and this script happily
+# reported a spawned session. The caller could not tell an agent from a leftover
+# prompt. The pane now says so, and the launch path below waits briefly for it.
+# shellcheck disable=SC2016
+inner+='; _rc=$?; if [[ $_rc -ne 0 ]]; then printf %s "$_rc" >"$CLAUDE_SPAWN_STATUS_FILE" 2>/dev/null; fi'
+
+# Where the pane reports an agent that failed to start. Under the state dir
+# rather than a world-writable temp root, so another local user cannot plant a
+# status file and make a healthy spawn look broken.
+status_file="$(dirname "$AUDIT_LOG")/status.$$"
+
 # `exec zsh` keeps the pane alive as a usable shell after the agent exits. It
 # replaces this shell, so _seed does not survive into it either.
 #
@@ -392,6 +406,7 @@ tmux_args=(
   # task list of whichever session spawned it and the two would read and mutate
   # it concurrently. Empty makes the wrapper generate a fresh one.
   -e "CLAUDE_CODE_TASK_LIST_ID="
+  -e "CLAUDE_SPAWN_STATUS_FILE=$status_file"
   "$cmd"
 )
 
@@ -458,6 +473,23 @@ chmod 600 "$AUDIT_LOG" 2>/dev/null || true
 
 tmux "${tmux_args[@]}"
 
+# FIRST, before anything that can fail. Keeps these out of `show-environment`
+# and out of any pane forked into this session later. Neither cleans the pane
+# just created — that one unsets its own copies in the command string, which is
+# the half that actually matters.
+#
+# The channel-suppression flag needs the same treatment for the opposite reason:
+# the in-pane unset only fixed the original pane, so a second pane opened in the
+# session later would inherit it and silently launch `claude` with its
+# Telegram/iMessage channels disabled, with nothing to explain why.
+#
+# Ordering is the point. With the audit append above this, a failed append — a
+# full or read-only state filesystem — exited under `set -e` with the session
+# alive and the seed still sitting in its environment for later panes to pick
+# up. The security-relevant cleanup must not be downstream of a fallible write.
+tmux set-environment -t "=$session" -u CLAUDE_SPAWN_PROMPT 2>/dev/null || true
+tmux set-environment -t "=$session" -u CLAUDE_SPAWN_NO_AUTO_CHANNELS 2>/dev/null || true
+
 # Appended only now that tmux has actually created the session. Writing it
 # before the launch recorded sessions that never came into being — if tmux was
 # missing or its socket unreachable, the script exited nonzero having already
@@ -465,21 +497,39 @@ tmux "${tmux_args[@]}"
 # real one. A log whose job is to be the trustworthy account of what was
 # spawned cannot carry silent false positives. `set -e` means a failed launch
 # never reaches this line.
-printf '%s\tsession=%s\tdir=%s\trc=%s\tyolo=%s\tdepth=%s\tprompt_sha=%s\n' \
+#
+# A failure to append is reported, not fatal: the session exists either way, and
+# exiting here would strand it with no message about where it went. An
+# unrecorded session the user was told about beats a silent one.
+if ! printf '%s\tsession=%s\tdir=%s\trc=%s\tyolo=%s\tdepth=%s\tprompt_sha=%s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$session" "$dir" \
   "$([[ "$remote_control" == true ]] && echo "$rc_name" || echo -)" \
-  "$yolo" "$depth" "$(prompt_sha "$prompt")" >>"$AUDIT_LOG"
+  "$yolo" "$depth" "$(prompt_sha "$prompt")" >>"$AUDIT_LOG" 2>/dev/null; then
+  printf '%s: warning: session %s started but could NOT be written to the audit log at %s\n' \
+    "$PROG" "$session" "$AUDIT_LOG" >&2
+fi
 
-# Keeps these out of `show-environment` and out of any pane forked into this
-# session later. Neither cleans the pane just created — that one unsets its own
-# copies in the command string, which is the half that actually matters.
-#
-# The channel-suppression flag needs the same treatment for the opposite reason:
-# the in-pane unset only fixed the original pane, so a second pane opened in the
-# session later would inherit it and silently launch `claude` with its
-# Telegram/iMessage channels disabled, with nothing to explain why.
-tmux set-environment -t "=$session" -u CLAUDE_SPAWN_PROMPT 2>/dev/null || true
-tmux set-environment -t "=$session" -u CLAUDE_SPAWN_NO_AUTO_CHANNELS 2>/dev/null || true
+# Give a failing agent a moment to say so. Bounded and short: an agent that
+# starts normally never writes this file, so the cost is a brief pause, while an
+# agent that dies on startup does it almost immediately. This cannot prove the
+# agent is healthy — only that it did not fail fast — and the message below says
+# no more than that.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if [[ -s "$status_file" ]]; then
+    break
+  fi
+  sleep 0.2
+done
+
+if [[ -s "$status_file" ]]; then
+  agent_rc=$(cat "$status_file" 2>/dev/null || echo "?")
+  rm -f "$status_file"
+  printf '%s: the agent exited immediately (status %s); the tmux session %s exists but is only a shell\n' \
+    "$PROG" "$agent_rc" "$session" >&2
+  printf '%s: attach to see why: tmux attach -t %s\n' "$PROG" "$session" >&2
+  exit 5
+fi
+rm -f "$status_file"
 
 printf '%s: session %s in %s\n' "$PROG" "$session" "$dir"
 if [[ "$remote_control" == true ]]; then
