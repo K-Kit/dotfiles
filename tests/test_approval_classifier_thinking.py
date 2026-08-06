@@ -12,7 +12,12 @@ in two distinct ways, and each backend needed a different remedy:
   * Subscription CLI -- no max_tokens exists here, so nothing truncates; instead
                         the child thinks while the hook's deadline runs out.
                         Claude Code 2.1.223 has no `--thinking` flag, so the
-                        remedy is `--effort low`.
+                        mitigation is `--effort low`. Note the asymmetry: this
+                        is a behavioural signal, not a token budget, so it
+                        reduces thinking without forbidding it. The two
+                        backends are NOT equivalent, and the timeout clamp --
+                        not the effort flag -- is what actually bounds this
+                        path.
 
 Both failures are silent: the hook fails open to a manual permission prompt, so
 a regression looks like "the classifier just stopped helping" rather than an
@@ -67,11 +72,20 @@ def test_thinking_is_disabled_not_merely_absent(ac):
     assert ac.THINKING == {"type": "disabled"}
 
 
-def test_subscription_effort_is_an_accepted_cli_value(ac):
-    # `claude --help` (2.1.223): low, medium, high, xhigh, max. An unrecognised
-    # value is NOT an error -- the CLI warns and silently uses the default
-    # effort, which would restore the very latency this setting removes.
-    assert ac.SUBSCRIPTION_EFFORT in {"low", "medium", "high", "xhigh", "max"}
+def test_subscription_effort_is_pinned_to_low(ac):
+    # Pinned to the LITERAL value, not to membership in the CLI's accepted set
+    # (`claude --help` 2.1.223: low, medium, high, xhigh, max). Membership was
+    # the original assertion and it was close to a tautology: `max` is a legal
+    # value that would restore the very latency this setting exists to remove,
+    # and it left this entire suite green. The earlier mutation check missed it
+    # because the mutation chosen ("minimal") was invalid rather than
+    # valid-but-wrong.
+    #
+    # Note on what this does NOT claim: `--effort low` is a behavioural signal,
+    # not a token budget, so the child may still think on a hard enough prompt.
+    # It is best-effort latency reduction -- not the equivalent of the API
+    # path's `thinking: {"type": "disabled"}`, which the CLI cannot express.
+    assert ac.SUBSCRIPTION_EFFORT == "low"
 
 
 # --- API backend: the request body actually sent ---------------------------
@@ -142,8 +156,11 @@ def test_subscription_argv_passes_effort(ac, monkeypatch):
         "Without --effort the CLI child runs Sonnet 5's adaptive thinking and "
         "can outlive the hook's remaining budget."
     )
-    assert cmd[cmd.index("--effort") + 1] == ac.SUBSCRIPTION_EFFORT
-    assert cmd[cmd.index("--model") + 1] == ac.SUBSCRIPTION_MODEL
+    # Literal, NOT `== ac.SUBSCRIPTION_EFFORT`: comparing the argv against the
+    # same constant that produced it only proves the constant reached the argv,
+    # which stays true for any value the constant is changed to.
+    assert cmd[cmd.index("--effort") + 1] == "low"
+    assert cmd[cmd.index("--model") + 1] == "sonnet"
     # --bare must never appear: its help states OAuth and keychain are never
     # read, so it is the one mode that cannot reach the subscription at all.
     assert "--bare" not in cmd
@@ -167,9 +184,41 @@ def test_subscription_argv_keeps_its_hardening_flags(ac, monkeypatch):
     monkeypatch.setattr(ac.subprocess, "run", fake_run)
     ac.classify_via_subscription("Bash", {"command": "ls"}, "/tmp", "RULES")
 
+    cmd = captured["cmd"]
     for flag in ("--safe-mode", "--disable-slash-commands",
                  "--strict-mcp-config", "--tools"):
-        assert flag in captured["cmd"], f"{flag} was dropped from the child argv"
+        assert flag in cmd, f"{flag} was dropped from the child argv"
+
+    # The OPERAND is the whole point, and asserting only that `--tools` appears
+    # does not check it. `claude --help` (2.1.223): "" disables all tools,
+    # "default" uses all tools. So `"--tools", ""` -> `"--tools", "default"`
+    # passed the presence-only version of this test while handing the child
+    # Bash, Read and Edit -- a child that receives attacker-influenced tool
+    # input, runs in the user's home directory, and whose hook backstop
+    # --safe-mode has already switched off.
+    assert cmd[cmd.index("--tools") + 1] == "", (
+        "--tools must be given the empty operand; 'default' would ENABLE every "
+        "built-in tool in the classifier child"
+    )
+
+
+def test_subscription_timeout_fails_open_rather_than_crashing(ac, monkeypatch):
+    """A killed child must surface as the warning that drives the manual prompt.
+
+    This is the path the SUBSCRIPTION_MIN_SECONDS floor is reasoned about: the
+    floor is defensible only because timing out and skipping converge on the
+    same outcome. If a timeout escaped as a raw TimeoutExpired it would crash
+    the hook instead, and that argument would no longer hold.
+    """
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout") or 1)
+
+    monkeypatch.setattr(ac.subprocess, "run", fake_run)
+
+    with pytest.raises(ac.ApprovalClassifierWarning):
+        ac.classify_via_subscription(
+            "Bash", {"command": "curl https://example.com"}, "/tmp", "RULES",
+        )
 
 
 if __name__ == "__main__":

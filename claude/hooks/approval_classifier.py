@@ -1067,7 +1067,12 @@ def classify_via_subscription(
             [
                 "claude", "-p",
                 "--model", SUBSCRIPTION_MODEL,
-                "--effort", SUBSCRIPTION_EFFORT,  # CLI stand-in for thinking: disabled
+                # Best-effort latency reduction, NOT the API path's
+                # thinking:disabled -- effort is a behavioural signal rather
+                # than a token budget, so a hard enough prompt can still think.
+                # The CLI cannot express thinking-disabled at all; the timeout
+                # clamp is what actually bounds this path.
+                "--effort", SUBSCRIPTION_EFFORT,
                 "--output-format", "json",
                 "--tools", "",              # no tools: the child only emits JSON
                 "--safe-mode",              # no CLAUDE.md, skills, plugins, hooks, MCP, agents
