@@ -5,12 +5,8 @@ notify = [
     "/Users/kit/dotfiles/codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient",
     "turn-ended",
 ]
-<<<<<<< HEAD
-sandbox_mode = "workspace-write"
-=======
 sandbox_mode = "danger-full-access"
 approvals_reviewer = "user"
->>>>>>> origin/feat/claude-remote-shell
 
 [projects."/Users/kit/dotfiles"]
 trust_level = "trusted"
@@ -29,12 +25,6 @@ source_type = "local"
 source = "/Users/kit/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
 
 [marketplaces.ai-safety-plugins]
-<<<<<<< HEAD
-last_updated = "2026-08-08T15:29:56Z"
-source_type = "git"
-source = "https://github.com/yulonglin/ai-safety-plugins.git"
-
-=======
 last_updated = "2026-08-08T16:00:53Z"
 last_revision = "1c839307b8b37bf7b8b3c710fe6464f83de61d0c"
 source_type = "git"
@@ -76,7 +66,6 @@ last_revision = "abb7f2fd5a083fa1ff55c326a963ff0d95c33f99"
 source_type = "git"
 source = "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill.git"
 
->>>>>>> origin/feat/claude-remote-shell
 [plugins."browser@openai-bundled"]
 enabled = true
 
@@ -116,8 +105,6 @@ enabled = true
 [plugins."writing@ai-safety-plugins"]
 enabled = true
 
-<<<<<<< HEAD
-=======
 [plugins."llms-fetch-mcp@alignment-hive"]
 enabled = true
 
@@ -199,7 +186,6 @@ enabled = true
 [plugins."rust-analyzer-lsp@claude-plugins-official"]
 enabled = true
 
->>>>>>> origin/feat/claude-remote-shell
 [features]
 js_repl = false
 
@@ -239,8 +225,6 @@ CLAUDE_CODE_NO_FLICKER = "1"
 CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = "5"
 ENABLE_TOOL_SEARCH = "1"
 TMPDIR = "/tmp/claude"
-<<<<<<< HEAD
-=======
 
 [desktop]
 conversationDetailMode = "STEPS_COMMANDS"
@@ -413,4 +397,3 @@ trusted_hash = "sha256:c22701bf949e9ffd219867faec1158e0124874e94f3668dab6209fa3a
 
 [hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:stop:0:0"]
 trusted_hash = "sha256:5d8880157e747997146b5eb0443a43909e23fb0203e64ae4895eff5a1b0282fa"
->>>>>>> origin/feat/claude-remote-shell
