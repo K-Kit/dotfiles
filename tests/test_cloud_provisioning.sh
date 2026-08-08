@@ -273,9 +273,8 @@ else
     mkdir -p "$FAKE/config" "$FAKE/claude/hooks"
     { printf '#!/usr/bin/env bash\n'; cat "$RESOLVER"; printf 'printf "%%s\\n" "$DOT_DIR"\n'; } \
         > "$FAKE/claude/hooks/probe.sh"
-    # -f: a leftover symlink would make ln fail to stderr and leave the checks
-    # below comparing against empty output — a confusing FAIL, not a real one.
-    ln -sf "$FAKE/claude" "$FIXTURE/dot-claude"
+    # -fn: replace a leftover symlink instead of following it into its target.
+    ln -sfn "$FAKE/claude" "$FIXTURE/dot-claude"
 
     # Reached through the symlink, exactly as Claude Code invokes ~/.claude/hooks/*.
     check_eq "resolver finds the checkout through the ~/.claude symlink" \
