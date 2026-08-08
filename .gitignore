@@ -562,6 +562,8 @@ scripts/hooks/cache/
 claude/.last-cleanup
 claude/.last-update-result.json
 .claude/scheduled_tasks.lock
+# written into cwd by claude-new (config/aliases/claude.sh) — per-directory, per-session
+.claude_task_list_id
 
 # Obsidian vault state (per-machine workspace, plugins, appearance)
 .obsidian/
