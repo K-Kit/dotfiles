@@ -34,6 +34,15 @@ try() {
 run_as() { sudo -u "$USERNAME" -i bash -c "$*"; }
 tty_usable() { { : >/dev/tty; } 2>/dev/null; }
 
+# Resolve a named secret from the user's fnox config (age-encrypted, deployed
+# to ~/fnox.toml by dotfiles). Only works once the age key has been synced to
+# ~/.config/fnox/age.txt — the key is never in the repo. Quiet no-op when fnox
+# or the key is absent; env vars / interactive prompts remain the other paths.
+fnox_get() {
+    run_as "command -v fnox >/dev/null 2>&1 && [ -f \"\$HOME/.config/fnox/age.txt\" ] \
+        && FNOX_NON_INTERACTIVE=true fnox -c \"\$HOME/fnox.toml\" get '$1' 2>/dev/null" || true
+}
+
 # ── Config ────────────────────────────────────────────────────────────────────
 USERNAME="${USERNAME:-${DOTFILES_USERNAME:-k-kit}}"
 USER_HOME="/home/$USERNAME"
@@ -166,6 +175,7 @@ try "tailscale install" _install_tailscale
 
 TS_NEEDS_SETUP=0
 TS_AUTH_KEY="${TAILSCALE_AUTH_KEY:-}"
+[[ -z "$TS_AUTH_KEY" ]] && TS_AUTH_KEY="$(fnox_get TAILSCALE_AUTH_KEY)"
 if [[ -z "$TS_AUTH_KEY" && "$INTERACTIVE" == "1" ]] && tty_usable; then
     echo "Tailscale auth key (leave empty to skip):"
     echo "(Tip: use an ephemeral reusable key for cloud servers)"
@@ -202,6 +212,7 @@ BWS_NEEDS_SETUP=0
 if [[ -f "$BWS_TOKEN_FILE" ]]; then
     ok "BWS token already present"
 else
+    [[ -z "$BWS_TOKEN" ]] && BWS_TOKEN="$(fnox_get BWS_TOKEN)"
     if [[ -z "$BWS_TOKEN" && "$INTERACTIVE" == "1" ]] && tty_usable; then
         echo "BWS access token (leave empty to skip):"
         read -rs BWS_TOKEN </dev/tty; echo ""

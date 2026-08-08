@@ -104,6 +104,8 @@ Override via env vars:
 Supply secrets via env (`BWS_TOKEN=…`, `TAILSCALE_AUTH_KEY=…`) or set them up after login.
 Pass `-i` / `--interactive` to prompt on a box with a real terminal.
 
+Secret resolution order in setup.sh: env var → fnox (`~/fnox.toml`, only if the fnox CLI and the age key at `~/.config/fnox/age.txt` are both on the box — the key is never in the repo) → interactive prompt (`-i`) → skip with a post-boot hint.
+
 ## Hetzner Cloud
 
 `hetzner-cloud-init.yaml` is a cloud-init user-data file that runs the same two-script flow automatically on first boot. Unlike RunPod, Hetzner `/home` is persistent, so there are no `/workspace` symlinks (create-user.sh only makes them when `/workspace` exists) and no restart dance — the machine survives reboots with its home directory intact.
@@ -132,6 +134,20 @@ hcloud server create \
 ### Secrets (optional, post-boot)
 
 Don't paste secrets into the console. After first login: `secrets-init-bws` for the BWS token, `sudo tailscale up --ssh --authkey <key>` for Tailscale. If you accept root-readable secrets on disk, you can instead uncomment `BWS_TOKEN`/`TAILSCALE_AUTH_KEY` in the env block before pasting and setup.sh will consume them.
+
+### Secrets via fnox (no pasting)
+
+`hetzner-user-data.sh` renders `hetzner-cloud-init.yaml` with the env-block secrets resolved by name from fnox (`~/fnox.toml`, age-encrypted), so no key is ever pasted or typed. The Hetzner API token also comes from fnox (secret name `HERTZNER` — hcloud reads `HCLOUD_TOKEN`):
+
+```bash
+scripts/cloud/hetzner-user-data.sh > "$TMPDIR/user-data.yaml"
+HCLOUD_TOKEN="$(fnox get HERTZNER)" hcloud server create \
+    --name dev-box --type cx22 --image ubuntu-24.04 \
+    --ssh-key <your-key-name> --user-data-from-file "$TMPDIR/user-data.yaml"
+rm "$TMPDIR/user-data.yaml"
+```
+
+Injected when resolvable: `TAILSCALE_AUTH_KEY`, `BWS_TOKEN` (add `BWS_TOKEN` to fnox with `fnox set BWS_TOKEN` to enable it). Unresolved names stay commented and the post-boot path above still applies. The rendered file carries the same root-readable/metadata-service exposure as hand-filling the env block — delete it after `server create`, and the script refuses to print secrets to a terminal.
 
 ### Verify / debug
 

@@ -78,6 +78,7 @@ COMPONENTS:
     --pkg-configs     Deploy package manager security configs (7-day quarantine)
     --secrets         Sync secrets with GitHub gist
     --secrets-env     Verify BWS secrets are configured
+    --fnox            Symlink ~/fnox.toml → config/fnox.toml (age-encrypted secrets)
     --dep-audit       Install weekly dependency audit (supply chain defense)
     --stale-claims    Install weekly staleness audit of auto-loaded AI instructions
     --cleanup         Install file cleanup: Downloads/Screenshots (macOS only)
@@ -356,6 +357,25 @@ if [[ "${DEPLOY_SECRETS_ENV:-false}" == "true" ]]; then
     if [[ -e "$DOT_DIR/.env" || -L "$DOT_DIR/.env" ]]; then
         log_warning "Legacy local .env still exists at $DOT_DIR/.env"
         log_warning "  setup-envrc can compare it against encrypted secrets and remove it"
+    fi
+fi
+
+# ─── Secrets (fnox) ───────────────────────────────────────────────────────────
+# config/fnox.toml holds age ciphertext only — safe in the public repo. The age
+# key lives at ~/.config/fnox/age.txt and is NEVER committed or deployed; on a
+# machine without it, fnox commands simply fail to decrypt. Shell activation is
+# opt-in via fnox-on (config/aliases/fnox.sh) — never wired into zshrc, so
+# secrets stay out of shells that didn't ask (see CLAUDE.md § Secrets).
+
+if [[ "${DEPLOY_FNOX:-false}" == "true" ]]; then
+    log_section "FNOX SECRETS CONFIG"
+    safe_symlink "$DOT_DIR/config/fnox.toml" "$HOME/fnox.toml"
+    if ! cmd_exists fnox; then
+        log_info "fnox CLI not installed (brew install fnox) — config linked, commands unavailable"
+    elif [[ ! -f "$HOME/.config/fnox/age.txt" ]]; then
+        log_info "No age key at ~/.config/fnox/age.txt — secrets will not decrypt on this machine"
+    else
+        log_success "fnox ready — 'fnox exec -- <cmd>' for one-shots, 'fnox-on' to opt a shell in"
     fi
 fi
 
