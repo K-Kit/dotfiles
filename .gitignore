@@ -45,6 +45,10 @@ claude/loop.md
 
 # Codex runtime state (local operational artifacts)
 .codex
+codex/cache/
+codex/plugins/.plugin-appserver/
+codex/state_*.sqlite*
+codex/thread-writer-locks/
 
 # npm artifacts (not used - this repo uses system package managers)
 package.json

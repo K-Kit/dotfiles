@@ -1,8 +1,343 @@
 model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 service_tier = "fast"
+notify = [
+    "/Users/kit/dotfiles/codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient",
+    "turn-ended",
+]
+sandbox_mode = "danger-full-access"
+
 [projects."/Users/kit/dotfiles"]
 trust_level = "trusted"
 
 [tui.model_availability_nux]
 "gpt-5.6-sol" = 1
+
+[marketplaces.openai-bundled]
+last_updated = "2026-08-08T15:23:11Z"
+source_type = "local"
+source = "/Users/kit/dotfiles/codex/.tmp/bundled-marketplaces/openai-bundled"
+
+[marketplaces.openai-primary-runtime]
+last_updated = "2026-08-08T15:23:51Z"
+source_type = "local"
+source = "/Users/kit/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
+
+[marketplaces.ai-safety-plugins]
+last_updated = "2026-08-08T15:29:56Z"
+source_type = "git"
+source = "https://github.com/yulonglin/ai-safety-plugins.git"
+
+[marketplaces.alignment-hive]
+last_updated = "2026-08-08T15:29:58Z"
+source_type = "git"
+source = "https://github.com/Crazytieguy/alignment-hive.git"
+
+[marketplaces.claude-plugins-official]
+last_updated = "2026-08-08T15:30:16Z"
+source_type = "git"
+source = "https://github.com/anthropics/claude-plugins-official.git"
+
+[marketplaces.codex-plugin-cc]
+last_updated = "2026-08-08T15:30:04Z"
+source_type = "git"
+source = "https://github.com/crazytieguy/codex-plugin-cc.git"
+
+[marketplaces.dev-browser-marketplace]
+last_updated = "2026-08-08T15:30:08Z"
+source_type = "git"
+source = "https://github.com/sawyerhood/dev-browser.git"
+
+[marketplaces.productivity-tools]
+last_updated = "2026-08-08T15:30:08Z"
+source_type = "git"
+source = "https://github.com/yulonglin/productivity-tools.git"
+
+[marketplaces.ui-ux-pro-max-skill]
+last_updated = "2026-08-08T15:30:09Z"
+source_type = "git"
+source = "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill.git"
+
+[plugins."browser@openai-bundled"]
+enabled = true
+
+[plugins."chrome@openai-bundled"]
+enabled = true
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[plugins."pdf@openai-primary-runtime"]
+enabled = true
+
+[plugins."spreadsheets@openai-primary-runtime"]
+enabled = true
+
+[plugins."presentations@openai-primary-runtime"]
+enabled = true
+
+[plugins."template-creator@openai-primary-runtime"]
+enabled = true
+
+[plugins."code@ai-safety-plugins"]
+enabled = true
+
+[plugins."core@ai-safety-plugins"]
+enabled = true
+
+[plugins."research@ai-safety-plugins"]
+enabled = true
+
+[plugins."viz@ai-safety-plugins"]
+enabled = true
+
+[plugins."workflow@ai-safety-plugins"]
+enabled = true
+
+[plugins."writing@ai-safety-plugins"]
+enabled = true
+
+[plugins."llms-fetch-mcp@alignment-hive"]
+enabled = true
+
+[plugins."claude-md-management@claude-plugins-official"]
+enabled = true
+
+[plugins."code-simplifier@claude-plugins-official"]
+enabled = true
+
+[plugins."commit-commands@claude-plugins-official"]
+enabled = true
+
+[plugins."context7@claude-plugins-official"]
+enabled = true
+
+[plugins."figma@claude-plugins-official"]
+enabled = true
+
+[plugins."frontend-design@claude-plugins-official"]
+enabled = true
+
+[plugins."gopls-lsp@claude-plugins-official"]
+enabled = true
+
+[plugins."hookify@claude-plugins-official"]
+enabled = true
+
+[plugins."huggingface-skills@claude-plugins-official"]
+enabled = true
+
+[plugins."imessage@claude-plugins-official"]
+enabled = true
+
+[plugins."playground@claude-plugins-official"]
+enabled = true
+
+[plugins."playwright@claude-plugins-official"]
+enabled = true
+
+[plugins."plugin-dev@claude-plugins-official"]
+enabled = true
+
+[plugins."pyright-lsp@claude-plugins-official"]
+enabled = true
+
+[plugins."ralph-loop@claude-plugins-official"]
+enabled = true
+
+[plugins."remember@claude-plugins-official"]
+enabled = true
+
+[plugins."security-guidance@claude-plugins-official"]
+enabled = true
+
+[plugins."superpowers@claude-plugins-official"]
+enabled = true
+
+[plugins."telegram@claude-plugins-official"]
+enabled = true
+
+[plugins."typescript-lsp@claude-plugins-official"]
+enabled = true
+
+[plugins."codex@codex-plugin-cc"]
+enabled = true
+
+[plugins."dev-browser@dev-browser-marketplace"]
+enabled = true
+
+[plugins."bear-mcp@productivity-tools"]
+enabled = true
+
+[plugins."things-mcp@productivity-tools"]
+enabled = true
+
+[plugins."ui-ux-pro-max@ui-ux-pro-max-skill"]
+enabled = true
+
+[plugins."rust-analyzer-lsp@claude-plugins-official"]
+enabled = true
+
+[features]
+js_repl = false
+
+[mcp_servers.node_repl]
+args = []
+command = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node_repl"
+startup_timeout_sec = 120
+
+[mcp_servers.node_repl.env]
+NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
+NODE_REPL_NODE_MODULE_DIRS = "/Applications/Codex.app/Contents/Resources/cua_node/lib/node_modules"
+NODE_REPL_NODE_PATH = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node"
+NODE_REPL_TRUSTED_CODE_PATHS = "/Users/kit/.codex"
+CODEX_HOME = "/Users/kit/.codex"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "97669f77b3ca7114a2df05d55646416ea34b28100c07213ef9f643803449ef2f"
+BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
+NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
+NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
+BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
+BROWSER_USE_CODEX_APP_VERSION = "26.623.141536"
+CODEX_CLI_PATH = "/Applications/Codex.app/Contents/Resources/codex"
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+BASH_MAX_OUTPUT_LENGTH = "100000"
+CLAUDE_CODE_ATTRIBUTION_HEADER = "0"
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = "300000"
+CLAUDE_CODE_COORDINATOR_MODE = "1"
+CLAUDE_CODE_DISABLE_1M_CONTEXT = "1"
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1"
+CLAUDE_CODE_NO_FLICKER = "1"
+CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = "5"
+ENABLE_TOOL_SEARCH = "1"
+TMPDIR = "/tmp/claude"
+
+[desktop]
+conversationDetailMode = "STEPS_COMMANDS"
+ambient-suggestions-enabled = true
+enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
+
+[desktop.open-in-target-preferences]
+global = "cursor"
+
+[desktop.open-in-target-preferences.perPath]
+"/home/k-kit" = "cursor"
+
+[hooks.state]
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:7177f97849c44fd98d1a88f81d79bc601196b5ad6fe68cedd9283aa93307d7a6"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:1:0"]
+trusted_hash = "sha256:958e833c61ed8b0429998891a0bde7a871923363d47bdbe8185ede45456943c3"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:1:1"]
+trusted_hash = "sha256:e0e24099e7bd3f4752a5c04e9b24ac9b44a878f007c83ebe11152904814bd24c"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:1:2"]
+trusted_hash = "sha256:d86a77904e92f101005731b729f2152fa5af144c605c75c0cc9c044f8f19a45f"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:1:3"]
+trusted_hash = "sha256:340e6bdd8a9cf311a0f4aec0ef36f63f67d8326611a22e30ef7d21460eabfc07"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:1:4"]
+trusted_hash = "sha256:9b8a6116697919fd57585170a1fd509adefd31fc9692a9d2be87296cfc9dc689"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:1:5"]
+trusted_hash = "sha256:46a52b382adb811e2f0d725bd0862adb6d74d793c0d72e9d84b4c538e336272d"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:2:0"]
+trusted_hash = "sha256:456fa5d3ddb6203aa0f441210ab93cf8000327ff2f530a5b7905fe12f4fc952b"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:3:0"]
+trusted_hash = "sha256:e676c4ac927b10b53d98179e8024ce5243514bf86361c0c2f52892a7e5486fe8"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:4:0"]
+trusted_hash = "sha256:5afdd18bdec1daa8cf4e68f4846cf1e970bbdeae96ac9ab62cccc25dfcf0e5d8"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:5:0"]
+trusted_hash = "sha256:69580a507e233b96a92d4dbef10efa7ec94265e76a0c3f48f9605ce0397b080e"
+
+[hooks.state."/Users/kit/.codex/hooks.json:pre_tool_use:6:0"]
+trusted_hash = "sha256:08a697c447612775fec6a433fa1999e4ecebf7905aaa86d5213249f02e2b34ba"
+
+[hooks.state."/Users/kit/.codex/hooks.json:permission_request:0:0"]
+trusted_hash = "sha256:f0e7f95c105c44145cb12e3f778a04456cbe8cdb43549aa7e8a015a636040298"
+
+[hooks.state."/Users/kit/.codex/hooks.json:permission_request:0:1"]
+trusted_hash = "sha256:5a1874d294d438ab6d7fc9d27068d8d6be1342b5604b67d6f510bad7d09e44ec"
+
+[hooks.state."/Users/kit/.codex/hooks.json:post_tool_use:0:0"]
+trusted_hash = "sha256:1a6566535db51a8cbadf8b00615d7428ab1fe18cd5ae7d655ddf2abe31b7ee2a"
+
+[hooks.state."/Users/kit/.codex/hooks.json:post_tool_use:1:0"]
+trusted_hash = "sha256:39d38c9cc7856bb2a760f28abc2907702c3f085d7738d1bbc483d914ebfee667"
+
+[hooks.state."/Users/kit/.codex/hooks.json:post_tool_use:2:0"]
+trusted_hash = "sha256:e9f923837a3eb025511fc798a825b26a21ba1331da504d5f0cacf3e2988f343e"
+
+[hooks.state."/Users/kit/.codex/hooks.json:post_tool_use:3:0"]
+trusted_hash = "sha256:0aa6214f36ecf6edfaa5a6d3f4776c5288030ce5894fb2273aab0be3887ab052"
+
+[hooks.state."/Users/kit/.codex/hooks.json:post_tool_use:4:0"]
+trusted_hash = "sha256:c7bbc5345f0226caf1cbad8c91b8d3159946c7c7e648b4bb024ef6af81470e19"
+
+[hooks.state."/Users/kit/.codex/hooks.json:post_tool_use:4:1"]
+trusted_hash = "sha256:c15d16868f90a12cb12ebabd9b7778a19b16ec0d82be800d876b6cf635260a37"
+
+[hooks.state."/Users/kit/.codex/hooks.json:post_tool_use:4:2"]
+trusted_hash = "sha256:31f741abdccc151eef65ee3bfa1c673a365bdecea2bb1224247a7533f9c8216d"
+
+[hooks.state."/Users/kit/.codex/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:42c949cec0aaa84c616da30ea1f4eaa77894b696983b90d89a99fb2f17b100bd"
+
+[hooks.state."/Users/kit/.codex/hooks.json:session_start:0:1"]
+trusted_hash = "sha256:b1e39879be83d8e15cbec92feeaa30b262881903dc7970528d00f450b281214e"
+
+[hooks.state."/Users/kit/.codex/hooks.json:session_start:0:2"]
+trusted_hash = "sha256:f73f3fc0c82e0b776262ce3daeef3bd0ea3fd70b825f41781e2f5fa6eb30997e"
+
+[hooks.state."/Users/kit/.codex/hooks.json:session_start:0:3"]
+trusted_hash = "sha256:950b4a0560b61ee38d062160bdec7233759e9bcfe1e7855921036c80cd73a2d8"
+
+[hooks.state."/Users/kit/.codex/hooks.json:session_start:0:4"]
+trusted_hash = "sha256:c6497a03c2ebd9252ce8b2380d663e075fdbb3f552a1faf3f6396beb39208574"
+
+[hooks.state."/Users/kit/.codex/hooks.json:session_start:0:5"]
+trusted_hash = "sha256:df5c05a004331fec5309dc03c25b00986bd39ac182f743461b1c321ebc466ee4"
+
+[hooks.state."/Users/kit/.codex/hooks.json:session_start:1:0"]
+trusted_hash = "sha256:4d2e9b89b1cb0a7ced3c04a21b91928b02da922ca6453c38caf13abd16bda27a"
+
+[hooks.state."/Users/kit/.codex/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:ccf8036f2f9a6c77b2d76c9fca5b0a1661d2239412dc3f469196902c919d4ba1"
+
+[hooks.state."/Users/kit/.codex/hooks.json:stop:0:0"]
+trusted_hash = "sha256:76a2d034ecc27b7e37c6aad47e6f0ec712608f82d6fc58acdb6bbd4aa80b49f5"
+
+[hooks.state."/Users/kit/.codex/hooks.json:stop:0:1"]
+trusted_hash = "sha256:e7ed3720ebafe8651de53359e7087fa36a9ccb1e2a04cd9a7f7293f5e8d97f4d"
+
+[hooks.state."/Users/kit/.codex/hooks.json:stop:0:2"]
+trusted_hash = "sha256:d98ad30c5790552e07ab1ca15d4eda269ca1fa693fde1e39b413743fb84a1553"
+
+[hooks.state."/Users/kit/.codex/hooks.json:stop:0:3"]
+trusted_hash = "sha256:55d2183bad24b333df6690081fcf70a7c4c898acd094aa7e9149719dfb574a99"
+
+[hooks.state."/Users/kit/.codex/hooks.json:stop:0:4"]
+trusted_hash = "sha256:2839c9ba1c8a499b08ba3f45a9ae12b4e3eb76adff0d1a618661dd02ee585902"
+
+[hooks.state."remember@claude-plugins-official:hooks/hooks.json:post_tool_use:0:0"]
+trusted_hash = "sha256:ef24c8247cbf33474955f9782a22e47c3a5542b9b7c60357eef4b92d32372835"
+
+[hooks.state."remember@claude-plugins-official:hooks/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:218ec4865b8e4413c4c9fafe9d9ee0b5e787b46e50a21b29787d5463c122af6b"
+
+[hooks.state."remember@claude-plugins-official:hooks/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:063ea45c81012b7c36a92e4f0de9e8aaf2dcefeac5c09c6b45466acc62695486"

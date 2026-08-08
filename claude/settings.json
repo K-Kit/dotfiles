@@ -46,6 +46,7 @@
   "cleanupPeriodDays": 999999,
   "effortLevel": "high",
   "enabledPlugins": {
+    "bear-mcp@productivity-tools": true,
     "claude-md-management@claude-plugins-official": true,
     "code-simplifier@claude-plugins-official": true,
     "code@ai-safety-plugins": true,
