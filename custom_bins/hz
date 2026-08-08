@@ -11,6 +11,8 @@
 #       --user k-kit           user for the ssh config entry
 #       --idle-shutdown        OPT-IN auto-poweroff when idle (default OFF)
 #       --idle-hours N         idle threshold in hours, implies --idle-shutdown (default 2)
+#   hz up <name> [create options]              Shortcut: create + ssh-add with 2h
+#                                              idle-shutdown; implies --yes (bills!)
 #   hz delete <server> --yes                   Delete server + its ssh config entries
 #   hz ssh-add <server> [--user k-kit|root] [--alias <Host>]
 #                                              Upsert Host block in ~/.ssh/config
@@ -403,12 +405,16 @@ cmd_poweron() {
 case "${1:-}" in
     list) shift; cmd_list "$@" ;;
     create) shift; cmd_create "$@" ;;
+    up) shift; cmd_create "$@" --idle-shutdown --yes ;;
     delete) shift; cmd_delete "$@" ;;
     ssh-add) shift; cmd_ssh_add "$@" ;;
     ssh-sync) shift; cmd_ssh_sync "$@" ;;
     ssh-rm) shift; cmd_ssh_rm "$@" ;;
     idle) shift; cmd_idle "$@" ;;
     poweron) shift; cmd_poweron "$@" ;;
+    # hidden helpers for shell completion (config/completions.sh)
+    _servers) require_deps; ensure_token; hcloud server list -o json | jq -r '.[].name' ;;
+    _aliases) managed_aliases ;;
     -h|--help|help|"") usage ;;
     *) die "unknown command '${1}' (see hz --help)" ;;
 esac

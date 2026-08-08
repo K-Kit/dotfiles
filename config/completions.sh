@@ -27,3 +27,67 @@ _tmux_sessions() {
     compadd -a sessions
 }
 compdef _tmux_sessions taa tad tdel
+
+# hz (Hetzner server manager) completion — custom_bins/hz
+# Server names come from the API via the hidden `hz _servers` helper (needs
+# the fnox token; ~1 API round-trip per tab), aliases from ~/.ssh/config.
+_hz() {
+    local -a subcmds
+    subcmds=(
+        'list:servers with status, ip, type, idle label'
+        'create:create server + ssh-add (requires --yes)'
+        'up:shortcut — create + ssh-add with 2h idle-shutdown, implies --yes'
+        'delete:delete server + its ssh entries (requires --yes)'
+        'ssh-add:upsert Host block in ~/.ssh/config'
+        'ssh-sync:Host entry per running server'
+        'ssh-rm:remove an hz-managed Host block'
+        'idle:manage on-box idle-shutdown watchdog'
+        'poweron:wake a powered-off server'
+    )
+    if (( CURRENT == 2 )); then
+        _describe 'hz command' subcmds
+        return
+    fi
+    local -a opts
+    case "${words[2]}" in
+        create|up)
+            opts=(--type --image --ssh-key --user --idle-shutdown --idle-hours --yes)
+            compadd -a opts
+            ;;
+        ssh-add)
+            if [[ "${words[CURRENT-1]}" == "--user" ]]; then
+                compadd k-kit root
+            elif [[ "${words[CURRENT]}" == -* ]]; then
+                opts=(--user --alias); compadd -a opts
+            else
+                compadd -- ${(f)"$(hz _servers 2>/dev/null)"}
+            fi
+            ;;
+        delete)
+            if [[ "${words[CURRENT]}" == -* ]]; then
+                compadd -- --yes
+            else
+                compadd -- ${(f)"$(hz _servers 2>/dev/null)"}
+            fi
+            ;;
+        poweron)
+            compadd -- ${(f)"$(hz _servers 2>/dev/null)"}
+            ;;
+        ssh-rm)
+            compadd -- ${(f)"$(hz _aliases 2>/dev/null)"}
+            ;;
+        ssh-sync)
+            compadd -- --dry-run
+            ;;
+        idle)
+            if (( CURRENT == 3 )); then
+                compadd enable disable status
+            elif [[ "${words[CURRENT]}" == -* ]]; then
+                compadd -- --hours
+            else
+                compadd -- ${(f)"$(hz _servers 2>/dev/null)"}
+            fi
+            ;;
+    esac
+}
+compdef _hz hz

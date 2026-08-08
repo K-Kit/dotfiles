@@ -157,6 +157,7 @@ Injected when resolvable: `TAILSCALE_AUTH_KEY`, `BWS_TOKEN` (add `BWS_TOKEN` to 
 hz list                                   # name, status, ipv4, type, idle label
 hz create dev-box --yes                   # create (cx22/ubuntu-24.04) + ssh-add; --yes required — it bills
 hz create dev-box --yes --idle-shutdown   # + auto-poweroff after 2h idle (tune: --idle-hours N)
+hz up dev-box                             # shortcut for the line above — implies --yes (bills!)
 hz ssh-add dev-box --user root --alias hz-1
 hz ssh-sync --dry-run                     # Host entry per running server; flags stale entries
 hz idle enable dev-box --hours 2          # retrofit the watchdog onto an existing server
