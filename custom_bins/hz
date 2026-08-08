@@ -3,9 +3,19 @@
 #
 # Usage:
 #   hz list                                    Servers: name, status, ipv4, type, idle
+#   hz small|medium|max <name>                 Size presets — create + ssh-add with
+#                                              2h idle-shutdown, ready to `ssh <name>`:
+#       small    cx23    2 vCPU shared    /   4 GB /  40 GB   EUR 0.0104/h  (~6.49/mo)
+#       medium   cx43    8 vCPU shared    /  16 GB / 160 GB   EUR 0.0296/h  (~18.49/mo)
+#       max      ccx63  48 vCPU dedicated / 192 GB / 960 GB   EUR 1.6138/h  (~1007/mo)
+#     small/medium imply --yes; max needs an explicit --yes (155x small's rate).
+#     Any create option overrides the preset: hz medium box --idle-hours 4
+#   hz up <name> [create options]              Like the presets but with the bare
+#                                              `create` default type; implies --yes
 #   hz create <name> --yes [options]           Create server (cloud-init via
 #                                              hetzner-user-data.sh) + ssh-add
 #       --type cx23            server type (hcloud server-type list)
+#       --location hel1        location (hel1/fsn1/nbg1 EU, ash/hil US, sin APAC)
 #       --image ubuntu-24.04   OS image
 #       --ssh-key <name>       hcloud SSH key (auto-picked when exactly one exists)
 #       --user k-kit           user for the ssh config entry
@@ -32,7 +42,8 @@
 # ~/.ssh/config edits are confined to '# BEGIN hz <alias>' ... '# END hz <alias>'
 # blocks; the pre-hz config is backed up once to ~/.ssh/config.hz-backup.
 #
-# Env overrides: HZ_SSH_CONFIG (default ~/.ssh/config), HZ_SSH_USER (default k-kit)
+# Env overrides: HZ_SSH_CONFIG (default ~/.ssh/config), HZ_SSH_USER (default k-kit),
+# HZ_LOCATION (default hel1)
 
 set -euo pipefail
 
@@ -45,6 +56,28 @@ IDLE_LABEL="dotfiles.idle-shutdown"
 SSH_CONFIG="${HZ_SSH_CONFIG:-$HOME/.ssh/config}"
 SSH_BACKUP="${SSH_CONFIG}.hz-backup"
 DEFAULT_USER="${HZ_SSH_USER:-k-kit}"
+DEFAULT_LOCATION="${HZ_LOCATION:-hel1}"
+
+# Size presets: type + one-line spec. Prices are EUR at hel1, checked against
+# `hcloud server-type list` on 2026-08-08 — they drift, so treat them as a
+# rough guide and re-check with `hcloud server-type describe <type>`.
+# x86 shared for small/medium (matches the existing fleet); ARM (cax*) is
+# cheaper per core but the dotfiles bootstrap is only exercised on x86.
+preset_type() {
+    case "$1" in
+        small)  echo "cx23" ;;
+        medium) echo "cx43" ;;
+        max)    echo "ccx63" ;;
+    esac
+}
+
+preset_spec() {
+    case "$1" in
+        small)  echo "2 vCPU shared / 4 GB / 40 GB — EUR 0.0104/h (~6.49/mo)" ;;
+        medium) echo "8 vCPU shared / 16 GB / 160 GB — EUR 0.0296/h (~18.49/mo)" ;;
+        max)    echo "48 vCPU dedicated / 192 GB / 960 GB — EUR 1.6138/h (~1007/mo)" ;;
+    esac
+}
 
 usage() {
     awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' "$0"
@@ -245,11 +278,12 @@ cmd_ssh_rm() {
 }
 
 cmd_create() {
-    local name="" type="cx23" image="ubuntu-24.04" sshkey="" user="$DEFAULT_USER"
-    local idle=0 hours=2 yes=0
+    local name="" type="cpx42" image="ubuntu-24.04" sshkey="" user="$DEFAULT_USER"
+    local location="$DEFAULT_LOCATION" idle=0 hours=2 yes=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) type="${2:?}"; shift 2 ;;
+            --location) location="${2:?}"; shift 2 ;;
             --image) image="${2:?}"; shift 2 ;;
             --ssh-key) sshkey="${2:?}"; shift 2 ;;
             --user) user="${2:?}"; shift 2 ;;
@@ -261,7 +295,7 @@ cmd_create() {
             *) [[ -n "$name" ]] && die "create: one server name only"; name="$1"; shift ;;
         esac
     done
-    [[ -n "$name" ]] || die "usage: hz create <name> --yes [--type t] [--image i] [--ssh-key k] [--idle-shutdown] [--idle-hours N]"
+    [[ -n "$name" ]] || die "usage: hz create <name> --yes [--type t] [--location l] [--image i] [--ssh-key k] [--idle-shutdown] [--idle-hours N]"
     [[ "$hours" =~ ^[0-9]+$ && "$hours" -ge 1 ]] || die "create: --idle-hours must be a positive integer"
     [[ -x "$USER_DATA_SCRIPT" ]] || die "missing $USER_DATA_SCRIPT"
     [[ -f "$IDLE_INSTALLER" ]] || die "missing $IDLE_INSTALLER"
@@ -280,7 +314,7 @@ cmd_create() {
     fi
 
     if [[ "$yes" != "1" ]]; then
-        echo "hz: would create (paid!): name=$name type=$type image=$image ssh-key=$sshkey idle-shutdown=$([[ $idle == 1 ]] && echo "${hours}h" || echo off)"
+        echo "hz: would create (paid!): name=$name type=$type location=$location image=$image ssh-key=$sshkey idle-shutdown=$([[ $idle == 1 ]] && echo "${hours}h" || echo off)"
         die "refusing to create a paid server without --yes"
     fi
 
@@ -300,9 +334,9 @@ cmd_create() {
         label_args=(--label "$IDLE_LABEL=${hours}h")
     fi
 
-    echo "hz: creating $name ($type, $image, key=$sshkey)..."
-    hcloud server create --name "$name" --type "$type" --image "$image" \
-        --ssh-key "$sshkey" --user-data-from-file "$ud" \
+    echo "hz: creating $name ($type, $location, $image, key=$sshkey)..."
+    hcloud server create --name "$name" --type "$type" --location "$location" \
+        --image "$image" --ssh-key "$sshkey" --user-data-from-file "$ud" \
         ${label_args[@]+"${label_args[@]}"}
     rm -f "$ud"
     trap - EXIT
@@ -320,6 +354,25 @@ cmd_create() {
         echo "  # box powers off after ${hours}h idle — wake: hz poweron $name; inhibit: touch ~/.keep-alive"
     }
     return 0
+}
+
+cmd_preset() { # preset-name <server-name> [create options...]
+    local preset="$1"; shift
+    local type spec
+    type="$(preset_type "$preset")"
+    spec="$(preset_spec "$preset")"
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && usage
+    [[ -n "${1:-}" ]] || die "usage: hz $preset <name>   ($type — $spec)"
+
+    # `max` costs ~155x `small` per hour — no implied --yes for that one.
+    local -a gate=(--yes)
+    if [[ "$preset" == "max" ]]; then
+        gate=()
+        printf 'hz: %s = %s — %s\n' "$preset" "$type" "$spec" >&2
+    fi
+    echo "hz: preset $preset -> $type ($spec)" >&2
+    # preset flags first so a user-supplied --type/--idle-hours still wins
+    cmd_create --type "$type" --idle-shutdown ${gate[@]+"${gate[@]}"} "$@"
 }
 
 cmd_delete() {
@@ -400,15 +453,21 @@ cmd_poweron() {
     hcloud server poweron "$name"
 }
 
+p=""
 case "${1:-}" in
     list) shift; cmd_list "$@" ;;
     create) shift; cmd_create "$@" ;;
+    up) shift; cmd_create --idle-shutdown --yes "$@" ;;
+    small|medium|max) p="$1"; shift; cmd_preset "$p" "$@" ;;
     delete) shift; cmd_delete "$@" ;;
     ssh-add) shift; cmd_ssh_add "$@" ;;
     ssh-sync) shift; cmd_ssh_sync "$@" ;;
     ssh-rm) shift; cmd_ssh_rm "$@" ;;
     idle) shift; cmd_idle "$@" ;;
     poweron) shift; cmd_poweron "$@" ;;
+    # hidden helpers for shell completion (config/completions.sh)
+    _servers) require_deps; ensure_token; hcloud server list -o json | jq -r '.[].name' ;;
+    _aliases) managed_aliases ;;
     -h|--help|help|"") usage ;;
     *) die "unknown command '${1}' (see hz --help)" ;;
 esac

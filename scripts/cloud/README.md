@@ -131,7 +131,7 @@ hcloud server create \
     --user-data-from-file scripts/cloud/hetzner-cloud-init.yaml
 ```
 
-(`cx23` — 2 vCPU / 4 GB — is the entry CX type as of 2026-08; `cpx11` is cheaper still. The older `cx22` was retired and no longer accepts creates. Check `hcloud server-type list` for the current lineup, and note that CX types exist only in the EU locations.)
+(`cx23` — 2 vCPU / 4 GB — is the cheapest 4 GB shared-vCPU type as of 2026-08-08; `cpx11` is cheaper still. `cx22` is gone: retired, and it no longer accepts creates. The lineup changes, so check `hcloud server-type list`, and note that CX types exist only in the EU locations.)
 
 ### Secrets (optional, post-boot)
 
@@ -157,8 +157,13 @@ Injected when resolvable: `TAILSCALE_AUTH_KEY`, `BWS_TOKEN` (add `BWS_TOKEN` to 
 
 ```bash
 hz list                                   # name, status, ipv4, type, idle label
-hz create dev-box --yes                   # create (cx23/ubuntu-24.04) + ssh-add; --yes required — it bills
+hz small dev-box                          # preset: create + ssh-add + 2h idle-shutdown, then `ssh dev-box`
+hz medium dev-box                         # same, 8 vCPU / 16 GB
+hz max dev-box --yes                      # same, 48 dedicated vCPU / 192 GB (--yes required — 155x small's rate)
+hz medium dev-box --idle-hours 4          # any create option overrides the preset
+hz create dev-box --yes                   # no preset: bare defaults + ssh-add; --yes required — it bills
 hz create dev-box --yes --idle-shutdown   # + auto-poweroff after 2h idle (tune: --idle-hours N)
+hz up dev-box                             # shortcut for the line above — implies --yes (bills!)
 hz ssh-add dev-box --user root --alias hz-1
 hz ssh-sync --dry-run                     # Host entry per running server; flags stale entries
 hz idle enable dev-box --hours 2          # retrofit the watchdog onto an existing server
@@ -166,6 +171,16 @@ hz idle status dev-box                    # label + on-box watchdog state
 hz delete dev-box --yes                   # delete server + its ssh config entries
 hz poweron dev-box                        # wake a powered-off server
 ```
+
+#### Size presets
+
+| Preset | Type | Spec | EUR/h (hel1) | ~EUR/mo |
+|---|---|---|---|---|
+| `small` | `cx23` | 2 vCPU shared, 4 GB, 40 GB | 0.0104 | 6.49 |
+| `medium` | `cx43` | 8 vCPU shared, 16 GB, 160 GB | 0.0296 | 18.49 |
+| `max` | `ccx63` | 48 vCPU dedicated, 192 GB, 960 GB | 1.6138 | 1007 |
+
+All three create the server, add the `~/.ssh/config` entry, and enable the 2h idle-shutdown watchdog. `small` and `medium` imply `--yes`; `max` demands it explicitly, because an idle-shutdown failure there costs ~EUR 39/day rather than ~EUR 0.25. Prices are EUR at `hel1`, checked 2026-08-08 — re-check with `hcloud server-type describe <type>`, and edit `preset_type`/`preset_spec` in `custom_bins/hz` to change the lineup. x86 shared is deliberate: ARM (`cax*`) is cheaper per core, but the dotfiles bootstrap has only been exercised on x86. Default location is `hel1` (override with `--location` or `HZ_LOCATION`); note `cx*` types are EU-only, while `cpx*`/`ccx*` also serve `ash`/`hil`/`sin`.
 
 ### Idle auto-shutdown (opt-in, default OFF)
 
