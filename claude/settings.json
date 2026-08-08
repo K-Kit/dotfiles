@@ -731,7 +731,6 @@
         ]
       },
       {
-        "//": "Gating a hook off compact is only safe when EVERYTHING it does is redundant after a compaction, and that is a property of the hook body, not of the source. show_auth_account.sh and context_auto_apply.sh were tried here and moved back above: the former recomputes a near-limit warning from a mutable usage cache, and the latter runs the 6h marketplace sync and the stale-plugin-symlink cleanup — side effects, not display. Both now suppress only their static output when source=compact, which recovers the noise without dropping live work. check_git_root.sh is left because it is purely a warning; the accepted cost is that a mid-session CWD change stops being re-warned after a compact. WARNING, this matcher IS a four-value allowlist despite reading like an exclusion of compact: SessionStart currently emits exactly startup, resume, clear, compact and fork, so today it excludes compact and nothing else, but a source added in a future release would be silently skipped here with no error and must be added by hand. Said explicitly because a comment asserting a safety property the code does not have is what hid the consent bug in issue #55.",
         "matcher": "startup|clear|resume|fork",
         "hooks": [
           {
@@ -799,17 +798,17 @@
     "padding": 1
   },
   "enabledPlugins": {
-    "claude-md-management@claude-plugins-official": false,
-    "code-simplifier@claude-plugins-official": false,
+    "claude-md-management@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
     "code@ai-safety-plugins": true,
     "codex@codex-plugin-cc": true,
-    "commit-commands@claude-plugins-official": false,
-    "context7@claude-plugins-official": false,
+    "commit-commands@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
     "core@ai-safety-plugins": true,
-    "frontend-design@claude-plugins-official": false,
+    "frontend-design@claude-plugins-official": true,
     "hookify@claude-plugins-official": true,
     "llms-fetch-mcp@alignment-hive": true,
-    "playground@claude-plugins-official": false,
+    "playground@claude-plugins-official": true,
     "playwright@claude-plugins-official": true,
     "pyright-lsp@claude-plugins-official": true,
     "remember@claude-plugins-official": true,
@@ -817,13 +816,22 @@
     "rust-analyzer-lsp@claude-plugins-official": true,
     "security-guidance@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,
-    "telegram@claude-plugins-official": false,
+    "telegram@claude-plugins-official": true,
     "typescript-lsp@claude-plugins-official": true,
     "ui-ux-pro-max@ui-ux-pro-max-skill": true,
     "viz@ai-safety-plugins": true,
     "workflow@ai-safety-plugins": true,
     "writing@ai-safety-plugins": true,
-    "dev-browser@dev-browser-marketplace": true
+    "dev-browser@dev-browser-marketplace": true,
+    "plugin-dev@claude-plugins-official": true,
+    "things-mcp@productivity-tools": true,
+    "ralph-loop@claude-plugins-official": true,
+    "huggingface-skills@claude-plugins-official": true,
+    "swift-lsp@claude-plugins-official": true,
+    "imessage@claude-plugins-official": true,
+    "figma@claude-plugins-official": true,
+    "bear-mcp@productivity-tools": true,
+    "gopls-lsp@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
     "ai-safety-plugins": {

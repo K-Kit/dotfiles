@@ -9,9 +9,12 @@ struct InstalledPlugins {
 
 /// Load plugin registry: short_name -> qualified_id.
 /// Handles collisions by keeping both with full qualified IDs.
+/// Missing installed_plugins.json (fresh machine, pre-sync) → empty registry.
 pub fn load_registry() -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
     let path = expand_home(super::INSTALLED_PLUGINS_PATH);
-    let content = std::fs::read_to_string(&path)?;
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Ok(BTreeMap::new());
+    };
     let data: InstalledPlugins = serde_json::from_str(&content)?;
     let plugins = data.plugins.unwrap_or_default();
     let mut registry: BTreeMap<String, String> = BTreeMap::new();

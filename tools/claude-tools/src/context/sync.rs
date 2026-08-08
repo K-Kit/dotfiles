@@ -171,7 +171,15 @@ pub fn run(verbose: bool, prune: bool) -> Result<(), Box<dyn std::error::Error>>
 /// delete their cache directories so Phase 3 reinstalls them.
 fn refresh_stale_caches(wanted: &HashSet<String>, verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
     let installed_path = expand_home(super::INSTALLED_PLUGINS_PATH);
-    let content = std::fs::read_to_string(&installed_path)?;
+    // Fresh machine / pre-first-install: nothing to refresh. Later phases already
+    // treat a missing file as {"plugins": {}} — match that here instead of
+    // aborting sync with ENOENT after marketplaces already updated.
+    let Ok(content) = std::fs::read_to_string(&installed_path) else {
+        if verbose {
+            println!("  No installed_plugins.json yet — skipping cache refresh");
+        }
+        return Ok(());
+    };
     let mut data: serde_json::Value = serde_json::from_str(&content)?;
 
     let marketplaces_dir = expand_home(super::MARKETPLACES_DIR);
