@@ -1,8 +1,108 @@
 model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 service_tier = "fast"
+notify = [
+    "/Users/kit/dotfiles/codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient",
+    "turn-ended",
+]
+sandbox_mode = "workspace-write"
+
 [projects."/Users/kit/dotfiles"]
 trust_level = "trusted"
 
 [tui.model_availability_nux]
 "gpt-5.6-sol" = 1
+
+[marketplaces.openai-bundled]
+last_updated = "2026-08-08T15:23:11Z"
+source_type = "local"
+source = "/Users/kit/dotfiles/codex/.tmp/bundled-marketplaces/openai-bundled"
+
+[marketplaces.openai-primary-runtime]
+last_updated = "2026-08-08T15:23:51Z"
+source_type = "local"
+source = "/Users/kit/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
+
+[marketplaces.ai-safety-plugins]
+last_updated = "2026-08-08T15:29:56Z"
+source_type = "git"
+source = "https://github.com/yulonglin/ai-safety-plugins.git"
+
+[plugins."browser@openai-bundled"]
+enabled = true
+
+[plugins."chrome@openai-bundled"]
+enabled = true
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[plugins."pdf@openai-primary-runtime"]
+enabled = true
+
+[plugins."spreadsheets@openai-primary-runtime"]
+enabled = true
+
+[plugins."presentations@openai-primary-runtime"]
+enabled = true
+
+[plugins."template-creator@openai-primary-runtime"]
+enabled = true
+
+[plugins."code@ai-safety-plugins"]
+enabled = true
+
+[plugins."core@ai-safety-plugins"]
+enabled = true
+
+[plugins."research@ai-safety-plugins"]
+enabled = true
+
+[plugins."viz@ai-safety-plugins"]
+enabled = true
+
+[plugins."workflow@ai-safety-plugins"]
+enabled = true
+
+[plugins."writing@ai-safety-plugins"]
+enabled = true
+
+[features]
+js_repl = false
+
+[mcp_servers.node_repl]
+args = []
+command = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node_repl"
+startup_timeout_sec = 120
+
+[mcp_servers.node_repl.env]
+NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
+NODE_REPL_NODE_MODULE_DIRS = "/Applications/Codex.app/Contents/Resources/cua_node/lib/node_modules"
+NODE_REPL_NODE_PATH = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node"
+NODE_REPL_TRUSTED_CODE_PATHS = "/Users/kit/.codex"
+CODEX_HOME = "/Users/kit/.codex"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "97669f77b3ca7114a2df05d55646416ea34b28100c07213ef9f643803449ef2f"
+BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
+NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
+NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
+BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
+BROWSER_USE_CODEX_APP_VERSION = "26.623.141536"
+CODEX_CLI_PATH = "/Applications/Codex.app/Contents/Resources/codex"
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+BASH_MAX_OUTPUT_LENGTH = "100000"
+CLAUDE_CODE_ATTRIBUTION_HEADER = "0"
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = "300000"
+CLAUDE_CODE_COORDINATOR_MODE = "1"
+CLAUDE_CODE_DISABLE_1M_CONTEXT = "1"
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1"
+CLAUDE_CODE_NO_FLICKER = "1"
+CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = "5"
+ENABLE_TOOL_SEARCH = "1"
+TMPDIR = "/tmp/claude"

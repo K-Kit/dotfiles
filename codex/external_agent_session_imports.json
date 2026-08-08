@@ -1,0 +1,179 @@
+{
+  "records": [
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/c724a7fb-05b8-4833-8283-eb3b17a59159.jsonl",
+      "content_sha256": "c097dbe899c9534853cf06a3383d7b487f5624c7d04b4db36c791857f0763073",
+      "imported_thread_id": "019fe1fe-b86f-7361-8e26-f520e77999b9",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786201851178212567
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/dc2ae22a-bfd0-407b-84dc-5362532656ac.jsonl",
+      "content_sha256": "6cb5862348bb1b6c7006d8d6470fe675ec03f008dbd965cf5da17a44c84572bf",
+      "imported_thread_id": "019fe1fe-b880-7222-989f-a47293941555",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786202046636000000
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/30100276-d911-4832-8e4f-0d87fc55a519.jsonl",
+      "content_sha256": "be482e2236f6dbf6c969d6e678c84b9e1401191b69300d5040c9379328a611dc",
+      "imported_thread_id": "019fe1fe-b881-77d2-b1b1-99473fd3dcbe",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786202992063620785
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles--claude-worktrees-coder-dev/9c630987-424b-4279-b664-5688b43730a8.jsonl",
+      "content_sha256": "af406a12272f2c12c53d874cddf8cc7ceb3db0ab1ba7f2d22221f6a3e04ba154",
+      "imported_thread_id": "019fe1fe-b883-73f2-9cd2-f3cd5c9cb787",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786202838745000000
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles--claude-worktrees-coder-dev/b3889d41-7459-40a7-8ee1-11d08e068052.jsonl",
+      "content_sha256": "2d7a439c1b3d5fcd0e4955accdd55d3fa92df85984c23b76963f1a4b3eacc42d",
+      "imported_thread_id": "019fe1fe-b8bf-7852-a52b-b1163f07a0d8",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786192705829013780
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles--claude-worktrees-coder-dev/595c345b-14f4-4a86-9bd5-6c286e71a424.jsonl",
+      "content_sha256": "fec169b4cb4e347203dd8a986d626b41541e8b3b599a48536242e1c7c0d7e5b3",
+      "imported_thread_id": "019fe1fe-b8c9-77f3-845a-b47c0779cbb0",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786192673132739534
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles--claude-worktrees-coder-dev/6d3e9f28-f14b-4773-82d1-ccf90bd88a14.jsonl",
+      "content_sha256": "a8b5783519c0f32f8627accb10b897cdf4409161e0a2bb635ad85d0a689845bc",
+      "imported_thread_id": "019fe1fe-b8c2-7383-b2f7-6b21040572ea",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786192699142850145
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles--claude-worktrees-dotf/221dfa5e-7713-4f3d-92a9-3785737fcbdd.jsonl",
+      "content_sha256": "fa470e30c94c277f70036d06efe81e48657c1a98df70193d70b19df911584f84",
+      "imported_thread_id": "019fe1fe-b8c4-7db2-b3fc-965058e7b407",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786200589646000000
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/ssh-757a68e5-0ab5-4fed-937b-6cd870299a08/757a68e5-0ab5-4fed-937b-6cd870299a08.jsonl",
+      "content_sha256": "a84abcf2083052031ce226cc445e958c08298386ab5a36b513fd087553ab8cc8",
+      "imported_thread_id": "019fe1fe-b991-7a93-a73c-0e5cad17d4f6",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786202533001996231
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles--claude-worktrees-coder-dev/14bf9013-c2e8-46e2-85cc-d92cb554751b.jsonl",
+      "content_sha256": "c7434e34f22595490ac406461238dccabbc4b16f2b6343f0fd4b74c893adb0c8",
+      "imported_thread_id": "019fe1fe-ba03-74c3-94d4-11d6c6ed935c",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786192652830434783
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles--claude-worktrees-coder-dev/3143ff47-706b-4563-8640-0759aee8b1c8.jsonl",
+      "content_sha256": "f947b941f719937d25f32796f5229e3aed8238e3909129bf7981f36e57af28aa",
+      "imported_thread_id": "019fe1fe-ba10-7fd1-8062-9dc1d9202df6",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786192607669595621
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/d817f3f0-673a-41ab-91ad-e47d5ae9808c.jsonl",
+      "content_sha256": "65dceba3645b446847f1540a6054b55f2159c92e2e1385bcff1e593c5e0e0763",
+      "imported_thread_id": "019fe1fe-ba1b-7d50-9d8a-46986e4a5ebf",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786192072477000000
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles--claude-worktrees-dotf/dcb43bab-5a98-4299-9b72-d93a9cb899fe.jsonl",
+      "content_sha256": "e5bef01d2f7adfce9733b686bb8661126ec611034c0b332760c46550257565c2",
+      "imported_thread_id": "019fe1fe-ba10-7fd1-8062-9db9c00d066f",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786192281195754323
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles--claude-worktrees-dotf/e5d17a38-8fd5-42e6-8cc9-ae3f108611e8.jsonl",
+      "content_sha256": "1f4047db70cc7c6ac71dcd67201e48fef31a3dff25f89e565fda4106e3203233",
+      "imported_thread_id": "019fe1fe-ba13-76f0-b429-26518d211a23",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786192076983712622
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/21c7fbc2-b854-4043-a323-1df895bc9fb9.jsonl",
+      "content_sha256": "8f3b7e390ca3e9f246889916bad7fa02ca800ad44da9a9b0930c4034ba8eb9c2",
+      "imported_thread_id": "019fe1fe-ba51-7091-85b5-5cdbcd7ae974",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786189561656688738
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/ad526ecb-4d91-4fdc-acda-07f6b6038b1e.jsonl",
+      "content_sha256": "967d5d0f22d18283847a731a1c05470ece081fbdb12c5341e79c28bec6e235d4",
+      "imported_thread_id": "019fe1fe-ba84-7952-9e3a-4967e0944379",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786188891041662764
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/5b630b98-abbc-4ea1-ab3d-7ac2bd855c1e.jsonl",
+      "content_sha256": "49224dd5b3f54bba0d267654dd7e18c4557933ae1be1a995b0a80626cfab6661",
+      "imported_thread_id": "019fe1fe-ba86-7282-8b8e-d086cdcf95ca",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786188387353518217
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/c3c5ea42-dc75-4252-8d4a-2cafc5191dc9.jsonl",
+      "content_sha256": "f05f754783973d340a3a40168a0dbca4f998f88179a7902a4c28d5bf176a9522",
+      "imported_thread_id": "019fe1fe-ba86-7282-8b8e-d096b2bd915f",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786187676361712534
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/ea7232f8-2a0e-4037-a863-d35b2bd983e2.jsonl",
+      "content_sha256": "869728c73fec6884555a8b3533174496587f1362bf822ff5832160a404953e00",
+      "imported_thread_id": "019fe1fe-ba86-7282-8b8e-d07a1e6ad617",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786187617675239174
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/021b07d7-f609-4d4c-ad1b-fb2a5a1c9432.jsonl",
+      "content_sha256": "7f1e93b8f365c37c1fda0e2ad9d87a4d609c91fe21089bb09e0504889c6d2365",
+      "imported_thread_id": "019fe1fe-baae-7952-aab5-6849885c2afa",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786187617578266845
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/619e7b90-bc27-4083-9ee6-033ab335bd36.jsonl",
+      "content_sha256": "417f19564c8ed0b677d682af22f042cb7c8cfff420568a19d09077a8f5d3a687",
+      "imported_thread_id": "019fe1fe-bac2-7b70-aafa-06d79b4400e0",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786187617502234450
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/a6804298-df52-48ec-a019-64c7ff1e7c8f.jsonl",
+      "content_sha256": "70e6f55050f224e30f7c6ae8e4ffdf7fe6d4026f3f29d23fa54abd286e81ab9c",
+      "imported_thread_id": "019fe1fe-bad3-71e0-92fb-9ce89c13ca12",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786183692471289191
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/3bb2722e-eb41-444f-81b4-481e2d2c027f.jsonl",
+      "content_sha256": "46d6060b071b2a28632ca71486ebb185bacb5e91b7d6d55d5751b483e9323a62",
+      "imported_thread_id": "019fe1fe-bad2-75e2-8108-d9cf20819a64",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786187617422220736
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/103d97c8-fd18-42a0-a865-0f04f29470b7.jsonl",
+      "content_sha256": "e3794e9ce84fc6a8efe859ec13146cbb3134a13d6a1a04ec44c5f86074817d39",
+      "imported_thread_id": "019fe1fe-baeb-7f80-ad67-64e2bb6e853e",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786183006549432243
+    },
+    {
+      "source_path": "/Users/kit/dotfiles/claude/projects/-Users-kit-dotfiles/cb994430-fa6f-441a-a162-76ee8f83a914.jsonl",
+      "content_sha256": "66866be68b265a229f7fface234322796c7f6f51a8def1678b66ba1f135363a6",
+      "imported_thread_id": "019fe1fe-bad9-72c0-86db-86576dc4cf5e",
+      "imported_at": 1786202995,
+      "source_modified_at": 1786187617362070825
+    }
+  ]
+}
