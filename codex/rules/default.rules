@@ -496,7 +496,6 @@ prefix_rule(pattern=["/bin/zsh", "-lc", "GIT_EDITOR=true git diff --cached src/c
 prefix_rule(pattern=["/bin/zsh", "-lc", "GIT_EDITOR=true git commit -m \"Update workshop dates and PDFs\" -m \"- Update Sci4DL and Trustworthy AI deadlines\" -m \"- Refresh main PDFs and make compile.sh executable\""], decision="allow")
 prefix_rule(pattern=["/bin/zsh", "-lc", "GIT_EDITOR=true git push"], decision="allow")
 prefix_rule(pattern=["/bin/zsh", "-lc", "GIT_EDITOR=true git pull --rebase"], decision="allow")
-prefix_rule(pattern=["bash", "-lc"], decision="allow")
 prefix_rule(pattern=["git", "add"], decision="allow")
 prefix_rule(pattern=["git", "commit"], decision="allow")
 prefix_rule(pattern=["git", "worktree", "add"], decision="allow")
