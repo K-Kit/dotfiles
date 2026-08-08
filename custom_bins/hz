@@ -13,14 +13,23 @@
 #   hz up <name> [create options]              Like the presets but with the bare
 #                                              `create` default type; implies --yes
 #   hz create <name> --yes [options]           Create server (cloud-init via
-#                                              hetzner-user-data.sh) + ssh-add
+#                                              hetzner-user-data.sh) + ssh-add,
+#                                              then block until bootstrap ends
 #       --type cx23            server type (hcloud server-type list)
 #       --location hel1        location (hel1/fsn1/nbg1 EU, ash/hil US, sin APAC)
 #       --image ubuntu-24.04   OS image
 #       --ssh-key <name>       hcloud SSH key (auto-picked when exactly one exists)
 #       --user k-kit           user for the ssh config entry
+#       --branch main          dotfiles branch the box bootstraps from
 #       --idle-shutdown        OPT-IN auto-poweroff when idle (default OFF)
 #       --idle-hours N         idle threshold in hours, implies --idle-shutdown (default 2)
+#       --github-auth          OPT-IN: push `fnox get GITHUB_TOKEN` over SSH
+#                              after boot and run `gh auth login --with-token`
+#       --no-wait              return as soon as the server exists
+#       --timeout N            seconds to wait for bootstrap (default 900)
+#   hz wait <server> [--timeout N]             Block until cloud-init + the
+#                                              dotfiles bootstrap finish; report
+#                                              the verdict (and the log on error)
 #   hz delete <server> --yes                   Delete server + its ssh config entries
 #   hz ssh-add <server> [--user k-kit|root] [--alias <Host>]
 #                                              Upsert Host block in ~/.ssh/config
@@ -35,12 +44,18 @@
 # The token is exported to hcloud only — never printed.
 #
 # Idle shutdown is DEFAULT OFF. When enabled, the box runs `systemctl poweroff`
-# after N hours with no SSH connections (watchdog: scripts/cloud/
-# idle-shutdown-install.sh). Inhibit from on the box: `touch ~/.keep-alive`.
-# A powered-off server keeps its disk + IP (those still bill): `hz poweron <name>`.
+# after N hours with no activity — SSH, non-shell tmux panes, or a tty that
+# wrote recently (watchdog: scripts/cloud/idle-shutdown-install.sh). Inhibit
+# from on the box: `touch ~/.keep-alive`. A powered-off server keeps its disk
+# + IP (those still bill): `hz poweron <name>`.
 #
 # ~/.ssh/config edits are confined to '# BEGIN hz <alias>' ... '# END hz <alias>'
 # blocks; the pre-hz config is backed up once to ~/.ssh/config.hz-backup.
+#
+# GITHUB_TOKEN is never put in user-data: Hetzner's metadata service hands
+# user-data to every local user, so a PAT there is readable by anything running
+# on the box. `--github-auth` pushes it over SSH after boot instead, and stays
+# opt-in because it moves a credential onto a remote machine.
 #
 # Env overrides: HZ_SSH_CONFIG (default ~/.ssh/config), HZ_SSH_USER (default k-kit),
 # HZ_LOCATION (default hel1)
@@ -277,9 +292,111 @@ cmd_ssh_rm() {
     echo "hz: Host '$alias' ($status)"
 }
 
+# ── post-boot polling ──────────────────────────────────────────────────────
+# sshd refuses connections for the first ~20-30s of a fresh boot, so every
+# remote step here is a bounded retry loop rather than a single attempt, and
+# every one of them times out with an actionable message instead of hanging.
+
+ssh_root() { # ip cmd...  — non-interactive, short connect timeout
+    local ip="$1"; shift
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+        -o ConnectTimeout=10 -o LogLevel=ERROR "root@$ip" "$@"
+}
+
+cmd_wait() {
+    local name="" timeout=900
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --timeout) timeout="${2:?--timeout needs a value}"; shift 2 ;;
+            -h|--help) usage ;;
+            -*) die "wait: unknown option $1" ;;
+            *) [[ -n "$name" ]] && die "wait: one server only"; name="$1"; shift ;;
+        esac
+    done
+    [[ -n "$name" ]] || die "usage: hz wait <server> [--timeout N]"
+    [[ "$timeout" =~ ^[0-9]+$ && "$timeout" -ge 1 ]] || die "wait: --timeout must be a positive integer"
+    require_deps
+    ensure_token
+    local ip
+    ip="$(server_ip "$name")"
+    wait_for_bootstrap "$name" "$ip" "$timeout"
+}
+
+wait_for_bootstrap() { # name ip timeout-seconds
+    local name="$1" ip="$2" timeout="$3" deadline remaining verdict ci_rc
+    deadline=$(( $(date +%s) + timeout ))
+
+    echo "hz: waiting for '$name' ($ip) — sshd, then cloud-init (timeout ${timeout}s)"
+    until ssh_root "$ip" true >/dev/null 2>&1; do
+        if [[ "$(date +%s)" -ge "$deadline" ]]; then
+            echo "hz: sshd on $ip still unreachable after ${timeout}s — retry: hz wait $name" >&2
+            return 1
+        fi
+        sleep 5
+    done
+
+    # cloud-init's own --wait can outlast our budget, so cap it server-side.
+    # Exit 0/1/2 all mean "finished" (done / error / degraded) — a failed
+    # bootstrap is still a finish, and we must read the status file rather than
+    # treating it like a budget miss. Only timeout(1)'s 124 is "still going".
+    remaining=$(( deadline - $(date +%s) ))
+    [[ "$remaining" -lt 1 ]] && remaining=1
+    ci_rc=0
+    ssh_root "$ip" "timeout $remaining cloud-init status --wait" >/dev/null 2>&1 || ci_rc=$?
+    case "$ci_rc" in
+        0|1|2) ;;
+        124)
+            echo "hz: cloud-init has not finished within the budget — retry: hz wait $name" >&2
+            return 1 ;;
+        *)
+            echo "hz: could not wait on cloud-init (exit $ci_rc) — retry: hz wait $name" >&2
+            return 1 ;;
+    esac
+
+    verdict="$(ssh_root "$ip" 'cat /var/lib/dotfiles-bootstrap.status 2>/dev/null' 2>/dev/null || true)"
+    case "$verdict" in
+        ok)
+            echo "hz: '$name' is ready — ssh $name"
+            return 0 ;;
+        ""|unknown)
+            echo "hz: cloud-init finished but the dotfiles bootstrap left no verdict." >&2
+            echo "hz: check: ssh root@$ip tail -50 /var/log/dotfiles-bootstrap.log" >&2
+            return 1 ;;
+        *)
+            echo "hz: dotfiles bootstrap reported '$verdict' — last 30 log lines:" >&2
+            ssh_root "$ip" 'tail -30 /var/log/dotfiles-bootstrap.log' >&2 2>/dev/null || true
+            return 1 ;;
+    esac
+}
+
+push_github_token() { # ip user — OPT-IN; moves a PAT onto the remote box
+    local ip="$1" user="$2" tok
+    command -v fnox >/dev/null 2>&1 || {
+        echo "hz: --github-auth needs fnox — skipping (run 'gh auth login' on the box)" >&2
+        return 1
+    }
+    tok="$(FNOX_NON_INTERACTIVE=true fnox get GITHUB_TOKEN 2>/dev/null || true)"
+    [[ -n "$tok" ]] || {
+        echo "hz: 'fnox get GITHUB_TOKEN' returned nothing — skipping gh auth" >&2
+        return 1
+    }
+    # stdin, never argv or user-data: argv is world-readable via /proc and
+    # user-data is served to every local user by the metadata service
+    if printf '%s\n' "$tok" | ssh_root "$ip" \
+        "sudo -u '$user' -i gh auth login --with-token && sudo -u '$user' -i gh auth setup-git" \
+        >/dev/null 2>&1
+    then
+        echo "hz: gh authenticated for '$user' (token from fnox, pushed over SSH)"
+    else
+        echo "hz: gh auth login --with-token failed — run 'gh auth login' on the box" >&2
+        return 1
+    fi
+}
+
 cmd_create() {
     local name="" type="cpx42" image="ubuntu-24.04" sshkey="" user="$DEFAULT_USER"
     local location="$DEFAULT_LOCATION" idle=0 hours=2 yes=0
+    local branch="main" wait=1 timeout=900 ghauth=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) type="${2:?}"; shift 2 ;;
@@ -287,18 +404,32 @@ cmd_create() {
             --image) image="${2:?}"; shift 2 ;;
             --ssh-key) sshkey="${2:?}"; shift 2 ;;
             --user) user="${2:?}"; shift 2 ;;
+            --branch) branch="${2:?}"; shift 2 ;;
             --idle-shutdown) idle=1; shift ;;
             --idle-hours) hours="${2:?}"; idle=1; shift 2 ;;
+            --github-auth) ghauth=1; shift ;;
+            --no-wait) wait=0; shift ;;
+            --timeout) timeout="${2:?}"; shift 2 ;;
             --yes) yes=1; shift ;;
             -h|--help) usage ;;
             -*) die "create: unknown option $1" ;;
             *) [[ -n "$name" ]] && die "create: one server name only"; name="$1"; shift ;;
         esac
     done
-    [[ -n "$name" ]] || die "usage: hz create <name> --yes [--type t] [--location l] [--image i] [--ssh-key k] [--idle-shutdown] [--idle-hours N]"
+    [[ -n "$name" ]] || die "usage: hz create <name> --yes [--type t] [--location l] [--image i] [--ssh-key k] [--branch b] [--idle-shutdown] [--idle-hours N] [--github-auth] [--no-wait] [--timeout N]"
     [[ "$hours" =~ ^[0-9]+$ && "$hours" -ge 1 ]] || die "create: --idle-hours must be a positive integer"
+    [[ "$timeout" =~ ^[0-9]+$ && "$timeout" -ge 1 ]] || die "create: --timeout must be a positive integer"
     [[ -x "$USER_DATA_SCRIPT" ]] || die "missing $USER_DATA_SCRIPT"
     [[ -f "$IDLE_INSTALLER" ]] || die "missing $IDLE_INSTALLER"
+
+    # The --yes gate comes before require_deps/ensure_token on purpose: previewing
+    # what would be created should not need the hcloud CLI, a Hetzner token, or an
+    # API round-trip. ssh-key is the one field not yet resolved at this point.
+    if [[ "$yes" != "1" ]]; then
+        echo "hz: would create (paid!): name=$name type=$type location=$location image=$image ssh-key=${sshkey:-<auto>} branch=$branch idle-shutdown=$([[ $idle == 1 ]] && echo "${hours}h" || echo off) wait=$([[ $wait == 1 ]] && echo "${timeout}s" || echo off) github-auth=$([[ $ghauth == 1 ]] && echo on || echo off)"
+        die "refusing to create a paid server without --yes"
+    fi
+
     require_deps
     ensure_token
 
@@ -313,15 +444,10 @@ cmd_create() {
         fi
     fi
 
-    if [[ "$yes" != "1" ]]; then
-        echo "hz: would create (paid!): name=$name type=$type location=$location image=$image ssh-key=$sshkey idle-shutdown=$([[ $idle == 1 ]] && echo "${hours}h" || echo off)"
-        die "refusing to create a paid server without --yes"
-    fi
-
     local ud
     ud="$(mktemp "${TMPDIR:-/tmp}/hz-user-data.XXXXXX")"
     trap 'rm -f "$ud"' EXIT
-    "$USER_DATA_SCRIPT" > "$ud"
+    "$USER_DATA_SCRIPT" --branch "$branch" > "$ud"
 
     local -a label_args=()
     if [[ "$idle" == "1" ]]; then
@@ -345,15 +471,35 @@ cmd_create() {
     ip="$(server_ip "$name")"
     status="$(ssh_upsert "$name" "$ip" "$user" "$name")"
     echo "hz: Host '$name' -> $user@$ip ($status)"
+
+    if [[ "$wait" != "1" ]]; then
+        echo
+        echo "Next steps:"
+        echo "  hz wait $name                           # blocks until bootstrap finishes"
+        echo "  ssh $name                               # dotfiles user once it is done"
+        [[ "$idle" == "1" ]] && {
+            echo "  hz idle status $name                    # watchdog state (installed by cloud-init)"
+            echo "  # box powers off after ${hours}h idle — wake: hz poweron $name; inhibit: touch ~/.keep-alive"
+        }
+        return 0
+    fi
+
     echo
-    echo "Next steps:"
-    echo "  ssh root@$ip cloud-init status --wait   # blocks until first boot finishes"
-    echo "  ssh $name                               # dotfiles user once bootstrap is done"
-    [[ "$idle" == "1" ]] && {
-        echo "  hz idle status $name                    # watchdog state (installed by cloud-init)"
-        echo "  # box powers off after ${hours}h idle — wake: hz poweron $name; inhibit: touch ~/.keep-alive"
-    }
-    return 0
+    local rc=0
+    wait_for_bootstrap "$name" "$ip" "$timeout" || rc=$?
+    if [[ "$rc" == "0" && "$ghauth" == "1" ]]; then
+        push_github_token "$ip" "$user" || true
+    fi
+    if [[ "$rc" == "0" ]]; then
+        if [[ "$ghauth" == "1" ]]; then
+            echo "  remaining: claude  (OAuth login — cannot be automated)"
+        else
+            echo "  remaining: gh auth login  (or re-run with --github-auth); claude  (OAuth)"
+        fi
+        [[ "$idle" == "1" ]] && \
+            echo "  idle: powers off after ${hours}h — wake: hz poweron $name; inhibit: touch ~/.keep-alive"
+    fi
+    return "$rc"
 }
 
 cmd_preset() { # preset-name <server-name> [create options...]
@@ -457,6 +603,7 @@ p=""
 case "${1:-}" in
     list) shift; cmd_list "$@" ;;
     create) shift; cmd_create "$@" ;;
+    wait) shift; cmd_wait "$@" ;;
     up) shift; cmd_create --idle-shutdown --yes "$@" ;;
     small|medium|max) p="$1"; shift; cmd_preset "$p" "$@" ;;
     delete) shift; cmd_delete "$@" ;;
