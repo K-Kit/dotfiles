@@ -101,3 +101,53 @@ _hz() {
     esac
 }
 compdef _hz hz
+
+# dotf (dotfiles install/deploy front-end) completion — custom_bins/dotf
+# Component names come from `dotf components --names`, which parses the
+# registries in config.sh — so adding a component to the registry makes it
+# completable with no edit here.
+_dotf() {
+    local -a subcmds
+    subcmds=(
+        'setup:install then deploy — the first-run command'
+        'install:install dependencies (wraps install.sh)'
+        'deploy:deploy configurations (wraps deploy.sh)'
+        'status:platform, profile, and which components would run'
+        'doctor:check tools, symlinks and shell wiring'
+        'components:list registry components'
+        'update:git pull, optionally re-deploy'
+        'help:top-level help'
+    )
+    if (( CURRENT == 2 )); then
+        _describe 'dotf command' subcmds
+        return
+    fi
+
+    local -a comps opts
+    case "${words[2]}" in
+        install|deploy|setup)
+            comps=(${(f)"$(dotf components --names 2>/dev/null)"})
+            # After --only, bare component names; otherwise flags.
+            if (( ${words[(I)--only]} )) && [[ "${words[CURRENT]}" != -* ]]; then
+                compadd -a comps
+            else
+                opts=(--only --minimal --no-defaults --profile= --personal --server
+                      --cloud --non-interactive --allow-worktree --dry-run --help)
+                compadd -a opts
+                compadd -- ${comps[@]/#/--}
+                compadd -- ${comps[@]/#/--no-}
+            fi
+            ;;
+        components)
+            if (( CURRENT == 3 )); then
+                compadd install deploy all
+            else
+                compadd -- --names
+            fi
+            ;;
+        update)
+            compadd -- --deploy --force --dry-run
+            ;;
+    esac
+}
+compdef _dotf dotf
