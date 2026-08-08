@@ -1,0 +1,94 @@
+#cloud-config
+# Hetzner Cloud first-boot bootstrap for k-kit/dotfiles.
+#
+# Paste into the "Cloud config" box when creating a server in the Hetzner
+# console, or pass via `hcloud server create --user-data-from-file`.
+# See scripts/cloud/README.md § Hetzner Cloud.
+#
+# What it does:
+#   1. Writes identity config to /etc/dotfiles-bootstrap.env
+#   2. Runs create-user.sh (non-root user, SSH keys from GitHub + root's keys)
+#   3. Runs setup.sh main (zsh/vim/tmux hard; dotfiles/claude/gh/uv/tailscale soft)
+#
+# Hetzner has persistent /home, so home is a real directory at /home/k-kit —
+# create-user.sh only makes /workspace symlinks when /workspace exists (RunPod).
+#
+# Idempotent: both downstream scripts are safe to re-run, and the bootstrap
+# itself short-circuits on a marker file. Safe if cloud-init re-runs.
+# Secrets (BWS_TOKEN, TAILSCALE_AUTH_KEY) are optional — leave unset and
+# configure post-boot, or fill them into the env block before pasting.
+
+package_update: true
+packages:
+  - git
+  - curl
+  - ca-certificates
+
+write_files:
+  - path: /etc/dotfiles-bootstrap.env
+    permissions: '0600'
+    owner: root:root
+    content: |
+      # Identity — keep in sync with config.sh (DOTFILES_USERNAME / DOTFILES_REPO)
+      USERNAME=k-kit
+      GITHUB_USER=k-kit
+      DOTFILES_REPO=https://github.com/k-kit/dotfiles.git
+      DOTFILES_BRANCH=main
+      # Optional secrets — uncomment and fill BEFORE pasting, or set up after
+      # first login (secrets-init-bws / tailscale up --ssh --authkey <key>).
+      # Anything pasted here lands on disk root-readable; prefer post-boot setup.
+      #BWS_TOKEN=
+      #TAILSCALE_AUTH_KEY=
+
+  - path: /usr/local/sbin/dotfiles-bootstrap
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/bin/bash
+      # Hetzner bootstrap: curls create-user.sh + setup.sh from the dotfiles
+      # repo with identity from /etc/dotfiles-bootstrap.env. Idempotent —
+      # delete /var/lib/dotfiles-bootstrap.done to force a full re-run.
+      set -uo pipefail
+      exec > >(tee -a /var/log/dotfiles-bootstrap.log) 2>&1
+
+      MARKER=/var/lib/dotfiles-bootstrap.done
+      if [[ -f "$MARKER" ]]; then
+          echo "dotfiles-bootstrap: already completed ($MARKER exists) — skipping"
+          exit 0
+      fi
+
+      [[ -f /etc/dotfiles-bootstrap.env ]] || {
+          echo "dotfiles-bootstrap: /etc/dotfiles-bootstrap.env missing" >&2
+          exit 1
+      }
+      set -a
+      # shellcheck disable=SC1091
+      . /etc/dotfiles-bootstrap.env
+      set +a
+
+      # Derive the raw.githubusercontent base from DOTFILES_REPO so identity
+      # lives in exactly one place.
+      slug="${DOTFILES_REPO#https://github.com/}"
+      slug="${slug%.git}"
+      raw="https://raw.githubusercontent.com/$slug/$DOTFILES_BRANCH/scripts/cloud"
+
+      echo "=== dotfiles-bootstrap $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+      echo "user=$USERNAME github=$GITHUB_USER repo=$slug branch=$DOTFILES_BRANCH"
+
+      echo "── create-user.sh ──"
+      curl -fsSL "$raw/create-user.sh" | bash || {
+          echo "dotfiles-bootstrap: create-user.sh failed" >&2
+          exit 1
+      }
+
+      echo "── setup.sh ──"
+      curl -fsSL "$raw/setup.sh" | bash -s -- "$DOTFILES_BRANCH" || {
+          echo "dotfiles-bootstrap: setup.sh failed" >&2
+          exit 1
+      }
+
+      touch "$MARKER"
+      echo "=== dotfiles-bootstrap done ==="
+
+runcmd:
+  - [/usr/local/sbin/dotfiles-bootstrap]

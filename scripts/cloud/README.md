@@ -1,36 +1,37 @@
 # Cloud Setup
 
-Setup scripts for RunPod containers.
+Setup scripts for cloud machines: RunPod containers (below) and Hetzner Cloud servers (§ Hetzner Cloud).
 
 ## Two-Script Flow
 
 ```
-create-user.sh   ← infra: non-root user + SSH + /workspace symlinks (idempotent)
+create-user.sh   ← infra: non-root user + SSH + /workspace symlinks in runpod mode (idempotent)
 setup.sh         ← tools: zsh/vim/tmux (hard) + dotfiles/claude/gh/uv/tailscale (soft)
 ```
 
 **First boot (run as root):**
 ```bash
 # 1. Create user (infra only — fast, idempotent)
-curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/create-user.sh | bash
+curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/create-user.sh | bash
 
 # 2. Install tools (branch required)
-curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/setup.sh | bash -s -- main
+curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/setup.sh | bash -s -- main
 
 # 3. Switch to user
-su - yulong
+su - k-kit
 ```
 
-**After pod restart (recreates user + symlinks lost from ephemeral /home):**
+**After pod restart (RunPod only — recreates user + symlinks lost from ephemeral /home):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/restart.sh | bash
-su - yulong
+curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/restart.sh | bash
+su - k-kit
 ```
+On a VPS this no-ops with a message — /home persists across reboots, so there is nothing to restore.
 
 **If you have permission issues** (ran things as root):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/fix_permissions.sh | bash
-su - yulong
+curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/fix_permissions.sh | bash
+su - k-kit
 ```
 
 ## What Each Script Does
@@ -41,7 +42,7 @@ Idempotent — safe to re-run (also runs on `restart.sh`).
 
 - `apt install sudo zsh openssh-server`
 - Creates non-root user with zsh as login shell, NOPASSWD sudo
-- Symlinks `/workspace/{code,.claude,.local,.config}` into `~/` (RunPod persistence)
+- Symlinks `/workspace/{code,.claude,.local,.config}` into `~/` (runpod mode only — vps mode skips this, `/home` is already persistent)
 - Configures sshd (PubkeyAuthentication, StrictModes on volume-mounted FSes)
 - Installs SSH authorized_keys from GitHub + root's keys
 - Generates outbound `~/.ssh/id_ed25519` for git/gh
@@ -57,10 +58,23 @@ Tiered installs — **zsh/vim/tmux** fail loud; everything else warns and contin
 
 **Dropped vs old monolithic setup.sh:** Node.js 24, bun, Codex CLI. Add manually if needed.
 
+## Hetzner vs RunPod
+
+Both scripts detect the environment and log the mode (`Mode: runpod|vps (auto-detected|explicit)`). Auto-detection: `/workspace` exists or `RUNPOD_POD_ID` is set → `runpod`; otherwise `vps`. Override with `CLOUD_MODE=runpod|vps`.
+
+| | RunPod (`runpod`) | Hetzner / VPS (`vps`) |
+|---|---|---|
+| `/home` | Ephemeral — lost on container restart | Persistent, real disk |
+| Persistence | `/workspace` volume; `~/{code,.claude,.local,.config}` symlinked into it | `/home` itself — no symlinks created |
+| After restart | `restart.sh` recreates user + symlinks | Nothing needed; `restart.sh` no-ops |
+| Tailscale hostname | `runpod-<hostname>` (container names are random hex) | `<hostname>` as-is |
+| sshd StrictModes | Often disabled (volume FS ignores chmod) | Stays enabled (chmod works) |
+| Root SSH keys | Injected by RunPod, merged into user's `authorized_keys` | Injected by cloud-init, merged the same way |
+
 ## RunPod Architecture
 
 ```
-/home/yulong/          ← local FS (ephemeral — recreated by create-user.sh on restart)
+/home/k-kit/          ← local FS (ephemeral — recreated by create-user.sh on restart)
 ├── .ssh/              ← local FS
 ├── code/              → /workspace/code    (persists)
 ├── .claude/           → /workspace/.claude (persists)
@@ -74,9 +88,10 @@ Override via env vars:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `USERNAME` | `yulong` | Non-root username |
-| `GITHUB_USER` | `yulonglin` | GitHub username (for SSH key import) |
-| `DOTFILES_REPO` | `https://github.com/yulonglin/dotfiles.git` | Dotfiles repo |
+| `CLOUD_MODE` | auto-detected | `runpod` or `vps` — overrides environment detection |
+| `USERNAME` | `k-kit` (or `DOTFILES_USERNAME`) | Non-root username |
+| `GITHUB_USER` | `k-kit` | GitHub username (for SSH key import) |
+| `DOTFILES_REPO` | `https://github.com/k-kit/dotfiles.git` | Dotfiles repo |
 | `DOTFILES_BRANCH` | (required in setup.sh) | Branch to clone |
 | `BWS_TOKEN` | (unset) | BWS access token (non-interactive) |
 | `TAILSCALE_AUTH_KEY` | (unset) | Tailscale auth key (non-interactive) |
@@ -88,3 +103,46 @@ Override via env vars:
 `setup.sh` never blocks on a prompt — safe for `curl | bash` with no TTY.
 Supply secrets via env (`BWS_TOKEN=…`, `TAILSCALE_AUTH_KEY=…`) or set them up after login.
 Pass `-i` / `--interactive` to prompt on a box with a real terminal.
+
+## Hetzner Cloud
+
+`hetzner-cloud-init.yaml` is a cloud-init user-data file that runs the same two-script flow automatically on first boot. Unlike RunPod, Hetzner `/home` is persistent, so there are no `/workspace` symlinks (create-user.sh only makes them when `/workspace` exists) and no restart dance — the machine survives reboots with its home directory intact.
+
+It works by writing identity to `/etc/dotfiles-bootstrap.env` (`USERNAME`/`GITHUB_USER`/`DOTFILES_REPO`/`DOTFILES_BRANCH`, matching `config.sh`) plus a `/usr/local/sbin/dotfiles-bootstrap` script that curls `create-user.sh` and `setup.sh main` from the repo. A marker file (`/var/lib/dotfiles-bootstrap.done`) short-circuits re-runs; both downstream scripts are idempotent anyway.
+
+**Prerequisite:** the bootstrap curls `scripts/cloud/*` from the `main` branch on GitHub — changes to these scripts must be pushed before a new server can use them.
+
+### Console (paste)
+
+Create Server → pick an Ubuntu image and your SSH key → expand the **Cloud config** text box (under SSH keys / networking options) → paste the full contents of `hetzner-cloud-init.yaml` → create. The SSH key you select in the console lands in root's `authorized_keys`, and create-user.sh merges root's keys into the new user's — so that key logs you in as `k-kit` too.
+
+### CLI (hcloud)
+
+```bash
+hcloud server create \
+    --name dev-box \
+    --type cx22 \
+    --image ubuntu-24.04 \
+    --ssh-key <your-key-name> \
+    --user-data-from-file scripts/cloud/hetzner-cloud-init.yaml
+```
+
+(`cx22` was the cheapest shared-vCPU type at time of writing — check `hcloud server-type list` for the current lineup.)
+
+### Secrets (optional, post-boot)
+
+Don't paste secrets into the console. After first login: `secrets-init-bws` for the BWS token, `sudo tailscale up --ssh --authkey <key>` for Tailscale. If you accept root-readable secrets on disk, you can instead uncomment `BWS_TOKEN`/`TAILSCALE_AUTH_KEY` in the env block before pasting and setup.sh will consume them.
+
+### Verify / debug
+
+```bash
+ssh root@<ip> cloud-init status --wait        # blocks until first boot finishes
+ssh root@<ip> tail -f /var/log/dotfiles-bootstrap.log
+ssh k-kit@<ip>                                # the end state that matters
+```
+
+Force a full re-run: `rm /var/lib/dotfiles-bootstrap.done && /usr/local/sbin/dotfiles-bootstrap` (as root). Cloud-init's own logs are at `/var/log/cloud-init-output.log`.
+
+### Cheap smoke test
+
+Create the smallest shared-vCPU server with the CLI command above, wait for `cloud-init status --wait` to report done, confirm `ssh k-kit@<ip>` gives a zsh shell with dotfiles deployed (`ls ~/code/dotfiles`), then `hcloud server delete dev-box`. A few minutes of the smallest instance costs on the order of a cent — Hetzner bills hourly.

@@ -4,10 +4,10 @@
 
 # Git user configuration
 GIT_USER_EMAIL="30549145+yulonglin@users.noreply.github.com"
-GIT_USER_NAME="yulonglin"
+GIT_USER_NAME="k-kit"
 
 # Username for non-root development user (used by install.sh --create-user)
-DEV_USERNAME="yulong"
+DEV_USERNAME="k-kit"
 
 # Note: If config/user.conf exists, deploy.sh will use these values.
 # Otherwise, it will use the defaults specified above.

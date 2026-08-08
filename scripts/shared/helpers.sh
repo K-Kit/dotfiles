@@ -950,7 +950,7 @@ create_dev_user() {
     fi
 
     local username="${DEV_USERNAME:-${DOTFILES_USERNAME:-$GIT_USER_NAME}}"
-    username="${username:-yulong}"
+    username="${username:-k-kit}"
 
     if id "$username" &>/dev/null; then
         log_info "User $username already exists"

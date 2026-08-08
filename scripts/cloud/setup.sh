@@ -1,5 +1,8 @@
 #!/bin/bash
-# RunPod tool setup — run as root, installs tools for $USERNAME
+# Cloud tool setup — run as root, installs tools for $USERNAME
+# Works on RunPod containers and persistent VPSes (Hetzner, EC2, …) alike:
+# everything installs into $USER_HOME, whether that's a real persistent /home
+# (vps) or an ephemeral /home with /workspace symlinks (runpod).
 # Assumes create-user.sh has already run (user + SSH + persistent dirs).
 #
 # Tiers:
@@ -7,7 +10,7 @@
 #   SOFT (everything else) — warn and continue
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/setup.sh | bash -s -- main
+#   curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/setup.sh | bash -s -- main
 #   TAILSCALE_AUTH_KEY=tskey-... BWS_TOKEN=... curl ... | bash -s -- main -i
 
 set -e
@@ -32,14 +35,25 @@ run_as() { sudo -u "$USERNAME" -i bash -c "$*"; }
 tty_usable() { { : >/dev/tty; } 2>/dev/null; }
 
 # ── Config ────────────────────────────────────────────────────────────────────
-USERNAME="${USERNAME:-yulong}"
+USERNAME="${USERNAME:-${DOTFILES_USERNAME:-k-kit}}"
 USER_HOME="/home/$USERNAME"
-DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/yulonglin/dotfiles.git}"
+DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/k-kit/dotfiles.git}"
 DOTFILES_BRANCH="${DOTFILES_BRANCH:-}"
 GITHUB_AUTH="${GITHUB_AUTH:-0}"
 INTERACTIVE="${INTERACTIVE:-0}"
 BWS_TOKEN="${BWS_TOKEN:-}"
-SETUP_URL="https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/setup.sh"
+SETUP_URL="https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/setup.sh"
+
+# runpod → ephemeral /home + /workspace symlinks; vps → real persistent /home.
+# Same detection as create-user.sh; override with CLOUD_MODE=runpod|vps.
+if [[ -n "${CLOUD_MODE:-}" ]]; then
+    MODE_SOURCE="explicit"
+elif [[ -d /workspace || -n "${RUNPOD_POD_ID:-}" ]]; then
+    CLOUD_MODE=runpod; MODE_SOURCE="auto-detected"
+else
+    CLOUD_MODE=vps; MODE_SOURCE="auto-detected"
+fi
+[[ "$CLOUD_MODE" == "runpod" || "$CLOUD_MODE" == "vps" ]] || fail "CLOUD_MODE must be 'runpod' or 'vps' (got: $CLOUD_MODE)"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -69,8 +83,9 @@ done
 [[ "$(id -u)" -eq 0 ]] || fail "Must run as root"
 id "$USERNAME" &>/dev/null || fail "User $USERNAME not found — run create-user.sh first"
 
-echo "=== RunPod Setup ==="
+echo "=== Cloud Setup ==="
 log "User:   $USERNAME"
+log "Mode:   $CLOUD_MODE ($MODE_SOURCE)"
 log "Branch: $DOTFILES_BRANCH"
 [[ "$DOTFILES_BRANCH" != "main" ]] && warn "Using non-main branch: $DOTFILES_BRANCH"
 
@@ -164,7 +179,10 @@ if [[ -n "$TS_AUTH_KEY" ]]; then
                 --state=/var/lib/tailscale/tailscaled.state &>/dev/null &
             sleep 2
         }
-        local hn="runpod-$(hostname -s)"
+        # runpod container hostnames are random hex — prefix for recognisability;
+        # a vps hostname is already meaningful, use it as-is
+        local hn
+        if [[ "$CLOUD_MODE" == "runpod" ]]; then hn="runpod-$(hostname -s)"; else hn="$(hostname -s)"; fi
         tailscale up --authkey "$TS_AUTH_KEY" --hostname "$hn" --ssh --ephemeral 2>/dev/null || \
             tailscale up --authkey "$TS_AUTH_KEY" --hostname "$hn" --ssh 2>/dev/null
     }

@@ -4,7 +4,7 @@
 
 set -e
 
-USERNAME="${USERNAME:-kit}"
+USERNAME="${USERNAME:-${DOTFILES_USERNAME:-k-kit}}"
 
 USER_HOME="/home/$USERNAME"
 

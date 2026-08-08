@@ -27,7 +27,7 @@ This project offers two quickstart paths: **Local** and **Cloud**.
 For setting up on your personal machine (macOS, Linux, desktop/laptop):
 
 ```bash
-git clone https://github.com/yulonglin/dotfiles.git && cd dotfiles
+git clone https://github.com/k-kit/dotfiles.git && cd dotfiles
 
 # 1. Install dependencies (zsh, tmux, CLI tools, AI assistants)
 ./install.sh
@@ -50,35 +50,34 @@ All configuration options are stored in [`config.sh`](./config.sh). Flags are **
 
 ### Cloud Quickstart
 
-For cloud environments (RunPod, Hetzner, Lambda Labs, etc):
+For cloud environments (Hetzner, RunPod, Lambda Labs, etc). Identity defaults (user `k-kit`, repo `k-kit/dotfiles`) come from [`config.sh`](./config.sh) — override with `USERNAME` / `GITHUB_USER` / `DOTFILES_REPO`.
+
+**Hetzner — cloud-init (recommended):** paste [`scripts/cloud/hetzner-cloud-init.yaml`](./scripts/cloud/hetzner-cloud-init.yaml) into the "Cloud config" box when creating the server (or `hcloud server create --user-data-from-file …`). First boot creates the user and installs everything unattended — skip straight to step 3.
+
+**Any other machine (or Hetzner without user data):**
 
 1. **SSH into your new remote machine as root.**
-2. **Run the one-liner:**
+2. **Run the two-step bootstrap** — RunPod vs persistent-`/home` VPS is auto-detected (`CLOUD_MODE`):
    ```bash
-   # RunPod (fresh pod)
-   curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/setup.sh | bash
+   # 1. Non-root user + SSH keys (idempotent)
+   curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/create-user.sh | bash
 
-   # Hetzner / standard VPS (persistent /home)
-   curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/setup.sh | USER_HOME=/home bash
+   # 2. Tools + dotfiles (branch argument required)
+   curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/setup.sh | bash -s -- main
    ```
-   This creates a non-root user, installs dependencies, clones dotfiles, and runs `install.sh --profile=cloud` + `deploy.sh --profile=cloud` (a lean remote-dev set — no pueue/zotero/Rust toolchain). It will prompt for GitHub auth.
-
-   Provisions the **`main`** branch by default. To pin another branch, pass `--branch` (use `bash -s --` to forward args through `curl | bash`) or set `DOTFILES_BRANCH`:
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/setup.sh | bash -s -- --branch yulong
-   ```
+   `setup.sh` installs dependencies, clones dotfiles, and runs `install.sh --profile=cloud` + `deploy.sh --profile=cloud` (a lean remote-dev set — no pueue/zotero/Rust toolchain). It never blocks on a prompt; GitHub auth is deferred to first login unless you pass `--github-auth`. Pin a different branch by replacing `main`, or set `DOTFILES_BRANCH`.
 3. **Reconnect as your user:**
    ```bash
-   ssh yulong@<ip>
+   ssh k-kit@<ip>
    ```
-4. **(Optional) After pod restart** (RunPod recreates `/etc/passwd`):
+4. **(Optional, RunPod only) After pod restart** (RunPod recreates `/etc/passwd` and ephemeral `/home`; on a VPS this no-ops):
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/restart.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/restart.sh | bash
    ```
 5. **(Optional) Customize components:**
    Edit [`config.sh`](./config.sh) to disable resource-intensive options (AI assistants, cleanup automation, etc.) before running install/deploy.
 
-**Tip:** The setup auto-detects cloud providers and adjusts accordingly (persistent storage paths, SSH config, no macOS-only features). See [`scripts/cloud/README.md`](./scripts/cloud/README.md) for details.
+**Tip:** The setup auto-detects cloud providers and adjusts accordingly (persistent storage symlinks on RunPod, SSH config, no macOS-only features). See [`scripts/cloud/README.md`](./scripts/cloud/README.md) for details.
 
 ## Table of Contents
 
@@ -401,7 +400,7 @@ Each machine gets a **unique emoji** based on its name hash, so you can visually
 ```
 Host mats
     HostName 203.0.113.42
-    User yulong
+    User k-kit
 
 Host hetzner-gpu
     HostName 198.51.100.10
@@ -775,23 +774,23 @@ dep-audit                    # Scan all repos for known-bad packages now
 
 ## Cloud Setup (RunPod, Hetzner, etc.)
 
-One-command setup for cloud VMs and containers:
+**Hetzner:** pass [`scripts/cloud/hetzner-cloud-init.yaml`](./scripts/cloud/hetzner-cloud-init.yaml) as user data at server creation (console "Cloud config" box or `hcloud server create --user-data-from-file …`) — first boot provisions everything unattended.
+
+**Anywhere else (or Hetzner without user data), as root:**
 
 ```bash
-# RunPod (fresh pod, as root)
-curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/setup.sh | bash
+# Fresh machine — user + SSH, then tools (branch argument required)
+curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/create-user.sh | bash
+curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/setup.sh | bash -s -- main
 
-# After pod restart (recreates user entry)
-curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/restart.sh | bash
-
-# Hetzner / standard VPS (persistent /home)
-curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/setup.sh | USER_HOME=/home bash
+# RunPod only: after pod restart (recreates user entry; no-ops on a VPS)
+curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/restart.sh | bash
 ```
 
-Then SSH as `yulong@<ip>` (not root). Runs the lean `cloud` profile and provisions the `main` branch by default — pin another with `| bash -s -- --branch <name>` or `DOTFILES_BRANCH=<name>`. See [`scripts/cloud/README.md`](./scripts/cloud/README.md) for details.
+Then SSH as `k-kit@<ip>` (not root). Runs the lean `cloud` profile; RunPod vs persistent-`/home` VPS is auto-detected (`CLOUD_MODE=runpod|vps`). See [`scripts/cloud/README.md`](./scripts/cloud/README.md) for details.
 
 **What it does:**
 
-- Creates non-root user in persistent storage (`/workspace/yulong` on RunPod)
+- Creates non-root user (`/home/k-kit`; on RunPod, persistent dirs are symlinked into `/workspace`)
 - Installs uv, dotfiles, Claude Code
 - Copies SSH keys for direct access

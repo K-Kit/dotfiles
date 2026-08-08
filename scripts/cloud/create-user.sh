@@ -1,10 +1,15 @@
 #!/bin/bash
-# RunPod: create (or recreate) the non-root user + SSH infra + persistent dirs
-# Idempotent — safe to re-run after pod restart.
+# Cloud: create (or recreate) the non-root user + SSH infra + persistent dirs
+# Idempotent — safe to re-run (e.g. after a RunPod pod restart).
+#
+# Modes (CLOUD_MODE=runpod|vps, auto-detected when unset):
+#   runpod — /home is ephemeral; persistent dirs are symlinked into /workspace
+#   vps    — real persistent /home (Hetzner, EC2, any standard VM); no symlinks
 #
 # Usage (run as root):
-#   curl -fsSL https://raw.githubusercontent.com/yulonglin/dotfiles/main/scripts/cloud/create-user.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/k-kit/dotfiles/main/scripts/cloud/create-user.sh | bash
 #   curl -fsSL ... | USERNAME=dev bash
+#   curl -fsSL ... | CLOUD_MODE=vps bash   # force VPS mode (skip /workspace symlinks)
 set -e
 
 log()  { echo "  $*"; }
@@ -13,15 +18,27 @@ warn() { echo "  ⚠ $*" >&2; }
 fail() { echo "  ✗ $*" >&2; exit 1; }
 step() { echo ""; echo "── $* ──"; }
 
-USERNAME="${USERNAME:-yulong}"
-GITHUB_USER="${GITHUB_USER:-yulonglin}"
+USERNAME="${USERNAME:-${DOTFILES_USERNAME:-k-kit}}"
+GITHUB_USER="${GITHUB_USER:-k-kit}"
 USER_HOME="/home/$USERNAME"
+
+# runpod → ephemeral /home, persistence via /workspace symlinks
+# vps    → persistent /home (Hetzner etc.), no symlinks
+if [[ -n "${CLOUD_MODE:-}" ]]; then
+    MODE_SOURCE="explicit"
+elif [[ -d /workspace || -n "${RUNPOD_POD_ID:-}" ]]; then
+    CLOUD_MODE=runpod; MODE_SOURCE="auto-detected"
+else
+    CLOUD_MODE=vps; MODE_SOURCE="auto-detected"
+fi
+[[ "$CLOUD_MODE" == "runpod" || "$CLOUD_MODE" == "vps" ]] || fail "CLOUD_MODE must be 'runpod' or 'vps' (got: $CLOUD_MODE)"
 
 [[ "$(id -u)" -eq 0 ]] || fail "Must run as root"
 
 echo "=== Create User ==="
 log "User:   $USERNAME"
 log "Home:   $USER_HOME"
+log "Mode:   $CLOUD_MODE ($MODE_SOURCE)"
 
 # ── System prereqs ────────────────────────────────────────────────────────────
 step "System prereqs"
@@ -49,8 +66,9 @@ chown -R "$USERNAME:$USERNAME" "$USER_HOME" 2>/dev/null || true
 ok "User $USERNAME (uid=$(id -u "$USERNAME"))"
 
 # ── RunPod persistent storage ─────────────────────────────────────────────────
-# /home is ephemeral (lost on container restart), /workspace persists.
-if [[ -d /workspace ]] || [[ -n "$RUNPOD_POD_ID" ]]; then
+# runpod: /home is ephemeral (lost on container restart), /workspace persists.
+# vps: /home is already persistent — no symlinks needed or wanted.
+if [[ "$CLOUD_MODE" == "runpod" ]]; then
     step "Persistent symlinks (/workspace)"
     for dir in code .claude .local .config; do
         target="/workspace/$dir"
@@ -69,6 +87,9 @@ if [[ -d /workspace ]] || [[ -n "$RUNPOD_POD_ID" ]]; then
     done
     chown -R "$USERNAME:$USERNAME" "$USER_HOME" 2>/dev/null || true
     ok "Persistent symlinks ready"
+else
+    step "Persistent storage"
+    ok "vps mode: $USER_HOME is persistent — no /workspace symlinks"
 fi
 
 # ── sshd ──────────────────────────────────────────────────────────────────────

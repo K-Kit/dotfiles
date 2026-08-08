@@ -73,7 +73,7 @@ STATE_FILE = Path.home() / ".runpod-pods.json"
 # branch to clone is a separate choice, passed through to setup.sh via --branch.
 # (Two concepts: where the bootstrap script comes from vs. which branch it checks out.)
 SETUP_SH_URL = (
-    "https://raw.githubusercontent.com/yulonglin/dotfiles/main"
+    "https://raw.githubusercontent.com/k-kit/dotfiles/main"
     "/scripts/cloud/setup.sh"
 )
 
@@ -405,7 +405,7 @@ def cmd_provision(args: argparse.Namespace) -> None:
     # Step 6: Run setup.sh over SSH (non-interactive)
     # - setup.sh detects RUNPOD_POD_ID env → sets PROVIDER=runpod, symlinks /workspace
     # - Interactive prompts (BWS token, Tailscale) are skipped when /dev/tty
-    #   is absent — run them manually after login via: ssh -p <port> yulong@<ip>
+    #   is absent — run them manually after login via: ssh -p <port> k-kit@<ip>
     print(f"\n  Running setup.sh (from main) on pod (non-interactive, branch={args.branch})...")
     result = subprocess.run(
         [
@@ -426,7 +426,7 @@ def cmd_provision(args: argparse.Namespace) -> None:
     # Summary
     print(f"\n{'='*60}")
     print(f"  Pod ID:    {pod_id}")
-    print(f"  SSH:       ssh -p {ssh_port} yulong@{public_ip}")
+    print(f"  SSH:       ssh -p {ssh_port} k-kit@{public_ip}")
     print(f"  SSH root:  ssh -p {ssh_port} root@{public_ip}")
     print(f"  Teardown:  uv run scripts/cloud/provision.py teardown {pod_id}")
     if args.max_lifetime:
@@ -546,7 +546,7 @@ def main() -> None:
     p.add_argument("--name", default=None, help="Pod name (default: nla-rl-<unix-timestamp>)")
     p.add_argument("--data-center", default=DEFAULT_DATA_CENTER, help=f"Data center ID for network volume (default: {DEFAULT_DATA_CENTER!r}). Must match pod location.")
     p.add_argument("--max-lifetime", type=float, metavar="HOURS", help="Arm lifetime guard: prints expiry time and teardown command prominently")
-    p.add_argument("--branch", required=True, help="Dotfiles branch to clone on the pod — REQUIRED (e.g. 'main' for public/stable, 'yulong' for working branch). setup.sh itself is always fetched from main.")
+    p.add_argument("--branch", required=True, help="Dotfiles branch to clone on the pod — REQUIRED (usually 'main'). setup.sh itself is always fetched from main.")
     p.set_defaults(func=cmd_provision)
 
     # teardown
