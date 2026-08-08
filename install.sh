@@ -134,10 +134,15 @@ if is_macos; then
     install_packages brew "${PACKAGES_CORE[@]}" "${PACKAGES_MACOS[@]}"
 
 elif is_linux; then
-    # Skip apt update if cache is less than 1 hour old
+    # Skip apt update if cache is less than 1 hour old.
+    # Must use sudo (same as install_packages/apt_install below) — bare `apt
+    # update` always fails for non-root and silently skipped the refresh.
     apt_cache="/var/lib/apt/lists/partial"
     if [[ ! -d "$apt_cache" ]] || [[ $(( $(date +%s) - $(stat -c %Y "$apt_cache" 2>/dev/null || echo 0) )) -gt 3600 ]]; then
-        apt update 2>/dev/null || log_info "Skipping apt update (no permissions)"
+        _apt_sudo=""
+        [[ $EUID -ne 0 ]] && _apt_sudo="sudo"
+        $_apt_sudo apt update 2>/dev/null || log_warning "apt update failed — package installs may use a stale cache"
+        unset _apt_sudo
     else
         log_info "apt cache fresh (< 1h old) — skipping update"
     fi
