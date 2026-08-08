@@ -10,7 +10,8 @@
 #       max      ccx63  48 vCPU dedicated / 192 GB / 960 GB   EUR 1.6138/h  (~1007/mo)
 #     small/medium imply --yes; max needs an explicit --yes (155x small's rate).
 #     Any create option overrides the preset: hz medium box --idle-hours 4
-#   hz up <name> [create options]              = hz small <name>
+#   hz up <name> [create options]              Like the presets but with the bare
+#                                              `create` default type; implies --yes
 #   hz create <name> --yes [options]           Create server (cloud-init via
 #                                              hetzner-user-data.sh) + ssh-add
 #       --type cx23            server type (hcloud server-type list)
@@ -278,10 +279,11 @@ cmd_ssh_rm() {
 
 cmd_create() {
     local name="" type="cpx42" image="ubuntu-24.04" sshkey="" user="$DEFAULT_USER"
-    local idle=0 hours=2 yes=0
+    local location="$DEFAULT_LOCATION" idle=0 hours=2 yes=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --type) type="${2:?}"; shift 2 ;;
+            --location) location="${2:?}"; shift 2 ;;
             --image) image="${2:?}"; shift 2 ;;
             --ssh-key) sshkey="${2:?}"; shift 2 ;;
             --user) user="${2:?}"; shift 2 ;;
@@ -293,7 +295,7 @@ cmd_create() {
             *) [[ -n "$name" ]] && die "create: one server name only"; name="$1"; shift ;;
         esac
     done
-    [[ -n "$name" ]] || die "usage: hz create <name> --yes [--type t] [--image i] [--ssh-key k] [--idle-shutdown] [--idle-hours N]"
+    [[ -n "$name" ]] || die "usage: hz create <name> --yes [--type t] [--location l] [--image i] [--ssh-key k] [--idle-shutdown] [--idle-hours N]"
     [[ "$hours" =~ ^[0-9]+$ && "$hours" -ge 1 ]] || die "create: --idle-hours must be a positive integer"
     [[ -x "$USER_DATA_SCRIPT" ]] || die "missing $USER_DATA_SCRIPT"
     [[ -f "$IDLE_INSTALLER" ]] || die "missing $IDLE_INSTALLER"
@@ -312,7 +314,7 @@ cmd_create() {
     fi
 
     if [[ "$yes" != "1" ]]; then
-        echo "hz: would create (paid!): name=$name type=$type image=$image ssh-key=$sshkey idle-shutdown=$([[ $idle == 1 ]] && echo "${hours}h" || echo off)"
+        echo "hz: would create (paid!): name=$name type=$type location=$location image=$image ssh-key=$sshkey idle-shutdown=$([[ $idle == 1 ]] && echo "${hours}h" || echo off)"
         die "refusing to create a paid server without --yes"
     fi
 
@@ -332,9 +334,9 @@ cmd_create() {
         label_args=(--label "$IDLE_LABEL=${hours}h")
     fi
 
-    echo "hz: creating $name ($type, $image, key=$sshkey)..."
-    hcloud server create --name "$name" --type "$type" --image "$image" \
-        --ssh-key "$sshkey" --user-data-from-file "$ud" \
+    echo "hz: creating $name ($type, $location, $image, key=$sshkey)..."
+    hcloud server create --name "$name" --type "$type" --location "$location" \
+        --image "$image" --ssh-key "$sshkey" --user-data-from-file "$ud" \
         ${label_args[@]+"${label_args[@]}"}
     rm -f "$ud"
     trap - EXIT
@@ -352,6 +354,25 @@ cmd_create() {
         echo "  # box powers off after ${hours}h idle — wake: hz poweron $name; inhibit: touch ~/.keep-alive"
     }
     return 0
+}
+
+cmd_preset() { # preset-name <server-name> [create options...]
+    local preset="$1"; shift
+    local type spec
+    type="$(preset_type "$preset")"
+    spec="$(preset_spec "$preset")"
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && usage
+    [[ -n "${1:-}" ]] || die "usage: hz $preset <name>   ($type — $spec)"
+
+    # `max` costs ~155x `small` per hour — no implied --yes for that one.
+    local -a gate=(--yes)
+    if [[ "$preset" == "max" ]]; then
+        gate=()
+        printf 'hz: %s = %s — %s\n' "$preset" "$type" "$spec" >&2
+    fi
+    echo "hz: preset $preset -> $type ($spec)" >&2
+    # preset flags first so a user-supplied --type/--idle-hours still wins
+    cmd_create --type "$type" --idle-shutdown ${gate[@]+"${gate[@]}"} "$@"
 }
 
 cmd_delete() {
@@ -432,10 +453,12 @@ cmd_poweron() {
     hcloud server poweron "$name"
 }
 
+p=""
 case "${1:-}" in
     list) shift; cmd_list "$@" ;;
     create) shift; cmd_create "$@" ;;
-    up) shift; cmd_create "$@" --idle-shutdown --yes ;;
+    up) shift; cmd_create --idle-shutdown --yes "$@" ;;
+    small|medium|max) p="$1"; shift; cmd_preset "$p" "$@" ;;
     delete) shift; cmd_delete "$@" ;;
     ssh-add) shift; cmd_ssh_add "$@" ;;
     ssh-sync) shift; cmd_ssh_sync "$@" ;;

@@ -6,7 +6,7 @@
 # Usage:
 #   scripts/cloud/hetzner-user-data.sh > "$TMPDIR/user-data.yaml"
 #   HCLOUD_TOKEN="$(fnox get HERTZNER)" hcloud server create \
-#       --name dev-box --type cx22 --image ubuntu-24.04 \
+#       --name dev-box --type cx23 --image ubuntu-24.04 \
 #       --ssh-key <key-name> --user-data-from-file "$TMPDIR/user-data.yaml"
 #
 #   scripts/cloud/hetzner-user-data.sh --no-secrets   # plain template passthrough

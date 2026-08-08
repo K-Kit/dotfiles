@@ -35,8 +35,11 @@ _hz() {
     local -a subcmds
     subcmds=(
         'list:servers with status, ip, type, idle label'
+        'small:preset cx23 — 2 vCPU/4 GB, ~EUR 0.0104/h, 2h idle-shutdown'
+        'medium:preset cx43 — 8 vCPU/16 GB, ~EUR 0.0296/h, 2h idle-shutdown'
+        'max:preset ccx63 — 48 dedicated vCPU/192 GB, ~EUR 1.61/h (needs --yes)'
         'create:create server + ssh-add (requires --yes)'
-        'up:shortcut — create + ssh-add with 2h idle-shutdown, implies --yes'
+        'up:create + ssh-add with 2h idle-shutdown, implies --yes'
         'delete:delete server + its ssh entries (requires --yes)'
         'ssh-add:upsert Host block in ~/.ssh/config'
         'ssh-sync:Host entry per running server'
@@ -50,9 +53,16 @@ _hz() {
     fi
     local -a opts
     case "${words[2]}" in
-        create|up)
-            opts=(--type --image --ssh-key --user --idle-shutdown --idle-hours --yes)
-            compadd -a opts
+        create|up|small|medium|max)
+            if [[ "${words[CURRENT-1]}" == "--location" ]]; then
+                compadd hel1 fsn1 nbg1 ash hil sin
+            elif [[ "${words[CURRENT-1]}" == "--type" ]]; then
+                compadd -- ${(f)"$(hcloud server-type list -o noheader -o columns=name 2>/dev/null)"}
+            else
+                opts=(--type --location --image --ssh-key --user
+                      --idle-shutdown --idle-hours --yes)
+                compadd -a opts
+            fi
             ;;
         ssh-add)
             if [[ "${words[CURRENT-1]}" == "--user" ]]; then

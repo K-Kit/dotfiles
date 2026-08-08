@@ -123,13 +123,13 @@ Create Server → pick an Ubuntu image and your SSH key → expand the **Cloud c
 ```bash
 hcloud server create \
     --name dev-box \
-    --type cx22 \
+    --type cx23 \
     --image ubuntu-24.04 \
     --ssh-key <your-key-name> \
     --user-data-from-file scripts/cloud/hetzner-cloud-init.yaml
 ```
 
-(`cx22` was the cheapest shared-vCPU type at time of writing — check `hcloud server-type list` for the current lineup.)
+(`cx23` is the cheapest 4 GB shared-vCPU type as of 2026-08-08 — the lineup changes, so check `hcloud server-type list`. `cx22` is gone.)
 
 ### Secrets (optional, post-boot)
 
@@ -142,7 +142,7 @@ Don't paste secrets into the console. After first login: `secrets-init-bws` for 
 ```bash
 scripts/cloud/hetzner-user-data.sh > "$TMPDIR/user-data.yaml"
 HCLOUD_TOKEN="$(fnox get HERTZNER)" hcloud server create \
-    --name dev-box --type cx22 --image ubuntu-24.04 \
+    --name dev-box --type cx23 --image ubuntu-24.04 \
     --ssh-key <your-key-name> --user-data-from-file "$TMPDIR/user-data.yaml"
 rm "$TMPDIR/user-data.yaml"
 ```
@@ -155,7 +155,11 @@ Injected when resolvable: `TAILSCALE_AUTH_KEY`, `BWS_TOKEN` (add `BWS_TOKEN` to 
 
 ```bash
 hz list                                   # name, status, ipv4, type, idle label
-hz create dev-box --yes                   # create (cx22/ubuntu-24.04) + ssh-add; --yes required — it bills
+hz small dev-box                          # preset: create + ssh-add + 2h idle-shutdown, then `ssh dev-box`
+hz medium dev-box                         # same, 8 vCPU / 16 GB
+hz max dev-box --yes                      # same, 48 dedicated vCPU / 192 GB (--yes required — 155x small's rate)
+hz medium dev-box --idle-hours 4          # any create option overrides the preset
+hz create dev-box --yes                   # no preset: bare defaults + ssh-add; --yes required — it bills
 hz create dev-box --yes --idle-shutdown   # + auto-poweroff after 2h idle (tune: --idle-hours N)
 hz up dev-box                             # shortcut for the line above — implies --yes (bills!)
 hz ssh-add dev-box --user root --alias hz-1
@@ -165,6 +169,16 @@ hz idle status dev-box                    # label + on-box watchdog state
 hz delete dev-box --yes                   # delete server + its ssh config entries
 hz poweron dev-box                        # wake a powered-off server
 ```
+
+#### Size presets
+
+| Preset | Type | Spec | EUR/h (hel1) | ~EUR/mo |
+|---|---|---|---|---|
+| `small` | `cx23` | 2 vCPU shared, 4 GB, 40 GB | 0.0104 | 6.49 |
+| `medium` | `cx43` | 8 vCPU shared, 16 GB, 160 GB | 0.0296 | 18.49 |
+| `max` | `ccx63` | 48 vCPU dedicated, 192 GB, 960 GB | 1.6138 | 1007 |
+
+All three create the server, add the `~/.ssh/config` entry, and enable the 2h idle-shutdown watchdog. `small` and `medium` imply `--yes`; `max` demands it explicitly, because an idle-shutdown failure there costs ~EUR 39/day rather than ~EUR 0.25. Prices are EUR at `hel1`, checked 2026-08-08 — re-check with `hcloud server-type describe <type>`, and edit `preset_type`/`preset_spec` in `custom_bins/hz` to change the lineup. x86 shared is deliberate: ARM (`cax*`) is cheaper per core, but the dotfiles bootstrap has only been exercised on x86. Default location is `hel1` (override with `--location` or `HZ_LOCATION`); note `cx*` types are EU-only, while `cpx*`/`ccx*` also serve `ash`/`hil`/`sin`.
 
 ### Idle auto-shutdown (opt-in, default OFF)
 
