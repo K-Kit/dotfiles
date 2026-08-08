@@ -56,6 +56,13 @@ section() { printf '\n== %s ==\n' "$1"; }
 
 section "hetzner-user-data.sh"
 
+# Both are invoked directly below. A missing exec bit on the user-data script
+# also makes `hz create` die at its -x check *before* the confirmation line,
+# which fails the argv assertions with a completely unrelated message.
+check_eq "hz is executable" "yes" "$([[ -x "$HZ" ]] && echo yes || echo no)"
+check_eq "hetzner-user-data.sh is executable" "yes" \
+    "$([[ -x "$USER_DATA" ]] && echo yes || echo no)"
+
 out="$("$USER_DATA" --no-secrets 2>/dev/null)"
 check_eq "--no-secrets emits the template verbatim" \
     "$(cat "$TEMPLATE")" "$out"
@@ -147,6 +154,13 @@ check_eq "destroy-unattached is pinned off" \
     "set-option -g destroy-unattached off" \
     "$(grep -E '^set-option -g destroy-unattached' "$TMUX_CONF")"
 
+# tmux applies the last matching line, so an older `set -g history-limit 10000`
+# surviving below the new one would win while the assertion above still passes.
+check_eq "history-limit is set exactly once" "1" \
+    "$(grep -cE '^[[:space:]]*set(-option)?[[:space:]].*history-limit' "$TMUX_CONF")"
+check_eq "destroy-unattached is set exactly once" "1" \
+    "$(grep -cE '^[[:space:]]*set(-option)?[[:space:]].*destroy-unattached' "$TMUX_CONF")"
+
 # ── idle-shutdown activity check ───────────────────────────────────────────
 
 section "idle-shutdown activity check"
@@ -159,38 +173,52 @@ awk '/cat > \/usr\/local\/sbin\/idle-shutdown-check <</{f=1; next} /^CHECK$/{f=0
     "$IDLE_INSTALLER" > "$CHECK"
 chmod +x "$CHECK"
 
-if [[ ! -s "$CHECK" ]]; then
-    lose "extracted the embedded checker" "non-empty script" "empty"
+# A truncated extraction is still non-empty, so assert the shebang rather than
+# just the size — otherwise a broken extraction reads as "checker missing".
+check_eq "extracted the embedded checker" "#!/bin/bash" "$(head -1 "$CHECK")"
+
+if [[ "$(head -1 "$CHECK")" != "#!/bin/bash" ]]; then
+    printf '  skip idle-checker behaviour tests (extraction failed)\n'
+elif ! command -v tmux >/dev/null 2>&1; then
+    printf '  skip tmux behaviour tests (tmux not installed)\n'
 else
-    pass "extracted the embedded checker"
+    export TMUX_TMPDIR="$FIXTURE"
 
-    if ! command -v tmux >/dev/null 2>&1; then
-        printf '  skip tmux behaviour tests (tmux not installed)\n'
+    # An empty session — a leftover from `cw` or tmux-resurrect. This must NOT
+    # count as activity, or the watchdog never fires and the box bills forever.
+    tmux -L idletest new -d -s leftover bash 2>/dev/null
+    sleep 1
+    # Without this gate the assertion below passes vacuously: a tmux that failed
+    # to start also reports "none".
+    if tmux -L idletest has-session -t leftover 2>/dev/null; then
+        pass "fixture: idle tmux session started"
+        out="$(TMUX_TMPDIR="$FIXTURE" "$CHECK" --explain 2>/dev/null)"
+        check_contains "a bare-shell tmux session is not activity" \
+            "tmux work:      none" "$out"
     else
-        export TMUX_TMPDIR="$FIXTURE"
+        lose "fixture: idle tmux session started" "session 'leftover'" "tmux new failed"
+    fi
+    tmux -L idletest kill-server 2>/dev/null
 
-        # An empty session — a leftover from `cw` or tmux-resurrect. This must
-        # NOT count as activity, or the watchdog never fires and the box bills
-        # forever.
-        tmux -L idletest new -d -s leftover bash 2>/dev/null
-        sleep 1
+    # A detached session actually running something — the case that used to get
+    # powered off mid-run.
+    tmux -L worktest new -d -s working 'sleep 300' 2>/dev/null
+    sleep 1
+    if tmux -L worktest has-session -t working 2>/dev/null; then
+        pass "fixture: working tmux session started"
         out="$(TMUX_TMPDIR="$FIXTURE" "$CHECK" --explain 2>/dev/null)"
-        check_contains "a bare-shell tmux session is not activity" "tmux work:      none" "$out"
-        tmux -L idletest kill-server 2>/dev/null
-
-        # A detached session actually running something — the case that used to
-        # get powered off mid-run.
-        tmux -L worktest new -d -s working 'sleep 300' 2>/dev/null
-        sleep 1
-        out="$(TMUX_TMPDIR="$FIXTURE" "$CHECK" --explain 2>/dev/null)"
+        # Only the `tmux work:` line is asserted, never the verdict: active()
+        # short-circuits on tty_recently_active, and whoever runs this suite is
+        # logged in with a fresh tty mtime — so the verdict reads ACTIVE either
+        # way and cannot discriminate the signal under test.
         check_contains "a detached tmux session running work IS activity" \
             "tmux work:      running" "$out"
-        check_contains "running work makes the verdict ACTIVE" \
-            "verdict:        ACTIVE" "$out"
-        tmux -L worktest kill-server 2>/dev/null
-
-        unset TMUX_TMPDIR
+    else
+        lose "fixture: working tmux session started" "session 'working'" "tmux new failed"
     fi
+    tmux -L worktest kill-server 2>/dev/null
+
+    unset TMUX_TMPDIR
 fi
 
 # ── summary ────────────────────────────────────────────────────────────────

@@ -1,7 +1,11 @@
 model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
-service_tier = "fast"
+service_tier = "default"
+approvals_reviewer = "user"
 [projects."/Users/kit/dotfiles"]
+trust_level = "trusted"
+
+[projects."/home/k-kit"]
 trust_level = "trusted"
 
 [tui.model_availability_nux]
