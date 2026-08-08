@@ -79,6 +79,8 @@ For cloud environments (Hetzner, RunPod, Lambda Labs, etc). Identity defaults (u
 
 **Tip:** The setup auto-detects cloud providers and adjusts accordingly (persistent storage symlinks on RunPod, SSH config, no macOS-only features). See [`scripts/cloud/README.md`](./scripts/cloud/README.md) for details.
 
+**Disposable workspaces instead?** [`scripts/coder/`](./scripts/coder/README.md) has [Coder](https://coder.com) templates for Hetzner and DigitalOcean — separate, opt-in, and it does not touch the flow above.
+
 ## Table of Contents
 
 - [Quickstart](#quickstart)
@@ -111,6 +113,7 @@ For cloud environments (Hetzner, RunPod, Lambda Labs, etc). Identity defaults (u
   - [Package Auto-Update](#package-auto-update-both-platforms)
   - [Text Replacements](#text-replacements-macos)
 - [Cloud Setup](#cloud-setup-runpod-hetzner-etc)
+  - [Coder workspaces](#coder-workspaces-hetzner-digitalocean)
 - [Getting to Know These Dotfiles](#getting-to-know-these-dotfiles)
 
 ## Adopting These Dotfiles
@@ -794,3 +797,14 @@ Then SSH as `k-kit@<ip>` (not root). Runs the lean `cloud` profile; RunPod vs pe
 - Creates non-root user (`/home/k-kit`; on RunPod, persistent dirs are symlinked into `/workspace`)
 - Installs uv, dotfiles, Claude Code
 - Copies SSH keys for direct access
+
+### Coder workspaces (Hetzner, DigitalOcean)
+
+A separate, opt-in path for disposable workspaces rather than a machine you keep: [`scripts/coder/`](./scripts/coder/README.md) holds [Coder](https://coder.com) templates for Hetzner Cloud and DigitalOcean. Each provisions an ephemeral VM plus a persistent `/home` volume, so stopping a workspace destroys the VM and keeps your files, and idle shutdown is Coder's own `--default-ttl` rather than an on-box watchdog.
+
+```bash
+coder templates push hetzner-linux -d scripts/coder/hetzner-linux
+coder create --template hetzner-linux my-workspace
+```
+
+Cloud tokens go on the Coder provisioner, not in the shell you push from — [`scripts/coder/README.md`](./scripts/coder/README.md) covers both ways to supply them from fnox. The `curl | bash` flow above is unaffected.

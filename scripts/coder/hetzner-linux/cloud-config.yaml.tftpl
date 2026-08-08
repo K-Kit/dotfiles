@@ -1,0 +1,91 @@
+#cloud-config
+users:
+  - name: ${username}
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    groups: sudo
+    shell: /bin/bash
+packages:
+  - curl
+  - git
+write_files:
+  # Mount the persistent volume over /home/<user>. The volume is attached by a
+  # separate Terraform resource, so at first boot the device may not exist yet --
+  # wait for it rather than failing. The filesystem is created once by Terraform
+  # (hcloud_volume.format); this script never runs mkfs, so a rebuild can never
+  # wipe an existing home directory.
+  - path: /usr/local/sbin/coder-home-mount
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      # Note for editors: Terraform's templatefile() renders this file, so a
+      # dollar-brace pair is substituted while a bare $ stays literal. Shell
+      # variables are therefore written plainly, never doubled.
+      device="${home_device}"
+      home="/home/${username}"
+
+      for _ in $(seq 1 60); do
+          [[ -b "$device" ]] && break
+          sleep 2
+      done
+
+      if [[ ! -b "$device" ]]; then
+          echo "coder-home-mount: $device never appeared; leaving /home on the root disk" >&2
+          exit 0
+      fi
+
+      # Idempotent: adding the same fstab line twice would break `mount -a`.
+      if ! grep -qsF "$device " /etc/fstab; then
+          printf '%s %s ext4 defaults,nofail 0 2\n' "$device" "$home" >>/etc/fstab
+      fi
+
+      mkdir -p "$home"
+      mountpoint -q "$home" || mount "$home"
+      chown "${username}:${username}" "$home"
+
+      install -d -o "${username}" -g "${username}" -m 0700 "$home/.ssh"
+      if [[ -s /etc/coder-owner-key.pub ]]; then
+          install -o "${username}" -g "${username}" -m 0600 \
+              /etc/coder-owner-key.pub "$home/.ssh/authorized_keys"
+      fi
+
+  # Public key of the workspace owner as held by Coder. Coder itself reaches the
+  # workspace through the agent, not port 22 -- this is the break-glass path.
+  - path: /etc/coder-owner-key.pub
+    permissions: "0644"
+    content: |
+      ${ssh_public_key}
+
+  - path: /opt/coder/init
+    permissions: "0755"
+    encoding: b64
+    content: ${init_script}
+
+  - path: /etc/systemd/system/coder-agent.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Coder Agent
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      User=${username}
+      ExecStart=/opt/coder/init
+      Environment=CODER_AGENT_TOKEN=${coder_agent_token}
+      Restart=always
+      RestartSec=10
+      TimeoutStopSec=90
+      KillMode=process
+
+      OOMScoreAdjust=-900
+      SyslogIdentifier=coder-agent
+
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  # Mount before starting the agent, so the agent's working directory and any
+  # dotfiles it clones land on the persistent volume.
+  - [/usr/local/sbin/coder-home-mount]
+  - [systemctl, enable, --now, coder-agent]

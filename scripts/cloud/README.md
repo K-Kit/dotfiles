@@ -2,6 +2,8 @@
 
 Setup scripts for cloud machines: RunPod containers (below) and Hetzner Cloud servers (§ Hetzner Cloud).
 
+Want disposable workspaces instead of a machine you keep? [`scripts/coder/`](../coder/README.md) has Coder templates for Hetzner and DigitalOcean — an ephemeral VM plus a persistent `/home` volume, managed by the Coder agent. It is a separate, opt-in path; nothing on this page changes.
+
 ## Two-Script Flow
 
 ```
@@ -123,13 +125,13 @@ Create Server → pick an Ubuntu image and your SSH key → expand the **Cloud c
 ```bash
 hcloud server create \
     --name dev-box \
-    --type cx22 \
+    --type cx23 \
     --image ubuntu-24.04 \
     --ssh-key <your-key-name> \
     --user-data-from-file scripts/cloud/hetzner-cloud-init.yaml
 ```
 
-(`cx22` was the cheapest shared-vCPU type at time of writing — check `hcloud server-type list` for the current lineup.)
+(`cx23` — 2 vCPU / 4 GB — is the entry CX type as of 2026-08; `cpx11` is cheaper still. The older `cx22` was retired and no longer accepts creates. Check `hcloud server-type list` for the current lineup, and note that CX types exist only in the EU locations.)
 
 ### Secrets (optional, post-boot)
 
@@ -142,7 +144,7 @@ Don't paste secrets into the console. After first login: `secrets-init-bws` for 
 ```bash
 scripts/cloud/hetzner-user-data.sh > "$TMPDIR/user-data.yaml"
 HCLOUD_TOKEN="$(fnox get HERTZNER)" hcloud server create \
-    --name dev-box --type cx22 --image ubuntu-24.04 \
+    --name dev-box --type cx23 --image ubuntu-24.04 \
     --ssh-key <your-key-name> --user-data-from-file "$TMPDIR/user-data.yaml"
 rm "$TMPDIR/user-data.yaml"
 ```
@@ -155,7 +157,7 @@ Injected when resolvable: `TAILSCALE_AUTH_KEY`, `BWS_TOKEN` (add `BWS_TOKEN` to 
 
 ```bash
 hz list                                   # name, status, ipv4, type, idle label
-hz create dev-box --yes                   # create (cx22/ubuntu-24.04) + ssh-add; --yes required — it bills
+hz create dev-box --yes                   # create (cx23/ubuntu-24.04) + ssh-add; --yes required — it bills
 hz create dev-box --yes --idle-shutdown   # + auto-poweroff after 2h idle (tune: --idle-hours N)
 hz ssh-add dev-box --user root --alias hz-1
 hz ssh-sync --dry-run                     # Host entry per running server; flags stale entries

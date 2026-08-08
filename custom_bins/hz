@@ -5,7 +5,7 @@
 #   hz list                                    Servers: name, status, ipv4, type, idle
 #   hz create <name> --yes [options]           Create server (cloud-init via
 #                                              hetzner-user-data.sh) + ssh-add
-#       --type cx22            server type (hcloud server-type list)
+#       --type cx23            server type (hcloud server-type list)
 #       --image ubuntu-24.04   OS image
 #       --ssh-key <name>       hcloud SSH key (auto-picked when exactly one exists)
 #       --user k-kit           user for the ssh config entry
@@ -245,7 +245,7 @@ cmd_ssh_rm() {
 }
 
 cmd_create() {
-    local name="" type="cx22" image="ubuntu-24.04" sshkey="" user="$DEFAULT_USER"
+    local name="" type="cx23" image="ubuntu-24.04" sshkey="" user="$DEFAULT_USER"
     local idle=0 hours=2 yes=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
