@@ -1,0 +1,460 @@
+#!/usr/bin/env bash
+# dotf — one CLI for installing and deploying these dotfiles.
+#
+# A thin wrapper around ./install.sh and ./deploy.sh. It finds the repo from
+# its own location, so it works from any directory.
+#
+# Usage: dotf <command> [flags...]
+#
+# Commands:
+#   setup [flags]      First run: install, then deploy
+#   install [flags]    Install dependencies       (wraps install.sh)
+#   deploy [flags]     Deploy configurations      (wraps deploy.sh)
+#   status             Platform, profile, and which components would run
+#   doctor             Check required tools and symlink health
+#   components [WHICH] List registry components (WHICH: install | deploy | all)
+#   update [flags]     git pull the repo, optionally re-deploy
+#   help               This text
+#
+# Component flags (forwarded verbatim to install.sh / deploy.sh):
+#   --only C1 C2..     Run ONLY these; cannot be mixed with the flags below
+#   --minimal          Start from nothing, then add with --<component>
+#   --profile=NAME     personal | server | cloud | minimal
+#   --<component>      Enable one, e.g. --zsh        (see: dotf components)
+#   --no-<component>   Disable one, e.g. --no-apps
+#   --non-interactive  Skip the component picker and take the defaults
+#   Anything else is passed through — `dotf install --help` shows the full list.
+#
+# dotf's own flags (consumed here, never forwarded):
+#   -n, --dry-run      Print the command that would run, then exit
+#   -h, --help         Help. On install/deploy/setup, defers to the real script
+#   --force            update only: proceed on a dirty tree or a worktree
+#   --deploy           update only: re-deploy after pulling
+#
+# Examples:
+#   dotf setup                       # install + deploy, interactive pickers
+#   dotf setup --profile=server      # headless box
+#   dotf install --only zsh tmux     # just those two
+#   dotf deploy --only claude        # repoint ~/.claude and friends
+#   dotf deploy --dry-run --minimal --shell
+#   dotf status
+#   dotf components deploy
+#   dotf update --deploy
+#
+# Env: DOTF_DIR overrides repo discovery (must contain install.sh and config.sh).
+
+set -euo pipefail
+
+# ─── Repo discovery ───────────────────────────────────────────────────────────
+# Resolve through symlinks so a `custom_bins/dotf` reached via PATH still finds
+# the checkout it lives in. Deliberately ignores an ambient DOT_DIR: the
+# deployed zshrc sets one, and honouring it would make the same binary target a
+# different repo depending on which shell invoked it.
+_resolve_self() {
+    local self="$0"
+    readlink -f "$self" 2>/dev/null && return 0
+    realpath "$self" 2>/dev/null && return 0
+    printf '%s\n' "$self"
+}
+
+if [[ -n "${DOTF_DIR:-}" ]]; then
+    DOT_DIR="$DOTF_DIR"
+else
+    SCRIPT_DIR="$(cd "$(dirname "$(_resolve_self)")" && pwd)"
+    # ${x%/custom_bins} is a no-op if the script was copied elsewhere, hence the
+    # validation below rather than trusting the strip.
+    DOT_DIR="${SCRIPT_DIR%/custom_bins}"
+fi
+
+die() { printf 'dotf: %s\n' "$*" >&2; exit 1; }
+
+for _required in install.sh deploy.sh config.sh; do
+    [[ -f "$DOT_DIR/$_required" ]] || die "no dotfiles checkout at '$DOT_DIR' (missing $_required). Set DOTF_DIR or run dotf from custom_bins/"
+done
+
+usage() { awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' "$(_resolve_self)"; exit "${1:-0}"; }
+
+DRY_RUN=false
+
+# Print a command in copy-pasteable form (dry-run) or run it.
+run() {
+    if [[ "$DRY_RUN" == true ]]; then
+        local out="" arg
+        for arg in "$@"; do out+="${out:+ }$(printf '%q' "$arg")"; done
+        printf '%s\n' "$out"
+        return 0
+    fi
+    "$@"
+}
+
+# ─── Git / worktree facts ─────────────────────────────────────────────────────
+# guard_not_worktree() in helpers.sh compares git-dir against git-common-dir;
+# mirror that rather than string-matching paths, so the answer agrees with the
+# guard that will actually refuse the install.
+_git_abs() {
+    local p
+    p="$(git -C "$DOT_DIR" rev-parse "$1" 2>/dev/null)" || return 1
+    [[ -n "$p" ]] || return 1
+    [[ "$p" == /* ]] || p="$DOT_DIR/$p"
+    (cd "$p" 2>/dev/null && pwd -P)
+}
+
+# True only when DOT_DIR is itself the top of a checkout. `git -C` happily walks
+# up to an enclosing repo, so without this a DOTF_DIR that merely sits inside
+# one would inherit its branch, its dirtiness, and `dotf update` would pull it.
+is_git_checkout() {
+    local top
+    top="$(git -C "$DOT_DIR" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [[ "$(cd "$top" && pwd -P)" == "$(cd "$DOT_DIR" && pwd -P)" ]]
+}
+
+is_worktree() {
+    local gd cd_
+    is_git_checkout || return 1
+    gd="$(_git_abs --git-dir)" || return 1
+    cd_="$(_git_abs --git-common-dir)" || return 1
+    [[ "$gd" != "$cd_" ]]
+}
+
+# The checkout that ~/.claude & co. are actually symlinked into — never the
+# worktree, so symlink checks don't report broken on a healthy machine.
+main_checkout() {
+    local common
+    if is_git_checkout && common="$(_git_abs --git-common-dir)"; then
+        printf '%s\n' "$(dirname "$common")"
+    else
+        printf '%s\n' "$DOT_DIR"
+    fi
+}
+
+is_dirty() {
+    is_git_checkout || return 1
+    [[ -n "$(git -C "$DOT_DIR" status --porcelain 2>/dev/null)" ]]
+}
+
+# ─── Registry parsing ─────────────────────────────────────────────────────────
+# Reads the "name|desc|platform|default|group" lines out of config.sh's
+# INSTALL_REGISTRY / DEPLOY_REGISTRY arrays. Text parsing (not sourcing) so
+# `dotf components` works without zsh.
+registry_rows() {
+    local which="$1"   # install | deploy | all
+    awk -v want="$which" '
+        /^INSTALL_REGISTRY=\(/ { kind="install"; next }
+        /^DEPLOY_REGISTRY=\(/  { kind="deploy";  next }
+        kind != "" && /^\)/    { kind=""; next }
+        kind != "" && /^[[:space:]]*"/ {
+            if (want != "all" && want != kind) next
+            line=$0
+            sub(/^[[:space:]]*"/, "", line)
+            sub(/"[[:space:]]*$/, "", line)
+            print kind "|" line
+        }
+    ' "$DOT_DIR/config.sh"
+}
+
+# ─── Effective component values ───────────────────────────────────────────────
+# Sources config.sh under zsh to get defaults -> profile -> config.local.sh ->
+# platform overrides. `zsh -f` so a stray ~/.zshenv can't inject PROFILE, and no
+# `set -e` inside: config.sh's trailing `[[ ]] && source` is falsy when there is
+# no config.local.sh.
+effective_components() {
+    command -v zsh >/dev/null 2>&1 || return 1
+    DOT_DIR="$DOT_DIR" zsh -f -c '
+        source "$DOT_DIR/config.sh" >/dev/null 2>&1
+        print -r -- "profile|$PROFILE"
+        print -r -- "platform|$PLATFORM"
+        local e n v
+        for e in "${INSTALL_REGISTRY[@]}"; do
+            n="${e%%|*}"; v="INSTALL_${(U)n//-/_}"
+            print -r -- "install|$n|${(P)v}"
+        done
+        for e in "${DEPLOY_REGISTRY[@]}"; do
+            n="${e%%|*}"; v="DEPLOY_${(U)n//-/_}"
+            print -r -- "deploy|$n|${(P)v}"
+        done
+        true
+    ' 2>/dev/null
+}
+
+# ─── Argument splitting ───────────────────────────────────────────────────────
+# The scripts' parse_args turns any unrecognised --flag into a phantom
+# component variable without warning (helpers.sh), so every dotf-only flag must
+# be consumed here and never forwarded.
+FORWARD=()
+WANT_HELP=false
+split_args() {
+    FORWARD=()
+    WANT_HELP=false
+    local a
+    for a in "$@"; do
+        case "$a" in
+            -n|--dry-run) DRY_RUN=true ;;
+            -h|--help)    WANT_HELP=true ;;
+            *)            FORWARD+=("$a") ;;
+        esac
+    done
+}
+
+# Note: FORWARD is expanded as ${FORWARD[@]+"${FORWARD[@]}"} below — the plain
+# "${FORWARD[@]}" form errors on an empty array under `set -u` in bash 3.2,
+# which is what /bin/bash still is on macOS.
+
+# ─── Commands ─────────────────────────────────────────────────────────────────
+cmd_install() {
+    split_args "$@"
+    [[ "$WANT_HELP" == true ]] && exec "$DOT_DIR/install.sh" --help
+    run "$DOT_DIR/install.sh" ${FORWARD[@]+"${FORWARD[@]}"}
+}
+
+cmd_deploy() {
+    split_args "$@"
+    [[ "$WANT_HELP" == true ]] && exec "$DOT_DIR/deploy.sh" --help
+    run "$DOT_DIR/deploy.sh" ${FORWARD[@]+"${FORWARD[@]}"}
+}
+
+cmd_setup() {
+    split_args "$@"
+    if [[ "$WANT_HELP" == true ]]; then
+        # Quoted delimiter: this text needs no expansion, and unquoted it would
+        # run anything inside backticks or $(...) as a command.
+        cat <<'EOF'
+dotf setup [flags] — first run: install.sh then deploy.sh, same flags to both.
+
+Both steps show the interactive component picker unless you pass
+--non-interactive. Flags are the same as install/deploy; see:
+
+  dotf install --help
+  dotf deploy --help
+
+Every flag goes to BOTH scripts, and neither one errors on a flag it does
+not know — it is absorbed silently. So a script-specific flag
+(--force-reinstall is install-only; --aliases=, --ascii=, --append are
+deploy-only) does nothing in the other script, and --only names are
+validated against both registries at once, so "--only zsh" installs zsh
+and deploys nothing. Run install and deploy separately when that matters.
+
+Examples:
+  dotf setup                     # everything, with pickers
+  dotf setup --non-interactive   # defaults, no prompts
+  dotf setup --profile=server    # headless box
+  dotf setup --dry-run           # show the two commands
+EOF
+        return 0
+    fi
+    run "$DOT_DIR/install.sh" ${FORWARD[@]+"${FORWARD[@]}"}
+    run "$DOT_DIR/deploy.sh" ${FORWARD[@]+"${FORWARD[@]}"}
+}
+
+cmd_components() {
+    local which="all" names_only=false a
+    for a in "$@"; do
+        case "$a" in
+            install|deploy|all) which="$a" ;;
+            --names)            names_only=true ;;
+            -h|--help)
+                printf 'dotf components [install|deploy|all] [--names]\n'
+                return 0 ;;
+            *) die "components: unknown argument '$a'" ;;
+        esac
+    done
+
+    if [[ "$names_only" == true ]]; then
+        registry_rows "$which" | awk -F'|' '{print $2}'
+        return 0
+    fi
+
+    registry_rows "$which" | awk -F'|' '
+        BEGIN { printf "%-8s %-16s %-8s %-8s %-12s %s\n", "KIND", "NAME", "PLATFORM", "DEFAULT", "GROUP", "DESCRIPTION" }
+        { printf "%-8s %-16s %-8s %-8s %-12s %s\n", $1, $2, $4, $5, $6, $3 }
+    '
+    printf '\nEnable with --<name>, disable with --no-<name>, or isolate with --only <name>...\n'
+}
+
+cmd_status() {
+    local main enabled
+    main="$(main_checkout)"
+
+    printf 'repo       %s\n' "$DOT_DIR"
+    [[ "$main" != "$DOT_DIR" ]] && printf 'main       %s\n' "$main"
+    if is_git_checkout; then
+        printf 'branch     %s\n' "$(git -C "$DOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '(no commits yet)')"
+    else
+        printf 'branch     (not a git checkout)\n'
+    fi
+
+    enabled="$(effective_components || true)"
+    if [[ -n "$enabled" ]]; then
+        printf 'platform   %s\n' "$(printf '%s\n' "$enabled" | awk -F'|' '$1=="platform"{print $2}')"
+        printf 'profile    %s\n' "$(printf '%s\n' "$enabled" | awk -F'|' '$1=="profile"{print $2}')"
+    else
+        printf 'platform   %s (zsh unavailable — cannot resolve profile)\n' "$(uname -s)"
+    fi
+
+    printf '\n'
+    if is_worktree; then
+        printf 'WARNING    this is a git worktree — install.sh and deploy.sh will refuse.\n'
+        printf '           Run them from %s, or pass --allow-worktree (and\n' "$main"
+        printf '           --allow-worktree-deploy for deploy) if you mean it.\n\n'
+    fi
+    if is_dirty; then
+        printf 'WARNING    uncommitted changes in %s\n\n' "$DOT_DIR"
+    fi
+
+    # shellcheck disable=SC2088  # "~/.claude" here is a display label, not a path
+    if [[ -L "$HOME/.claude" ]]; then
+        local target
+        target="$(readlink "$HOME/.claude")"
+        if [[ "$target" == "$main/claude" ]]; then
+            printf '~/.claude  -> %s (this repo)\n' "$target"
+        else
+            printf '~/.claude  -> %s (NOT this repo)\n' "$target"
+        fi
+    elif [[ -e "$HOME/.claude" ]]; then
+        printf '~/.claude  real directory, not deployed from this repo\n'
+    else
+        printf '~/.claude  missing — run: dotf deploy --only claude\n'
+    fi
+
+    if [[ -n "$enabled" ]]; then
+        printf '\nWould run (defaults, before any CLI flags):\n'
+        local kind
+        for kind in install deploy; do
+            printf '  %-8s %s\n' "$kind" \
+                "$(printf '%s\n' "$enabled" | awk -F'|' -v k="$kind" '$1==k && $3=="true"{printf "%s ", $2}')"
+        done
+    fi
+}
+
+_have() { command -v "$1" >/dev/null 2>&1; }
+
+_check() {
+    local label="$1" ok="$2" fix="${3:-}"
+    if [[ "$ok" == true ]]; then
+        printf '  ok    %s\n' "$label"
+    else
+        printf '  MISS  %-28s %s\n' "$label" "$fix"
+        DOCTOR_PROBLEMS=$((DOCTOR_PROBLEMS + 1))
+    fi
+}
+
+_check_link() {
+    local link="$1" want="$2" fix="$3"
+    if [[ -L "$link" && "$(readlink "$link")" == "$want" ]]; then
+        printf '  ok    %s -> %s\n' "$link" "$want"
+    elif [[ -e "$link" ]]; then
+        printf '  WARN  %-28s exists but is not a link to %s (%s)\n' "$link" "$want" "$fix"
+        DOCTOR_PROBLEMS=$((DOCTOR_PROBLEMS + 1))
+    else
+        printf '  MISS  %-28s %s\n' "$link" "$fix"
+        DOCTOR_PROBLEMS=$((DOCTOR_PROBLEMS + 1))
+    fi
+}
+
+cmd_doctor() {
+    DOCTOR_PROBLEMS=0
+    local main platform
+    main="$(main_checkout)"
+    case "$(uname -s)" in Darwin*) platform=macos ;; Linux*) platform=linux ;; *) platform=unknown ;; esac
+
+    printf 'Required tools\n'
+    local t
+    for t in git zsh curl; do
+        _check "$t" "$(_have "$t" && echo true || echo false)" "install $t via your package manager"
+    done
+    if [[ "$platform" == macos ]]; then
+        _check brew "$(_have brew && echo true || echo false)" "https://brew.sh"
+    elif [[ "$platform" == linux ]]; then
+        _check apt-get "$(_have apt-get && echo true || echo false)" "non-apt distro: install packages manually"
+    fi
+
+    printf '\nOptional tools (installed by dotf install)\n'
+    for t in tmux gh uv fnox claude rg fd jq; do
+        _check "$t" "$(_have "$t" && echo true || echo false)" "dotf install --only core"
+    done
+
+    printf '\nSymlink health (against %s)\n' "$main"
+    _check_link "$HOME/.claude" "$main/claude" "dotf deploy --only claude"
+    _check_link "$HOME/.codex" "$main/codex" "dotf deploy --only codex"
+    if [[ -f "$main/config/fnox.toml" ]]; then
+        _check_link "$HOME/fnox.toml" "$main/config/fnox.toml" "dotf deploy --only fnox"
+    fi
+
+    printf '\nShell wiring\n'
+    # shellcheck disable=SC2088  # "~/.zshrc" here is a display label, not a path
+    if [[ -f "$HOME/.zshrc" ]] && grep -q "config/zshrc.sh" "$HOME/.zshrc" 2>/dev/null; then
+        printf '  ok    ~/.zshrc sources the dotfiles zshrc\n'
+    else
+        printf '  MISS  %-28s %s\n' '~/.zshrc' 'dotf deploy --only shell'
+        DOCTOR_PROBLEMS=$((DOCTOR_PROBLEMS + 1))
+    fi
+    case ":$PATH:" in
+        *":$main/custom_bins:"*) printf '  ok    custom_bins is on PATH\n' ;;
+        *) printf '  MISS  %-28s %s\n' 'custom_bins on PATH' 'restart your shell after: dotf deploy --only shell'
+           DOCTOR_PROBLEMS=$((DOCTOR_PROBLEMS + 1)) ;;
+    esac
+    case "${SHELL:-}" in
+        */zsh) printf '  ok    login shell is zsh\n' ;;
+        *)     printf '  WARN  %-28s %s\n' 'login shell' "is ${SHELL:-unset}; chsh -s \"\$(command -v zsh)\""
+               DOCTOR_PROBLEMS=$((DOCTOR_PROBLEMS + 1)) ;;
+    esac
+
+    # Neither line below counts as a problem: a worktree is where you *develop*
+    # these dotfiles, so failing doctor there would cry wolf every session.
+    printf '\nRepo\n'
+    if is_worktree; then
+        printf '  note  running from a git worktree — install/deploy will refuse here\n'
+    else
+        printf '  ok    main checkout\n'
+    fi
+    is_dirty && printf '  note  uncommitted changes (dotf update will refuse without --force)\n'
+
+    printf '\n%d issue(s); exits 1 if any.\n' "$DOCTOR_PROBLEMS"
+    [[ "$DOCTOR_PROBLEMS" -eq 0 ]]
+}
+
+cmd_update() {
+    local force=false redeploy=false a
+    for a in "$@"; do
+        case "$a" in
+            -n|--dry-run) DRY_RUN=true ;;
+            --force)      force=true ;;
+            --deploy)     redeploy=true ;;
+            -h|--help)
+                cat <<'EOF'
+dotf update [--deploy] [--force] [--dry-run]
+
+Pulls the dotfiles repo (fast-forward only), then optionally re-deploys.
+Refuses on a git worktree or a dirty tree unless --force.
+
+  --deploy   run `dotf deploy` after a successful pull
+  --force    pull anyway from a worktree / dirty tree
+EOF
+                return 0 ;;
+            *) die "update: unknown argument '$a'" ;;
+        esac
+    done
+
+    is_git_checkout || die "'$DOT_DIR' is not the top of a git checkout — nothing to pull"
+
+    if [[ "$force" != true ]]; then
+        is_worktree && die "'$DOT_DIR' is a git worktree — update the main checkout ($(main_checkout)), or pass --force"
+        is_dirty && die "uncommitted changes in '$DOT_DIR' — commit or stash first, or pass --force"
+    fi
+
+    run git -C "$DOT_DIR" pull --ff-only
+    [[ "$redeploy" == true ]] && run "$DOT_DIR/deploy.sh"
+    return 0
+}
+
+# ─── Dispatch ─────────────────────────────────────────────────────────────────
+case "${1:-}" in
+    install)    shift; cmd_install "$@" ;;
+    deploy)     shift; cmd_deploy "$@" ;;
+    setup)      shift; cmd_setup "$@" ;;
+    status)     shift; cmd_status "$@" ;;
+    doctor)     shift; cmd_doctor "$@" ;;
+    components) shift; cmd_components "$@" ;;
+    update)     shift; cmd_update "$@" ;;
+    -h|--help|help|"") usage ;;
+    *) die "unknown command '$1' (see dotf --help)" ;;
+esac

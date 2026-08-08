@@ -17,6 +17,7 @@ Dotfiles for ZSH, Tmux, Vim, SSH and dev tools across macOS, Linux and RunPod, d
 
 | Want to... | Command / file |
 |---|---|
+| Install / deploy from anywhere | `dotf setup` \| `dotf install --only zsh tmux` \| `dotf deploy --only claude` — wraps `install.sh`/`deploy.sh`, add `--dry-run` to see the real command. `dotf status`, `dotf doctor`, `dotf components` |
 | Add a new alias | `config/aliases/<topic>.sh` (themed split; or `aliases_<name>.sh` for env-specific) |
 | Add a deploy component | Create `deploy_X()` in `deploy.sh` — [`docs/deploy-components.md`](docs/deploy-components.md) § Extending |
 | Add a custom binary | Drop it in `custom_bins/` (already on PATH); `chmod +x` |
