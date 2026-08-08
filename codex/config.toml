@@ -6,6 +6,7 @@ notify = [
     "turn-ended",
 ]
 sandbox_mode = "danger-full-access"
+approvals_reviewer = "user"
 
 [projects."/Users/kit/dotfiles"]
 trust_level = "trusted"
@@ -24,37 +25,44 @@ source_type = "local"
 source = "/Users/kit/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
 
 [marketplaces.ai-safety-plugins]
-last_updated = "2026-08-08T15:29:56Z"
+last_updated = "2026-08-08T16:00:53Z"
+last_revision = "1c839307b8b37bf7b8b3c710fe6464f83de61d0c"
 source_type = "git"
 source = "https://github.com/yulonglin/ai-safety-plugins.git"
 
 [marketplaces.alignment-hive]
-last_updated = "2026-08-08T15:29:58Z"
+last_updated = "2026-08-08T16:00:56Z"
+last_revision = "992aff5fd3301780cc6d08fa9690ca807d1873d5"
 source_type = "git"
 source = "https://github.com/Crazytieguy/alignment-hive.git"
 
 [marketplaces.claude-plugins-official]
-last_updated = "2026-08-08T15:30:16Z"
+last_updated = "2026-08-08T16:00:58Z"
+last_revision = "b840f2f29f1668f313f9994c0dd595c5e29146f2"
 source_type = "git"
 source = "https://github.com/anthropics/claude-plugins-official.git"
 
 [marketplaces.codex-plugin-cc]
-last_updated = "2026-08-08T15:30:04Z"
+last_updated = "2026-08-08T16:01:00Z"
+last_revision = "1744b69cc262eb673696b0c9ffa647f949bf2365"
 source_type = "git"
 source = "https://github.com/crazytieguy/codex-plugin-cc.git"
 
 [marketplaces.dev-browser-marketplace]
-last_updated = "2026-08-08T15:30:08Z"
+last_updated = "2026-08-08T16:01:04Z"
+last_revision = "73fe10f045b9c872f963fe6168de4328857e38cf"
 source_type = "git"
 source = "https://github.com/sawyerhood/dev-browser.git"
 
 [marketplaces.productivity-tools]
-last_updated = "2026-08-08T15:30:08Z"
+last_updated = "2026-08-08T16:01:05Z"
+last_revision = "5f6155e464d5986e6255497e7f497c8b64d4d56c"
 source_type = "git"
 source = "https://github.com/yulonglin/productivity-tools.git"
 
 [marketplaces.ui-ux-pro-max-skill]
-last_updated = "2026-08-08T15:30:09Z"
+last_updated = "2026-08-08T16:01:07Z"
+last_revision = "abb7f2fd5a083fa1ff55c326a963ff0d95c33f99"
 source_type = "git"
 source = "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill.git"
 
@@ -341,3 +349,51 @@ trusted_hash = "sha256:218ec4865b8e4413c4c9fafe9d9ee0b5e787b46e50a21b29787d5463c
 
 [hooks.state."remember@claude-plugins-official:hooks/hooks.json:user_prompt_submit:0:0"]
 trusted_hash = "sha256:063ea45c81012b7c36a92e4f0de9e8aaf2dcefeac5c09c6b45466acc62695486"
+
+[hooks.state."codex@codex-plugin-cc:hooks/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:fd950dc99ea73773658878416a8e06c24eb62378fea2ede7f585f76623e75eb9"
+
+[hooks.state."codex@codex-plugin-cc:hooks/hooks.json:session_end:0:0"]
+trusted_hash = "sha256:bc55a03ac0094c5deb4af95c405b75b34735f318b3d9bd64a2f9902973861606"
+
+[hooks.state."hookify@claude-plugins-official:hooks/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:2763d5b04659d5af7b607ed8ae8524d45987b047509ae969db296c1163793e98"
+
+[hooks.state."hookify@claude-plugins-official:hooks/hooks.json:post_tool_use:0:0"]
+trusted_hash = "sha256:33cab461db694142d691bc1267d6b4694a32402af2301bd1cc1becfbe5888a81"
+
+[hooks.state."hookify@claude-plugins-official:hooks/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:cbc990263a4b369738f970a9273caec2a5b55213795a57494ebb581240631a33"
+
+[hooks.state."hookify@claude-plugins-official:hooks/hooks.json:stop:0:0"]
+trusted_hash = "sha256:81df2b0427162d1d2fe4b84733748a11f5bcb7b10dae9af3bced6c8b0709b6ca"
+
+[hooks.state."ralph-loop@claude-plugins-official:hooks/hooks.json:stop:0:0"]
+trusted_hash = "sha256:6157c9f3776a29424b3a497707296124a3f628909fc09129dc89412d1c6b35b1"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:0:0"]
+trusted_hash = "sha256:e1f574c07fd492df4de2ceb615c3b0a2a3eca27329bf0929ff9095650c7174bf"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:1:0"]
+trusted_hash = "sha256:ff051adf363232a355758bbc96941b87ab8b38bd47e6c5940b1232827a68b6d6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:1:1"]
+trusted_hash = "sha256:ff051adf363232a355758bbc96941b87ab8b38bd47e6c5940b1232827a68b6d6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:1:2"]
+trusted_hash = "sha256:ff051adf363232a355758bbc96941b87ab8b38bd47e6c5940b1232827a68b6d6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:1:3"]
+trusted_hash = "sha256:ff051adf363232a355758bbc96941b87ab8b38bd47e6c5940b1232827a68b6d6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:post_tool_use:1:4"]
+trusted_hash = "sha256:ff051adf363232a355758bbc96941b87ab8b38bd47e6c5940b1232827a68b6d6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:3def3be0b299c29f829ea4b057509c24f3c6f8eede7b8c719bbd4167866d6cf6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:c22701bf949e9ffd219867faec1158e0124874e94f3668dab6209fa3acc92dd6"
+
+[hooks.state."security-guidance@claude-plugins-official:hooks/hooks.json:stop:0:0"]
+trusted_hash = "sha256:5d8880157e747997146b5eb0443a43909e23fb0203e64ae4895eff5a1b0282fa"
