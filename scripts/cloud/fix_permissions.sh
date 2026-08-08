@@ -4,7 +4,7 @@
 
 set -e
 
-USERNAME="${USERNAME:-yulong}"
+USERNAME="${USERNAME:-kit}"
 
 USER_HOME="/home/$USERNAME"
 
