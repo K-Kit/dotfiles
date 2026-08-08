@@ -1,0 +1,414 @@
+#!/usr/bin/env bash
+# hz — Hetzner Cloud dev-server manager: servers + ~/.ssh/config Host entries
+#
+# Usage:
+#   hz list                                    Servers: name, status, ipv4, type, idle
+#   hz create <name> --yes [options]           Create server (cloud-init via
+#                                              hetzner-user-data.sh) + ssh-add
+#       --type cx22            server type (hcloud server-type list)
+#       --image ubuntu-24.04   OS image
+#       --ssh-key <name>       hcloud SSH key (auto-picked when exactly one exists)
+#       --user k-kit           user for the ssh config entry
+#       --idle-shutdown        OPT-IN auto-poweroff when idle (default OFF)
+#       --idle-hours N         idle threshold in hours, implies --idle-shutdown (default 2)
+#   hz delete <server> --yes                   Delete server + its ssh config entries
+#   hz ssh-add <server> [--user k-kit|root] [--alias <Host>]
+#                                              Upsert Host block in ~/.ssh/config
+#   hz ssh-sync [--dry-run]                    Host entry per running server
+#   hz ssh-rm <alias>                          Remove one hz-managed Host block
+#   hz idle enable <server> [--hours N]        Install on-box idle watchdog + set label
+#   hz idle disable <server>                   Remove watchdog + label
+#   hz idle status <server>                    Label + on-box watchdog state
+#   hz poweron <server>                        Wake a powered-off server
+#
+# Auth: HCLOUD_TOKEN from the environment, else resolved via `fnox get HERTZNER`.
+# The token is exported to hcloud only — never printed.
+#
+# Idle shutdown is DEFAULT OFF. When enabled, the box runs `systemctl poweroff`
+# after N hours with no SSH connections (watchdog: scripts/cloud/
+# idle-shutdown-install.sh). Inhibit from on the box: `touch ~/.keep-alive`.
+# A powered-off server keeps its disk + IP (those still bill): `hz poweron <name>`.
+#
+# ~/.ssh/config edits are confined to '# BEGIN hz <alias>' ... '# END hz <alias>'
+# blocks; the pre-hz config is backed up once to ~/.ssh/config.hz-backup.
+#
+# Env overrides: HZ_SSH_CONFIG (default ~/.ssh/config), HZ_SSH_USER (default k-kit)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
+DOT_DIR="${SCRIPT_DIR%/custom_bins}"
+USER_DATA_SCRIPT="$DOT_DIR/scripts/cloud/hetzner-user-data.sh"
+IDLE_INSTALLER="$DOT_DIR/scripts/cloud/idle-shutdown-install.sh"
+
+IDLE_LABEL="dotfiles.idle-shutdown"
+SSH_CONFIG="${HZ_SSH_CONFIG:-$HOME/.ssh/config}"
+SSH_BACKUP="${SSH_CONFIG}.hz-backup"
+DEFAULT_USER="${HZ_SSH_USER:-k-kit}"
+
+usage() {
+    awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' "$0"
+    exit "${1:-0}"
+}
+
+die() { echo "hz: $*" >&2; exit 1; }
+
+require_deps() {
+    command -v hcloud >/dev/null 2>&1 || die "hcloud CLI not found (brew install hcloud)"
+    command -v jq >/dev/null 2>&1 || die "jq not found"
+}
+
+ensure_token() {
+    [[ -n "${HCLOUD_TOKEN:-}" ]] && return 0
+    command -v fnox >/dev/null 2>&1 \
+        || die "HCLOUD_TOKEN is unset and fnox is not installed — export HCLOUD_TOKEN or install fnox"
+    HCLOUD_TOKEN="$(FNOX_NON_INTERACTIVE=true fnox get HERTZNER 2>/dev/null || true)"
+    [[ -n "$HCLOUD_TOKEN" ]] \
+        || die "could not resolve token: HCLOUD_TOKEN unset and 'fnox get HERTZNER' returned nothing"
+    export HCLOUD_TOKEN
+}
+
+server_ip() {
+    local ip
+    ip="$(hcloud server describe "$1" -o json 2>/dev/null | jq -r '.public_net.ipv4.ip // empty')"
+    [[ -n "$ip" ]] || die "server '$1' not found or has no public IPv4"
+    printf '%s' "$ip"
+}
+
+# ── ssh config management ──────────────────────────────────────────────────
+# Managed blocks are delimited by exact-match marker lines so user content is
+# never touched:  # BEGIN hz <alias> ... # END hz <alias>
+# A '# hz server: <name>' line inside the block maps alias -> hcloud server.
+
+render_block() { # alias ip user server-name
+    printf '# BEGIN hz %s\n# hz server: %s\nHost %s\n    HostName %s\n    User %s\n    StrictHostKeyChecking accept-new\n    ServerAliveInterval 60\n# END hz %s\n' \
+        "$1" "$4" "$1" "$2" "$3" "$1"
+}
+
+current_block() { # alias
+    [[ -f "$SSH_CONFIG" ]] || return 0
+    awk -v a="$1" '$0=="# BEGIN hz "a{f=1} f{print} $0=="# END hz "a{f=0}' "$SSH_CONFIG"
+}
+
+managed_aliases() {
+    [[ -f "$SSH_CONFIG" ]] || return 0
+    awk '/^# BEGIN hz /{sub(/^# BEGIN hz /,""); print}' "$SSH_CONFIG"
+}
+
+aliases_for_server() { # server-name -> aliases of blocks pointing at it
+    [[ -f "$SSH_CONFIG" ]] || return 0
+    awk -v s="$1" '
+        /^# BEGIN hz /{alias=$0; sub(/^# BEGIN hz /,"",alias)}
+        $0=="# hz server: "s && alias!=""{print alias; alias=""}' "$SSH_CONFIG"
+}
+
+backup_once() {
+    [[ -f "$SSH_BACKUP" ]] && return 0
+    if [[ -s "$SSH_CONFIG" ]]; then
+        cp -p "$SSH_CONFIG" "$SSH_BACKUP"
+        echo "hz: one-time backup: $SSH_CONFIG -> $SSH_BACKUP" >&2
+    fi
+    return 0
+}
+
+write_config() { # stdin -> $SSH_CONFIG, with dir/perm hygiene
+    local dir tmp
+    dir="$(dirname "$SSH_CONFIG")"
+    mkdir -p "$dir"
+    tmp="$(mktemp "$dir/.hz-config.XXXXXX")"
+    cat > "$tmp"
+    chmod 600 "$tmp"
+    mv "$tmp" "$SSH_CONFIG"
+}
+
+ssh_upsert() { # alias ip user server-name -> prints added|updated|unchanged
+    local alias="$1" ip="$2" user="$3" server="$4" new cur rest
+    new="$(render_block "$alias" "$ip" "$user" "$server")"
+    cur="$(current_block "$alias")"
+    if [[ "$cur" == "$new" ]]; then
+        echo "unchanged"
+        return 0
+    fi
+    backup_once
+    rest=""
+    if [[ -f "$SSH_CONFIG" ]]; then
+        # command substitution strips trailing newlines -> exactly one blank
+        # line before the appended block, no accumulation across updates
+        rest="$(awk -v a="$alias" \
+            '$0=="# BEGIN hz "a{f=1; next} $0=="# END hz "a{f=0; next} !f' "$SSH_CONFIG")"
+    fi
+    {
+        [[ -n "$rest" ]] && printf '%s\n\n' "$rest"
+        printf '%s\n' "$new"
+    } | write_config
+    if [[ -n "$cur" ]]; then echo "updated"; else echo "added"; fi
+}
+
+ssh_remove_block() { # alias -> prints removed|absent
+    local alias="$1" rest
+    if [[ -z "$(current_block "$alias")" ]]; then
+        echo "absent"
+        return 0
+    fi
+    backup_once
+    rest="$(awk -v a="$alias" \
+        '$0=="# BEGIN hz "a{f=1; next} $0=="# END hz "a{f=0; next} !f' "$SSH_CONFIG")"
+    if [[ -n "$rest" ]]; then
+        printf '%s\n' "$rest" | write_config
+    else
+        : | write_config
+    fi
+    echo "removed"
+}
+
+# ── commands ───────────────────────────────────────────────────────────────
+
+cmd_list() {
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && usage
+    require_deps
+    ensure_token
+    hcloud server list -o json | jq -r '
+        (["NAME","STATUS","IPV4","TYPE","IDLE"] | @tsv),
+        (.[] | [.name, .status, (.public_net.ipv4.ip // "-"), .server_type.name,
+                (.labels["'"$IDLE_LABEL"'"] // "off")] | @tsv)' \
+        | column -t -s "$(printf '\t')"
+}
+
+cmd_ssh_add() {
+    local server="" user="$DEFAULT_USER" alias="" ip status
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --user) user="${2:?--user needs a value}"; shift 2 ;;
+            --alias) alias="${2:?--alias needs a value}"; shift 2 ;;
+            -h|--help) usage ;;
+            -*) die "ssh-add: unknown option $1" ;;
+            *) [[ -n "$server" ]] && die "ssh-add: one server only"; server="$1"; shift ;;
+        esac
+    done
+    [[ -n "$server" ]] || die "usage: hz ssh-add <server> [--user <u>] [--alias <Host>]"
+    [[ -n "$alias" ]] || alias="$server"
+    require_deps
+    ensure_token
+    ip="$(server_ip "$server")"
+    status="$(ssh_upsert "$alias" "$ip" "$user" "$server")"
+    echo "hz: Host '$alias' -> $user@$ip ($status)"
+}
+
+cmd_ssh_sync() {
+    local dry=0 name ip status verb known
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run) dry=1; shift ;;
+            -h|--help) usage ;;
+            *) die "ssh-sync: unknown option $1" ;;
+        esac
+    done
+    require_deps
+    ensure_token
+    local servers_json
+    servers_json="$(hcloud server list -o json)"
+    while IFS=$'\t' read -r name ip; do
+        [[ -n "$name" ]] || continue
+        if [[ "$dry" == "1" ]]; then
+            local new cur
+            new="$(render_block "$name" "$ip" "$DEFAULT_USER" "$name")"
+            cur="$(current_block "$name")"
+            if [[ "$cur" == "$new" ]]; then verb="unchanged"
+            elif [[ -n "$cur" ]]; then verb="would update"
+            else verb="would add"; fi
+            echo "hz: Host '$name' -> $DEFAULT_USER@$ip ($verb)"
+        else
+            status="$(ssh_upsert "$name" "$ip" "$DEFAULT_USER" "$name")"
+            echo "hz: Host '$name' -> $DEFAULT_USER@$ip ($status)"
+        fi
+    done < <(jq -r '.[] | select(.status=="running")
+                    | [.name, .public_net.ipv4.ip // empty] | @tsv' <<<"$servers_json")
+    # flag managed blocks whose server no longer exists (never auto-removed)
+    known="$(jq -r '.[].name' <<<"$servers_json")"
+    local a s
+    while IFS= read -r a; do
+        [[ -n "$a" ]] || continue
+        s="$(awk -v a="$a" '$0=="# BEGIN hz "a{f=1; next} f && /^# hz server: /{sub(/^# hz server: /,""); print; exit}' "$SSH_CONFIG")"
+        if [[ -n "$s" ]] && ! grep -qx -- "$s" <<<"$known"; then
+            echo "hz: stale entry 'Host $a' (server '$s' gone) — remove with: hz ssh-rm $a"
+        fi
+    done < <(managed_aliases)
+}
+
+cmd_ssh_rm() {
+    local alias="${1:-}"
+    [[ "$alias" == "-h" || "$alias" == "--help" ]] && usage
+    [[ -n "$alias" ]] || die "usage: hz ssh-rm <alias>"
+    local status
+    status="$(ssh_remove_block "$alias")"
+    echo "hz: Host '$alias' ($status)"
+}
+
+cmd_create() {
+    local name="" type="cx22" image="ubuntu-24.04" sshkey="" user="$DEFAULT_USER"
+    local idle=0 hours=2 yes=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --type) type="${2:?}"; shift 2 ;;
+            --image) image="${2:?}"; shift 2 ;;
+            --ssh-key) sshkey="${2:?}"; shift 2 ;;
+            --user) user="${2:?}"; shift 2 ;;
+            --idle-shutdown) idle=1; shift ;;
+            --idle-hours) hours="${2:?}"; idle=1; shift 2 ;;
+            --yes) yes=1; shift ;;
+            -h|--help) usage ;;
+            -*) die "create: unknown option $1" ;;
+            *) [[ -n "$name" ]] && die "create: one server name only"; name="$1"; shift ;;
+        esac
+    done
+    [[ -n "$name" ]] || die "usage: hz create <name> --yes [--type t] [--image i] [--ssh-key k] [--idle-shutdown] [--idle-hours N]"
+    [[ "$hours" =~ ^[0-9]+$ && "$hours" -ge 1 ]] || die "create: --idle-hours must be a positive integer"
+    [[ -x "$USER_DATA_SCRIPT" ]] || die "missing $USER_DATA_SCRIPT"
+    [[ -f "$IDLE_INSTALLER" ]] || die "missing $IDLE_INSTALLER"
+    require_deps
+    ensure_token
+
+    if [[ -z "$sshkey" ]]; then
+        local keys nkeys
+        keys="$(hcloud ssh-key list -o json | jq -r '.[].name')"
+        nkeys="$(grep -c . <<<"$keys" || true)"
+        if [[ "$nkeys" == "1" ]]; then
+            sshkey="$keys"
+        else
+            die "create: pass --ssh-key <name>; available keys:"$'\n'"$keys"
+        fi
+    fi
+
+    if [[ "$yes" != "1" ]]; then
+        echo "hz: would create (paid!): name=$name type=$type image=$image ssh-key=$sshkey idle-shutdown=$([[ $idle == 1 ]] && echo "${hours}h" || echo off)"
+        die "refusing to create a paid server without --yes"
+    fi
+
+    local ud
+    ud="$(mktemp "${TMPDIR:-/tmp}/hz-user-data.XXXXXX")"
+    trap 'rm -f "$ud"' EXIT
+    "$USER_DATA_SCRIPT" > "$ud"
+
+    local -a label_args=()
+    if [[ "$idle" == "1" ]]; then
+        # ship the watchdog inside cloud-init: append one runcmd step (runs
+        # after dotfiles-bootstrap; base64 keeps the YAML single-line-safe)
+        local b64
+        b64="$(base64 < "$IDLE_INSTALLER" | tr -d '\n')"
+        printf '  - [ bash, -c, "printf %%s %s | base64 -d > /usr/local/sbin/idle-shutdown-install && bash /usr/local/sbin/idle-shutdown-install install %s" ]\n' \
+            "$b64" "$hours" >> "$ud"
+        label_args=(--label "$IDLE_LABEL=${hours}h")
+    fi
+
+    echo "hz: creating $name ($type, $image, key=$sshkey)..."
+    hcloud server create --name "$name" --type "$type" --image "$image" \
+        --ssh-key "$sshkey" --user-data-from-file "$ud" \
+        ${label_args[@]+"${label_args[@]}"}
+    rm -f "$ud"
+    trap - EXIT
+
+    local ip status
+    ip="$(server_ip "$name")"
+    status="$(ssh_upsert "$name" "$ip" "$user" "$name")"
+    echo "hz: Host '$name' -> $user@$ip ($status)"
+    echo
+    echo "Next steps:"
+    echo "  ssh root@$ip cloud-init status --wait   # blocks until first boot finishes"
+    echo "  ssh $name                               # dotfiles user once bootstrap is done"
+    [[ "$idle" == "1" ]] && {
+        echo "  hz idle status $name                    # watchdog state (installed by cloud-init)"
+        echo "  # box powers off after ${hours}h idle — wake: hz poweron $name; inhibit: touch ~/.keep-alive"
+    }
+    return 0
+}
+
+cmd_delete() {
+    local name="" yes=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes) yes=1; shift ;;
+            -h|--help) usage ;;
+            -*) die "delete: unknown option $1" ;;
+            *) [[ -n "$name" ]] && die "delete: one server only"; name="$1"; shift ;;
+        esac
+    done
+    [[ -n "$name" ]] || die "usage: hz delete <server> --yes"
+    require_deps
+    ensure_token
+    [[ "$yes" == "1" ]] || die "refusing to delete server '$name' without --yes (irreversible)"
+    hcloud server delete "$name"
+    echo "hz: server '$name' deleted"
+    local a
+    while IFS= read -r a; do
+        [[ -n "$a" ]] || continue
+        echo "hz: Host '$a' ($(ssh_remove_block "$a"))"
+    done < <(aliases_for_server "$name")
+}
+
+idle_ssh() { # ip installer-args...
+    local ip="$1"; shift
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+        "root@$ip" "bash -s -- $*" < "$IDLE_INSTALLER"
+}
+
+cmd_idle() {
+    local sub="${1:-}"; shift || true
+    local server="" hours=2
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --hours) hours="${2:?}"; shift 2 ;;
+            -h|--help) usage ;;
+            -*) die "idle: unknown option $1" ;;
+            *) [[ -n "$server" ]] && die "idle: one server only"; server="$1"; shift ;;
+        esac
+    done
+    case "$sub" in enable|disable|status) ;; -h|--help|"") usage ;; *) die "idle: unknown subcommand '$sub' (enable|disable|status)" ;; esac
+    [[ -n "$server" ]] || die "usage: hz idle $sub <server>"
+    [[ "$hours" =~ ^[0-9]+$ && "$hours" -ge 1 ]] || die "idle: --hours must be a positive integer"
+    [[ -f "$IDLE_INSTALLER" ]] || die "missing $IDLE_INSTALLER"
+    require_deps
+    ensure_token
+    local ip
+    ip="$(server_ip "$server")"
+    case "$sub" in
+        enable)
+            hcloud server add-label --overwrite "$server" "$IDLE_LABEL=${hours}h" >/dev/null
+            idle_ssh "$ip" install "$hours"
+            echo "hz: label $IDLE_LABEL=${hours}h set on '$server'"
+            ;;
+        disable)
+            hcloud server remove-label "$server" "$IDLE_LABEL" >/dev/null 2>&1 || true
+            idle_ssh "$ip" uninstall
+            echo "hz: label $IDLE_LABEL removed from '$server'"
+            ;;
+        status)
+            local label
+            label="$(hcloud server describe "$server" -o json | jq -r '.labels["'"$IDLE_LABEL"'"] // "off"')"
+            echo "label: $IDLE_LABEL=$label"
+            idle_ssh "$ip" status \
+                || echo "hz: box unreachable over SSH (root@$ip) — label shown above is all we know"
+            ;;
+    esac
+}
+
+cmd_poweron() {
+    local name="${1:-}"
+    [[ "$name" == "-h" || "$name" == "--help" ]] && usage
+    [[ -n "$name" ]] || die "usage: hz poweron <server>"
+    require_deps
+    ensure_token
+    hcloud server poweron "$name"
+}
+
+case "${1:-}" in
+    list) shift; cmd_list "$@" ;;
+    create) shift; cmd_create "$@" ;;
+    delete) shift; cmd_delete "$@" ;;
+    ssh-add) shift; cmd_ssh_add "$@" ;;
+    ssh-sync) shift; cmd_ssh_sync "$@" ;;
+    ssh-rm) shift; cmd_ssh_rm "$@" ;;
+    idle) shift; cmd_idle "$@" ;;
+    poweron) shift; cmd_poweron "$@" ;;
+    -h|--help|help|"") usage ;;
+    *) die "unknown command '${1}' (see hz --help)" ;;
+esac

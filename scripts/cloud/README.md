@@ -149,6 +149,30 @@ rm "$TMPDIR/user-data.yaml"
 
 Injected when resolvable: `TAILSCALE_AUTH_KEY`, `BWS_TOKEN` (add `BWS_TOKEN` to fnox with `fnox set BWS_TOKEN` to enable it). Unresolved names stay commented and the post-boot path above still applies. The rendered file carries the same root-readable/metadata-service exposure as hand-filling the env block — delete it after `server create`, and the script refuses to print secrets to a terminal.
 
+### hz CLI
+
+`custom_bins/hz` wraps the whole flow: token from fnox (`HERTZNER`, or an existing `HCLOUD_TOKEN`), user-data rendered by `hetzner-user-data.sh`, and a managed `Host` block in `~/.ssh/config` per server. Config edits are confined to `# BEGIN hz <alias>` … `# END hz <alias>` marker blocks (idempotent upserts, user content untouched), and the pre-hz config is backed up once to `~/.ssh/config.hz-backup`.
+
+```bash
+hz list                                   # name, status, ipv4, type, idle label
+hz create dev-box --yes                   # create (cx22/ubuntu-24.04) + ssh-add; --yes required — it bills
+hz create dev-box --yes --idle-shutdown   # + auto-poweroff after 2h idle (tune: --idle-hours N)
+hz ssh-add dev-box --user root --alias hz-1
+hz ssh-sync --dry-run                     # Host entry per running server; flags stale entries
+hz idle enable dev-box --hours 2          # retrofit the watchdog onto an existing server
+hz idle status dev-box                    # label + on-box watchdog state
+hz delete dev-box --yes                   # delete server + its ssh config entries
+hz poweron dev-box                        # wake a powered-off server
+```
+
+### Idle auto-shutdown (opt-in, default OFF)
+
+`idle-shutdown-install.sh` installs an on-box systemd timer (5-minute checks, 15-minute boot grace) that runs `systemctl poweroff` after N hours (default 2) with no established SSH connections and no logged-in sessions. `hz create --idle-shutdown` ships it inside cloud-init; `hz idle enable <server>` retrofits it over SSH as root; `hz idle disable` removes it. Enabled servers carry the label `dotfiles.idle-shutdown=<N>h`, which `hz list` shows in the IDLE column.
+
+- Inhibit without uninstalling: `touch ~/.keep-alive` on the box (any user's home or `/root`); remove the file to re-arm.
+- A powered-off server keeps its disk and IP — those still bill, CPU/RAM don't. Wake it with `hz poweron <name>` (= `hcloud server poweron <name>`).
+- A reboot resets the idle clock (state lives in `/run`).
+
 ### Verify / debug
 
 ```bash
