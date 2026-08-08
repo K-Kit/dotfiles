@@ -1,5 +1,12 @@
 CONFIG_DIR=$(dirname $(realpath ${(%):-%x}))
-DOT_DIR=${CONFIG_DIR:h}
+# Exported, not just assigned. Every deployed consumer outside a login shell —
+# Claude Code hooks, systemd units, cron — reads `${DOT_DIR:-$HOME/code/dotfiles}`
+# and silently hit the literal fallback while this was a plain assignment. The
+# bash branch of deploy.sh has always exported it (`export DOT_DIR=$DOT_DIR`);
+# the zsh branch, which is the one actually used, did not.
+# Derived from THIS file's realpath, so it names the checkout that ~/.zshrc
+# sources — never a worktree, whatever the shell's cwd happens to be.
+export DOT_DIR=${CONFIG_DIR:h}
 
 # User-customizable directory locations (override in ~/.zshenv or config/secrets.sh)
 CODE_DIR="${CODE_DIR:-$HOME/code}"           # Primary code projects

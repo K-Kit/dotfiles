@@ -126,13 +126,22 @@ try "uv" _install_uv
 # ── SOFT: dotfiles ────────────────────────────────────────────────────────────
 step "Dotfiles"
 # Deliberately the same path as a workstation checkout, NOT $USER_HOME/dotfiles.
-# install.sh/deploy.sh derive DOT_DIR from their own location and would work
-# from anywhere, but DOT_DIR is assigned without `export` in config/zshrc.sh,
-# so every deployed consumer that reads `${DOT_DIR:-$HOME/code/dotfiles}` —
-# claude/hooks/context_auto_apply.sh, the llm-billing agent and skill — sees the
-# literal fallback whenever it is not launched from a login zsh (which is the
-# normal case for a Claude Code hook). Moving the checkout would break those on
-# cloud boxes only, invisibly to local testing. See scripts/cloud/README.md.
+#
+# This used to be justified by a bug — DOT_DIR was assigned without `export` in
+# config/zshrc.sh, so consumers reading `${DOT_DIR:-$HOME/code/dotfiles}` hit the
+# literal whenever they were not children of a login zsh. That was an argument
+# for fixing the export, not for freezing the path, and the export is now fixed.
+#
+# The reasons that survive:
+#   1. ~19 files name `code/dotfiles`, and several are formats that cannot hold
+#      fallback logic at all — config/auto-mode-proxy.plist,
+#      config/systemd-user/vault-sync-tripwire.service, config/zed/settings.json,
+#      codex/rules/*.rules. A move is a mechanical edit of every one of them.
+#   2. Path parity. A command pasted from the workstation into a cloud box has to
+#      work unchanged; that is the whole point of provisioning from these files.
+# Neither is a claim that the machinery *requires* this path — install.sh and
+# deploy.sh derive DOT_DIR from their own location and run from anywhere.
+# See scripts/cloud/README.md.
 DOTFILES="$USER_HOME/code/dotfiles"
 _dotfiles() {
     git ls-remote --exit-code --heads "$DOTFILES_REPO" "$DOTFILES_BRANCH" >/dev/null 2>&1 \

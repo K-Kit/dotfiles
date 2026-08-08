@@ -10,8 +10,9 @@
 #       max      ccx63  48 vCPU dedicated / 192 GB / 960 GB   EUR 1.6138/h  (~1007/mo)
 #     small/medium imply --yes; max needs an explicit --yes (155x small's rate).
 #     Any create option overrides the preset: hz medium box --idle-hours 4
-#   hz up <name> [create options]              Like the presets but with the bare
-#                                              `create` default type; implies --yes
+#   hz up <name> [create options]              Bare `create` default type (cx23,
+#                                              same as small) with NO idle-shutdown;
+#                                              implies --yes
 #   hz create <name> --yes [options]           Create server (cloud-init via
 #                                              hetzner-user-data.sh) + ssh-add,
 #                                              then block until bootstrap ends
@@ -394,7 +395,11 @@ push_github_token() { # ip user — OPT-IN; moves a PAT onto the remote box
 }
 
 cmd_create() {
-    local name="" type="cpx42" image="ubuntu-24.04" sshkey="" user="$DEFAULT_USER"
+    # Default matches the documented `--type cx23` in usage() and the `small`
+    # preset. It used to be cpx42 — a much larger, much pricier type — while the
+    # help said cx23, and `hz up` (which implies --yes) inherits exactly this
+    # default, so the mismatch billed for a big server with no confirmation step.
+    local name="" type="cx23" image="ubuntu-24.04" sshkey="" user="$DEFAULT_USER"
     local location="$DEFAULT_LOCATION" idle=0 hours=2 yes=0
     local branch="main" wait=1 timeout=900 ghauth=0
     while [[ $# -gt 0 ]]; do

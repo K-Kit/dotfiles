@@ -20,6 +20,9 @@ USER_DATA="$REPO/scripts/cloud/hetzner-user-data.sh"
 TEMPLATE="$REPO/scripts/cloud/hetzner-cloud-init.yaml"
 IDLE_INSTALLER="$REPO/scripts/cloud/idle-shutdown-install.sh"
 TMUX_CONF="$REPO/config/tmux.conf"
+SETUP_SH="$REPO/scripts/cloud/setup.sh"
+ZSHRC="$REPO/config/zshrc.sh"
+CONTEXT_HOOK="$REPO/claude/hooks/context_auto_apply.sh"
 
 PASS=0
 FAIL=0
@@ -142,6 +145,17 @@ check_contains "wait is documented in --help" "hz wait <server>" "$out"
 check_contains "--github-auth documents where the token comes from" \
     "fnox get GITHUB_TOKEN" "$out"
 
+# The documented default and the coded default drifted apart once already:
+# --help said cx23 while cmd_create defaulted to cpx42, and `hz up` inherits that
+# default *and* implies --yes — so the mismatch billed for a much larger server
+# with no confirmation step. Assert both the literal and the doc/code parity: the
+# parity check alone passes vacuously when the help line stops matching.
+doc_type="$(awk '$1=="--type"{print $2; exit}' <<<"$out")"
+check_eq "--help documents a --type default" "cx23" "$doc_type"
+create_type="$("$HZ" create testbox 2>&1 | sed -n 's/.* type=\([^ ]*\).*/\1/p')"
+check_eq "create's default --type is cx23" "cx23" "$create_type"
+check_eq "documented --type default matches the coded one" "$doc_type" "$create_type"
+
 # ── tmux limits for detached agent runs ────────────────────────────────────
 
 section "config/tmux.conf"
@@ -219,6 +233,63 @@ else
     tmux -L worktest kill-server 2>/dev/null
 
     unset TMUX_TMPDIR
+fi
+
+# ── checkout location / DOT_DIR resolution ─────────────────────────────────
+
+section "DOT_DIR resolution"
+
+# The decision is to keep the checkout at ~/code/dotfiles (see the comment at the
+# DOTFILES= assignment in scripts/cloud/setup.sh). These assertions pin the two
+# things that make that decision safe rather than merely inherited: DOT_DIR is
+# actually exported, and the consumers that matter can find the checkout without
+# it. A silent move of the clone path would otherwise only surface on a real box.
+
+check_eq "setup.sh clones to code/dotfiles" \
+    'DOTFILES="$USER_HOME/code/dotfiles"' \
+    "$(grep -E '^DOTFILES=' "$SETUP_SH")"
+
+# The zsh branch of deploy.sh is the one that actually runs; its bash branch has
+# always exported DOT_DIR. A bare assignment here is what made every non-login
+# consumer fall through to a hardcoded literal.
+check_eq "config/zshrc.sh exports DOT_DIR" \
+    "export DOT_DIR=\${CONFIG_DIR:h}" \
+    "$(grep -E '^(export )?DOT_DIR=' "$ZSHRC")"
+check_eq "DOT_DIR is assigned exactly once in config/zshrc.sh" "1" \
+    "$(grep -cE '^(export )?DOT_DIR=' "$ZSHRC")"
+
+# Extract the hook's resolver and run it against a fixture that mimics the
+# deployed layout (~/.claude -> $DOT_DIR/claude), so the assertion is about
+# behaviour rather than about the text of the block.
+RESOLVER="$FIXTURE/resolver-block.sh"
+awk '/^# BEGIN dot-dir-resolver$/{f=1; next} /^# END dot-dir-resolver$/{f=0} f' \
+    "$CONTEXT_HOOK" > "$RESOLVER"
+check_contains "extracted the DOT_DIR resolver" "BASH_SOURCE" "$(cat "$RESOLVER")"
+
+if ! grep -q 'BASH_SOURCE' "$RESOLVER"; then
+    printf '  skip resolver behaviour tests (extraction failed)\n'
+else
+    FAKE="$FIXTURE/fake-dotfiles"
+    mkdir -p "$FAKE/config" "$FAKE/claude/hooks"
+    { printf '#!/usr/bin/env bash\n'; cat "$RESOLVER"; printf 'printf "%%s\\n" "$DOT_DIR"\n'; } \
+        > "$FAKE/claude/hooks/probe.sh"
+    ln -s "$FAKE/claude" "$FIXTURE/dot-claude"
+
+    # Reached through the symlink, exactly as Claude Code invokes ~/.claude/hooks/*.
+    check_eq "resolver finds the checkout through the ~/.claude symlink" \
+        "$(realpath "$FAKE")" \
+        "$(env -u DOT_DIR bash "$FIXTURE/dot-claude/hooks/probe.sh" 2>/dev/null)"
+
+    # An inherited DOT_DIR must win: the resolver is a fallback, not an override.
+    check_eq "resolver leaves an inherited DOT_DIR alone" \
+        "/sentinel/dot/dir" \
+        "$(DOT_DIR=/sentinel/dot/dir bash "$FIXTURE/dot-claude/hooks/probe.sh" 2>/dev/null)"
+
+    # Exactly one hardcoded path may remain — the last-resort branch taken only
+    # when realpath is unavailable. More than one means the resolver regressed
+    # back into naming the checkout location.
+    check_eq "resolver keeps exactly one hardcoded fallback" "1" \
+        "$(grep -c 'code/dotfiles' "$RESOLVER")"
 fi
 
 # ── summary ────────────────────────────────────────────────────────────────
