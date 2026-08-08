@@ -123,9 +123,9 @@ DEPLOY_ASCII_FILE="start.txt"   # ASCII art file for shell startup
 
 # ─── Identity & Secrets ───────────────────────────────────────────────────────
 # Edit these values for your setup. Everything else should work out of the box.
-DOTFILES_USERNAME="${DOTFILES_USERNAME:-yulong}"
-DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/yulonglin/dotfiles.git}"
-GIT_USER_NAME="yulonglin"
+DOTFILES_USERNAME="${DOTFILES_USERNAME:-k-kit}"
+DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/k-kit/dotfiles.git}"
+GIT_USER_NAME="k-kit"
 GIT_USER_EMAIL="30549145+yulonglin@users.noreply.github.com"
 GIST_SYNC_ID="${GIST_SYNC_ID:-3cc239f160a2fe8c9e6a14829d85a371}"  # Gist used for config sync (SSH, git identity)
 
