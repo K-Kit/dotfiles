@@ -48,18 +48,34 @@ write_files:
       # Hetzner bootstrap: curls create-user.sh + setup.sh from the dotfiles
       # repo with identity from /etc/dotfiles-bootstrap.env. Idempotent —
       # delete /var/lib/dotfiles-bootstrap.done to force a full re-run.
+      #
+      # Writes a one-word verdict to /var/lib/dotfiles-bootstrap.status so a
+      # remote poller (`hz wait`) can tell "still running" from "finished
+      # badly" without parsing the log.
       set -uo pipefail
       exec > >(tee -a /var/log/dotfiles-bootstrap.log) 2>&1
 
       MARKER=/var/lib/dotfiles-bootstrap.done
+      STATUS=/var/lib/dotfiles-bootstrap.status
+      mkdir -p /var/lib
+
+      finish() { # verdict
+          printf '%s\n' "$1" > "$STATUS"
+          [[ "$1" == "ok" ]] && touch "$MARKER"
+          echo "=== dotfiles-bootstrap $1 ==="
+          [[ "$1" == "ok" ]] && exit 0 || exit 1
+      }
+
       if [[ -f "$MARKER" ]]; then
           echo "dotfiles-bootstrap: already completed ($MARKER exists) — skipping"
+          printf 'ok\n' > "$STATUS"
           exit 0
       fi
+      printf 'running\n' > "$STATUS"
 
       [[ -f /etc/dotfiles-bootstrap.env ]] || {
           echo "dotfiles-bootstrap: /etc/dotfiles-bootstrap.env missing" >&2
-          exit 1
+          finish failed-no-env
       }
       set -a
       # shellcheck disable=SC1091
@@ -72,23 +88,26 @@ write_files:
       slug="${slug%.git}"
       raw="https://raw.githubusercontent.com/$slug/$DOTFILES_BRANCH/scripts/cloud"
 
+      # First boot races DNS/network coming up, and raw.githubusercontent
+      # serves the odd 5xx. A bare curl turns either into a dead box.
+      fetch() { curl -fsSL --retry 5 --retry-delay 3 --retry-connrefused "$1"; }
+
       echo "=== dotfiles-bootstrap $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
       echo "user=$USERNAME github=$GITHUB_USER repo=$slug branch=$DOTFILES_BRANCH"
 
       echo "── create-user.sh ──"
-      curl -fsSL "$raw/create-user.sh" | bash || {
+      fetch "$raw/create-user.sh" | bash || {
           echo "dotfiles-bootstrap: create-user.sh failed" >&2
-          exit 1
+          finish failed-create-user
       }
 
       echo "── setup.sh ──"
-      curl -fsSL "$raw/setup.sh" | bash -s -- "$DOTFILES_BRANCH" || {
+      fetch "$raw/setup.sh" | bash -s -- "$DOTFILES_BRANCH" || {
           echo "dotfiles-bootstrap: setup.sh failed" >&2
-          exit 1
+          finish failed-setup
       }
 
-      touch "$MARKER"
-      echo "=== dotfiles-bootstrap done ==="
+      finish ok
 
 runcmd:
   - [/usr/local/sbin/dotfiles-bootstrap]

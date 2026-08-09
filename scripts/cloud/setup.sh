@@ -125,6 +125,23 @@ try "uv" _install_uv
 
 # ── SOFT: dotfiles ────────────────────────────────────────────────────────────
 step "Dotfiles"
+# Deliberately the same path as a workstation checkout, NOT $USER_HOME/dotfiles.
+#
+# This used to be justified by a bug — DOT_DIR was assigned without `export` in
+# config/zshrc.sh, so consumers reading `${DOT_DIR:-$HOME/code/dotfiles}` hit the
+# literal whenever they were not children of a login zsh. That was an argument
+# for fixing the export, not for freezing the path, and the export is now fixed.
+#
+# The reasons that survive:
+#   1. ~19 files name `code/dotfiles`, and several are formats that cannot hold
+#      fallback logic at all — config/auto-mode-proxy.plist,
+#      config/systemd-user/vault-sync-tripwire.service, config/zed/settings.json,
+#      codex/rules/*.rules. A move is a mechanical edit of every one of them.
+#   2. Path parity. A command pasted from the workstation into a cloud box has to
+#      work unchanged; that is the whole point of provisioning from these files.
+# Neither is a claim that the machinery *requires* this path — install.sh and
+# deploy.sh derive DOT_DIR from their own location and run from anywhere.
+# See scripts/cloud/README.md.
 DOTFILES="$USER_HOME/code/dotfiles"
 _dotfiles() {
     git ls-remote --exit-code --heads "$DOTFILES_REPO" "$DOTFILES_BRANCH" >/dev/null 2>&1 \
@@ -143,6 +160,30 @@ _dotfiles() {
     run_as "cd $DOTFILES && ./deploy.sh --profile=cloud"
 }
 try "dotfiles" _dotfiles
+
+# ── SOFT: long-session hygiene ────────────────────────────────────────────────
+# A detached agent run outlives the SSH session that started it, and two systemd
+# knobs decide whether it survives that:
+#   KillUserProcesses  yes → logging out reaps tmux and everything inside it
+#   linger             off → the per-user manager stops at last logout, taking
+#                            user units (and anything in their scope) with it
+# Ubuntu ships KillUserProcesses=no, so the drop-in is belt-and-braces rather
+# than a fix; it is written but logind is NOT restarted, because restarting it
+# from inside an SSH session is the one thing that could drop that session. The
+# default already gives the desired behaviour, so the drop-in only has to hold
+# from the next boot onward.
+step "Long-session hygiene (detached agent runs)"
+_long_sessions() {
+    mkdir -p /etc/systemd/logind.conf.d
+    cat > /etc/systemd/logind.conf.d/10-dotfiles-keep-user-processes.conf <<'LOGIND'
+# Managed by dotfiles scripts/cloud/setup.sh — detached tmux/agent runs must
+# survive the SSH session that launched them. Applies from the next boot.
+[Login]
+KillUserProcesses=no
+LOGIND
+    loginctl enable-linger "$USERNAME" 2>/dev/null || true
+}
+try "logind keep-user-processes + linger" _long_sessions
 
 # ── SOFT: GitHub CLI ──────────────────────────────────────────────────────────
 step "GitHub CLI"
@@ -238,6 +279,20 @@ GH_NEEDS_AUTH=0
 step "GitHub CLI auth"
 if run_as 'gh auth status' &>/dev/null 2>&1; then
     ok "Already authenticated"
+elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    # Non-interactive path. The token arrives on stdin, never in argv (argv is
+    # world-readable through /proc) and never through cloud-init user-data
+    # (the metadata service hands that to every local user on the box).
+    _gh_token_auth() {
+        printf '%s\n' "$GITHUB_TOKEN" | run_as 'gh auth login --with-token' \
+            && run_as 'gh auth setup-git' >/dev/null 2>&1
+    }
+    if try "gh auth (token)" _gh_token_auth; then
+        unset GITHUB_TOKEN
+    else
+        GH_NEEDS_AUTH=1
+        unset GITHUB_TOKEN
+    fi
 elif [[ "$GITHUB_AUTH" != "1" ]]; then
     GH_NEEDS_AUTH=1
     log "Deferred — run: gh auth login  (then: sync-gist)"

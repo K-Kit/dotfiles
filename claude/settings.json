@@ -85,6 +85,7 @@
       "Bash(spark meetings*)",
       "Bash(spark meeting*)",
       "Bash(spark --version*)",
+      "Bash(codex-companion)",
       "Bash(codex-companion *)",
       "Bash(pytest *)",
       "Bash(inspect *)",
