@@ -45,6 +45,10 @@ claude/loop.md
 
 # Codex runtime state (local operational artifacts)
 .codex
+codex/cache/
+codex/plugins/.plugin-appserver/
+codex/state_*.sqlite*
+codex/thread-writer-locks/
 
 # npm artifacts (not used - this repo uses system package managers)
 package.json
@@ -577,3 +581,4 @@ Untitled.md
 # pytest falls back to a repo-local basetemp because $TMPDIR is read-only here
 pytest-of-*/
 codex/thread-writer-locks/.coordination.lock
+codex/plugins/.plugin-appserver/codex

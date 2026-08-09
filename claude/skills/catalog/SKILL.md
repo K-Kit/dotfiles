@@ -53,6 +53,7 @@ Most skills below are **model-invoked**: Claude fires them automatically when yo
 | `server-storage-tiering` | Root disk near full on a server/cloud box with an attached volume |
 | `sweep-ai-safety` | Sweeping recent AI safety research from curated sources |
 | `spawn-session` (user-invoked only) | Starting a detached Claude session in another directory with a seed prompt, optionally reachable by Remote Control |
+| `claude-remote-shell` (user-invoked only) | Running a Claude session whose Bash tool executes on a remote host over SSH, with the project synced by Mutagen or by git |
 
 ## Productivity / personal
 

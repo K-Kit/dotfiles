@@ -1,0 +1,270 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node '/Users/kit/.codex/hooks/codex_code_review_reminder.mjs'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/check_loop_bypass.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 '/Users/kit/.codex/hooks/network_audit.py'",
+            "timeout": 3,
+            "statusMessage": "Auditing network intent"
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/block_secret_expansion.sh'",
+            "timeout": 5,
+            "statusMessage": "Checking for secret expansion"
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/nudge_modern_tools.sh'",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/warn_dep_install.sh'",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/block_destructive_git.sh'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/check_agent_depth.sh'",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/check_webfetch_domain.sh'",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__claude-in-chrome__tabs_context_mcp",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/block_tab_group_creation.sh'",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__claude_ai_Gmail__gmail_create_draft",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/nudge_html_email.sh'",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "EnterPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/require_plan_approval.sh'",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/kit/.codex/hooks/ssh_check.py'",
+            "timeout": 5,
+            "statusMessage": "Checking SSH target"
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/with-anthropic-key.sh' python3 '/Users/kit/.codex/hooks/approval_classifier.py'",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/retry_omitted_grep.sh'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/kit/.codex/hooks/simplify_track_reuse.py'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/agent_spawned.sh'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/nudge_send_user_file.sh'",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/simplify_mark_dirty.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/nudge_syspath.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/nudge_statusline_parity.sh'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/check_venv.sh'",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/session_start_notes.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/check_things_mcp.sh'",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/with-anthropic-key.sh' python3 '/Users/kit/.codex/hooks/anthropic_keycheck.py'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/show_auth_account.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/context_auto_apply.sh'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "startup|clear|resume|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/check_git_root.sh'",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/watchdog_mark.sh' working",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/watchdog_mark.sh' idle",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/nudge_remember.sh'",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/with-anthropic-key.sh' '/Users/kit/.codex/hooks/session_rename_auto.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/simplify_nudge.sh'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "'/Users/kit/.codex/hooks/nudge_bg_prose_question.sh'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

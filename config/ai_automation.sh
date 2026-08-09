@@ -3,7 +3,7 @@
 # This file is sourced by scripts; it should not execute side effects.
 
 # Delegation and recursion limits
-: "${AUTO_AGENT_MAX_DEPTH:=2}"
+: "${AUTO_AGENT_MAX_DEPTH:=4}"
 : "${AUTO_AGENT_COOLDOWN_SEC:=120}"
 : "${AUTO_AGENT_MAX_PER_HOUR:=20}"
 

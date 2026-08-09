@@ -1,0 +1,545 @@
+#!/usr/bin/env bash
+#
+# claude-remote-shell — redirect Claude Code's Bash tool commands to a remote machine
+#
+
+set -euo pipefail
+
+# --- sync backends -----------------------------------------------------------
+# Defined at file scope so tests can source this script as a library:
+#   CLAUDE_REMOTE_SHELL_LIB=1 source claude-remote-shell
+# and drive the real sync_before/sync_after rather than a copy of them.
+
+sync_flush() {
+    mutagen sync flush --all >/dev/null 2>&1 || {
+        mutagen sync reset --all >/dev/null 2>&1
+        mutagen sync flush --all >/dev/null
+    }
+}
+
+# Snapshots go through a scratch index and refs/claude-remote/*, so the user's
+# real index, HEAD and branches are never touched by a sync.
+git_id=(-c user.name=claude-remote-shell -c user.email=claude-remote-shell@invalid)
+
+# Files Claude Code itself needs (cwd tracking, tool results) are not part of the
+# repository, so they ride a small tar over the multiplexed connection.
+side_push() {
+    (cd "$TMPDIR" 2>/dev/null && tar -cf - claude-* 2>/dev/null) |
+        ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" \
+            "mkdir -p '$TMPDIR' && tar -C '$TMPDIR' -xf - 2>/dev/null" || true
+    if [[ -n "${CLAUDE_LOCAL_SESSION_DIR:-}" && -d "$CLAUDE_LOCAL_SESSION_DIR/tool-results" ]]; then
+        tar -C "$CLAUDE_LOCAL_SESSION_DIR" -cf - tool-results 2>/dev/null |
+            ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" \
+                "mkdir -p '$CLAUDE_REMOTE_SESSION_DIR' && tar -C '$CLAUDE_REMOTE_SESSION_DIR' -xf - 2>/dev/null" || true
+    fi
+}
+
+side_pull() {
+    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" \
+        "cd '$TMPDIR' 2>/dev/null && tar -cf - claude-* 2>/dev/null" |
+        tar -C "$TMPDIR" -xf - 2>/dev/null || true
+}
+
+git_push() {
+    local tree parent commit
+    rm -f "$CLAUDE_REMOTE_GIT_INDEX"
+    GIT_INDEX_FILE="$CLAUDE_REMOTE_GIT_INDEX" git -C "$CLAUDE_REMOTE_GIT_ROOT" add -A
+    tree=$(GIT_INDEX_FILE="$CLAUDE_REMOTE_GIT_INDEX" git -C "$CLAUDE_REMOTE_GIT_ROOT" write-tree)
+    parent=$(git -C "$CLAUDE_REMOTE_GIT_ROOT" rev-parse -q --verify "$CLAUDE_REMOTE_GIT_REF" 2>/dev/null || true)
+    commit=$(git -C "$CLAUDE_REMOTE_GIT_ROOT" "${git_id[@]}" commit-tree "$tree" \
+        ${parent:+-p "$parent"} -m "claude-remote-shell sync")
+    git -C "$CLAUDE_REMOTE_GIT_ROOT" update-ref "$CLAUDE_REMOTE_GIT_REF" "$commit"
+
+    GIT_SSH_COMMAND="ssh $CLAUDE_REMOTE_SSH_OPTIONS" \
+        git -C "$CLAUDE_REMOTE_GIT_ROOT" push -q -f \
+            "$CLAUDE_REMOTE_HOST:$CLAUDE_REMOTE_PATH" "$commit:$CLAUDE_REMOTE_GIT_REF"
+
+    # reset --hard only, never clean: files the remote produced but git does not
+    # track (build output, virtualenvs) are the reason to have a remote at all.
+    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" \
+        "git -C '$CLAUDE_REMOTE_PATH' reset -q --hard '$CLAUDE_REMOTE_GIT_REF'"
+
+    printf '%s' "$commit" >"$CLAUDE_REMOTE_SHELL_DIR/last-push"
+    side_push
+}
+
+git_pull() {
+    local pushed remote_out remote_commit remote_tree pushed_tree
+    side_pull
+    pushed=$(cat "$CLAUDE_REMOTE_SHELL_DIR/last-push" 2>/dev/null || true)
+    [[ -n "$pushed" ]] || return 0
+
+    remote_out=$(ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" \
+        "$(printf 'bash -c %q _ %q %q %q' \
+            'set -e
+             cd "$1"
+             export GIT_INDEX_FILE="$1/.git/claude-remote-index"
+             rm -f "$GIT_INDEX_FILE"
+             git add -A
+             t=$(git write-tree)
+             c=$(git -c user.name=claude-remote-shell -c user.email=claude-remote-shell@invalid \
+                    commit-tree "$t" -p "$2" -m "claude-remote-shell result")
+             git update-ref "$3" "$c"
+             echo "$c $t"' \
+            "$CLAUDE_REMOTE_PATH" "$pushed" "$CLAUDE_REMOTE_GIT_BACK_REF")" 2>/dev/null) || return 0
+
+    remote_commit="${remote_out%% *}"
+    remote_tree="${remote_out##* }"
+    pushed_tree=$(git -C "$CLAUDE_REMOTE_GIT_ROOT" rev-parse "$pushed^{tree}")
+    [[ "$remote_tree" == "$pushed_tree" ]] && return 0
+
+    GIT_SSH_COMMAND="ssh $CLAUDE_REMOTE_SSH_OPTIONS" \
+        git -C "$CLAUDE_REMOTE_GIT_ROOT" fetch -q \
+            "$CLAUDE_REMOTE_HOST:$CLAUDE_REMOTE_PATH" \
+            "+$CLAUDE_REMOTE_GIT_BACK_REF:$CLAUDE_REMOTE_GIT_BACK_REF" 2>/dev/null || return 0
+
+    # Two-tree read-tree moves the worktree from what we pushed to what came back,
+    # so remote deletions land too. The scratch index keeps it all off HEAD.
+    GIT_INDEX_FILE="$CLAUDE_REMOTE_GIT_INDEX" \
+        git -C "$CLAUDE_REMOTE_GIT_ROOT" read-tree -m -u "$pushed" "$remote_commit" 2>/dev/null || {
+        echo "⚠️ claude-remote-shell: could not apply remote changes cleanly; local tree left as-is" >&2
+        return 0
+    }
+}
+
+sync_before() {
+    if [[ "${CLAUDE_REMOTE_SYNC_MODE:-mutagen}" == mutagen ]]; then sync_flush; else git_push; fi
+}
+
+sync_after() {
+    if [[ "${CLAUDE_REMOTE_SYNC_MODE:-mutagen}" == mutagen ]]; then sync_flush; else git_pull; fi
+}
+
+if [[ -n "${CLAUDE_REMOTE_SHELL_LIB:-}" ]]; then
+    return 0
+fi
+
+case "$(basename "$0")" in
+claude-remote-shell*)
+    # Launcher mode: parse destination and launch Claude with remote shell configured.
+    force_sync="${CLAUDE_REMOTE_SHELL_SYNC:-}"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --git | --no-mutagen) force_sync=git; shift ;;
+            --mutagen) force_sync=mutagen; shift ;;
+            *) break ;;
+        esac
+    done
+
+    [[ $# -eq 0 ]] && { echo "ℹ️ claude-remote-shell [--git] [user@]host[:/path] [claude-cmd] [claude args...]" >&2; exit 1; }
+
+    dest="$1"
+    shift
+
+    claude_bin="claude"
+    if [[ $# -ge 1 && "$1" != -* && "$1" != \"* && "$1" != \'* ]]; then
+        # Possible custom claude command. Validate by checking via
+        # the user's shell (so aliases/functions from rc files work)
+        if [[ -n "$SHELL" ]] && "$SHELL" -c "command -v '$1' >/dev/null 2>&1"; then
+            claude_bin="$1"
+            shift
+        elif command -v "$1" &>/dev/null; then
+            # Fall back to direct check if SHELL is not set
+            claude_bin="$1"
+            shift
+        fi
+    fi
+
+    if [[ "$claude_bin" != "claude" ]]; then
+        echo "🦀 Using claude command '$claude_bin'"
+    fi
+
+    if [[ "$dest" == *:* ]]; then
+        host="${dest%%:*}"
+        remote_path="${dest#*:}"
+    else
+        host="$dest"
+        remote_path=""
+    fi
+
+    echo "📡 Running Bash tool remotely on $host"
+    export CLAUDE_REMOTE_HOST="$host"
+
+    # Resolve to absolute path so CLAUDE_CODE_SHELL works from any cwd.
+    script="${BASH_SOURCE[0]}"
+    if [[ "$script" != /* ]]; then
+        script="$(cd "$(dirname "$script")" && pwd)/$(basename "$script")"
+    fi
+
+    # Sync backend: mutagen by default, git when forced or when mutagen is absent.
+    if git_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then :; else git_root=""; fi
+
+    case "$force_sync" in
+        git) sync_mode=git ;;
+        mutagen) sync_mode=mutagen ;;
+        *)
+            if command -v mutagen &>/dev/null; then
+                sync_mode=mutagen
+            elif [[ -n "$git_root" ]]; then
+                echo "ℹ️ mutagen not found — falling back to git sync"
+                sync_mode=git
+            else
+                echo "⚠️ need mutagen in PATH, or a git repository here for --git sync" >&2
+                exit 1
+            fi
+            ;;
+    esac
+
+    if [[ "$sync_mode" == mutagen ]]; then
+        command -v mutagen &>/dev/null || { echo "⚠️ mutagen is required but not found in PATH" >&2; exit 1; }
+    else
+        # git sync moves commits, so the unit is the repository, not an arbitrary cwd.
+        [[ -n "$git_root" ]] || { echo "⚠️ git sync needs a git repository; $(pwd -P) is not one" >&2; exit 1; }
+        [[ "$git_root" == "$(pwd -P)" ]] || { echo "⚠️ git sync must run from the repository root ($git_root)" >&2; exit 1; }
+        [[ -n "$remote_path" ]] || { echo "⚠️ git sync needs a remote path: $host:/remote/path" >&2; exit 1; }
+    fi
+    echo "🔄 Sync: $sync_mode"
+
+    session_dir=$(mktemp -d /tmp/claude-remote-shell.XXXXXX)
+    export CLAUDE_REMOTE_SHELL_DIR="$session_dir"
+    export TMPDIR="$session_dir/tmp"
+    export CLAUDE_CODE_TMPDIR="$TMPDIR/claude-tmp"
+    export MUTAGEN_DATA_DIRECTORY="$session_dir/mutagen"
+    mkdir -p "$TMPDIR" "$CLAUDE_CODE_TMPDIR" "$MUTAGEN_DATA_DIRECTORY"
+
+    # Handle session start via plugin, as multiple `--settings` will not merge
+    mkdir -p "$session_dir/plugin/.claude-plugin" "$session_dir/plugin/hooks"
+    cat > "$session_dir/plugin/.claude-plugin/plugin.json" <<'EOF'
+{
+  "name": "claude-remote-shell",
+  "version": "1.0.0",
+  "description": "Captures session metadata for claude-remote-shell"
+}
+EOF
+
+    cat > "$session_dir/plugin/hooks/hooks.json" <<'EOF'
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-start"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-end"
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
+
+    ln -sf "$script" "$session_dir/plugin/hooks/session-start"
+    ln -sf "$script" "$session_dir/plugin/hooks/session-end"
+
+    export CLAUDE_REMOTE_SSH_OPTIONS="-o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=$session_dir/ssh-%C -o ControlPersist=yes"
+
+    # Named before the trap is installed so teardown can always reach them.
+    session_tag="$(basename "$session_dir")"
+    export CLAUDE_REMOTE_GIT_REF="refs/claude-remote/$session_tag"
+    export CLAUDE_REMOTE_GIT_BACK_REF="refs/claude-remote/$session_tag-back"
+
+    teardown() {
+        echo -n "🧹 Cleaning up remote session "
+        if [[ "$sync_mode" == mutagen ]]; then
+            mutagen sync terminate --all >/dev/null 2>&1 || true
+            mutagen daemon stop 2>/dev/null || true
+        else
+            # Drop the sync refs on both ends. The remote checkout itself is the
+            # user's directory, so it is left exactly as the session left it.
+            git update-ref -d "$CLAUDE_REMOTE_GIT_REF" 2>/dev/null || true
+            git update-ref -d "$CLAUDE_REMOTE_GIT_BACK_REF" 2>/dev/null || true
+            ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" \
+                "git -C '$remote_path' update-ref -d '$CLAUDE_REMOTE_GIT_REF'; \
+                 git -C '$remote_path' update-ref -d '$CLAUDE_REMOTE_GIT_BACK_REF'" 2>/dev/null || true
+        fi
+        ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "rm -rf '$session_dir'" 2>/dev/null || true
+        ssh -O exit $CLAUDE_REMOTE_SSH_OPTIONS "$host" 2>/dev/null || true
+        rm -rf "$session_dir"
+        echo "✅"
+    }
+    trap teardown EXIT
+
+    # One probe for both platform and login shell — reused below.
+    remote_probe=$(ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" 'uname -sr; echo "$SHELL"' 2>/dev/null)
+    remote_system="${remote_probe%%$'\n'*}"
+    remote_login_shell="${remote_probe##*$'\n'}"
+
+    # CLAUDE_CODE_SHELL only accepts a path containing "bash" or "zsh", which is
+    # also exactly the set this script knows how to re-enter as a shell wrapper.
+    remote_shell="${CLAUDE_REMOTE_SHELL_SHELL:-}"
+    if [[ -z "$remote_shell" ]]; then
+        case "$(basename "${remote_login_shell:-bash}")" in
+            zsh) remote_shell=zsh ;;
+            *) remote_shell=bash ;;
+        esac
+    fi
+    case "$remote_shell" in
+        bash | zsh) ;;
+        *)
+            echo "⚠️ CLAUDE_REMOTE_SHELL_SHELL must be bash or zsh (got '$remote_shell')" >&2
+            exit 1
+            ;;
+    esac
+    echo "🐚 Remote shell: $remote_shell"
+
+    # The tmpdir side-channel carries Claude Code's own infrastructure files
+    # (cwd tracking, CLAUDE_CODE_TMPDIR), so both backends must provide it.
+    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "mkdir -p '$CLAUDE_CODE_TMPDIR'"
+
+    if [[ "$sync_mode" == mutagen ]]; then
+        mutagen_options=(--sync-mode=two-way-resolved)
+
+        # Optional user-provided Mutagen config file.
+        config_file="$(pwd -P)/.claude/remote-shell/mutagen.yml"
+        [[ -f "$config_file" ]] && mutagen_options+=(-c "$config_file")
+
+        # Sync the tmpdir, filtered to claude-* files/dirs. This covers both Claude Code's
+        # infrastructure files (e.g. cwd tracking) and CLAUDE_CODE_TMPDIR (claude-tmp/),
+        # while excluding noise from MCP servers and other infrastructure.
+        mutagen sync terminate claude-tmpdir 2>/dev/null || true
+        mutagen sync create \
+            --name=claude-tmpdir \
+            "${mutagen_options[@]}" \
+            --ignore="*" \
+            --ignore="!claude-*" \
+            --ignore="!claude-*/**" \
+            --symlink-mode=posix-raw \
+            "$TMPDIR" \
+            "$host:$TMPDIR" >/dev/null
+
+        # Optionally sync the project directory if a remote path was given.
+        if [[ -n "$remote_path" ]]; then
+            project_dir="$(pwd -P)"
+            echo "🗂️ Syncing $project_dir ↔ $host:$remote_path"
+            mutagen sync terminate claude-project 2>/dev/null || true
+            ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" "mkdir -p '$remote_path'"
+            mutagen sync create \
+                --name=claude-project \
+                "${mutagen_options[@]}" \
+                "$project_dir" \
+                "$host:$remote_path" >/dev/null
+            export CLAUDE_LOCAL_PATH="$project_dir"
+            export CLAUDE_REMOTE_PATH="$remote_path"
+        fi
+    else
+        project_dir="$git_root"
+        echo "🗂️ Syncing $project_dir ↔ $host:$remote_path over git"
+
+        # A plain repo, not bare: the session pushes to refs/claude-remote/*, which is
+        # never the checked-out branch, so receive.denyCurrentBranch never fires.
+        ssh $CLAUDE_REMOTE_SSH_OPTIONS "$host" \
+            "mkdir -p '$remote_path' && git -C '$remote_path' rev-parse --git-dir >/dev/null 2>&1 || git init -q '$remote_path'"
+
+        # Snapshots are built against a scratch index so the real index, HEAD and
+        # the user's branches are never touched by a sync.
+        export CLAUDE_REMOTE_GIT_INDEX="$session_dir/git-index"
+        export CLAUDE_REMOTE_GIT_ROOT="$project_dir"
+        export CLAUDE_LOCAL_PATH="$project_dir"
+        export CLAUDE_REMOTE_PATH="$remote_path"
+    fi
+    export CLAUDE_REMOTE_SYNC_MODE="$sync_mode"
+
+    # CLAUDE_CODE_SHELL requires the path to contain "bash" or "zsh". Naming the
+    # symlink after the remote shell doubles as how the wrapper mode learns which
+    # shell to invoke — see `basename "$0"` in the bash|zsh branch below.
+    symlink="$session_dir/$remote_shell"
+    ln -sf "$script" "$symlink"
+    export CLAUDE_CODE_SHELL="$symlink"
+
+    # Give Claude context about the remote shell environment,
+    # similar to the existing environment system instruction.
+    remote_system_prompt=$(cat <<EOF
+All Bash tool commands run remotely on $host, not locally. You have no local shell access.
+
+Remote environment:
+- Platform / OS: $remote_system
+- Shell: $remote_shell
+- TMPDIR: $CLAUDE_CODE_TMPDIR
+
+NEVER assume /tmp — always use \$TMPDIR, including for mktemp.
+To check subagent output, ALWAYS use the TaskOutput tool, NEVER Bash.
+EOF
+)
+    if [[ "$sync_mode" == mutagen ]]; then
+        if [[ -d ".git" ]]; then
+            vcs_ignored=$(mutagen sync list --template '{{json .}}' claude-project 2>/dev/null \
+                | jq -r '.[0].ignore.vcs')
+            if [[ "$vcs_ignored" == "true" ]]; then
+                remote_system_prompt+="Git is not available on the remote (.git is not synced). NEVER run git commands — they will fail."
+            fi
+        fi
+    else
+        remote_system_prompt+="
+The working tree is carried over git, not a file sync. Two consequences: files ignored by .gitignore (build output, .env, virtualenvs) do NOT exist on the remote, so build or install them there rather than expecting them to appear; and the remote checkout carries a synthetic history belonging to the sync, so git log, git branch, git diff and git status on the remote describe the transport and not the project. Never commit, branch or rebase there — report what you changed and leave version control to the user's local repository."
+    fi
+
+    export CLAUDE_REMOTE_SHELL_CLAUDE_BIN="$(command -v "$claude_bin")"
+
+    claude_args=()
+    claude_args+=(--plugin-dir "$session_dir/plugin")
+    claude_args+=(--append-system-prompt "$remote_system_prompt")
+    [[ "$(basename "$0")" == *-yolo ]] && claude_args+=(--allowedTools 'Bash(*)')
+
+    if [[ "${1:-}" == "remote-control" || "${1:-}" == "rc" ]]; then
+        # Clone the claude binary so remote-control's process.execPath points to
+        # a path we control. The background job replaces it with a clone of this
+        # script once the process is running. A real file rather than a symlink is
+        # needed because Bun resolves symlinks via realpath before spawning sessions.
+        claude_bin="$session_dir/claude-remote-control"
+        cp "$CLAUDE_REMOTE_SHELL_CLAUDE_BIN" "$claude_bin" && chmod +x "$claude_bin"
+
+        # Replace via a temp file + mv: the target is executing by then, and mv
+        # swaps the inode rather than truncating the one the kernel is running.
+        # (Was `cp -c`, which is macOS-only — GNU cp has no -c.)
+        ( while true; do
+              pgrep -f "$claude_bin" >/dev/null 2>&1 && {
+                  cp "$script" "$claude_bin.new" && chmod +x "$claude_bin.new" \
+                      && mv -f "$claude_bin.new" "$claude_bin"
+                  exit
+              }
+              sleep 0.05
+          done
+        ) &
+
+        printf -v CLAUDE_REMOTE_SHELL_ARGS '%q ' "${claude_args[@]}"
+        export CLAUDE_REMOTE_SHELL_ARGS
+
+        "$claude_bin" "$@"
+    else
+        claude_args+=("$@")
+        if [[ -n "$SHELL" ]]; then
+            printf -v cmd '%q ' "$claude_bin" "${claude_args[@]}"
+            "$SHELL" -l -c "exec $cmd" --
+        else
+            "$claude_bin" "${claude_args[@]}"
+        fi
+    fi
+    ;;
+
+claude-remote-control)
+    # Session spawn mode: invoked by remote-control when spawning a new session.
+    # Injects plugin and system prompt that couldn't be passed to remote-control itself.
+    eval "claude_args=($CLAUDE_REMOTE_SHELL_ARGS)"
+    exec "$CLAUDE_REMOTE_SHELL_CLAUDE_BIN" "${claude_args[@]}" "$@"
+    ;;
+
+session-start)
+    input=$(cat)
+    transcript_path=$(printf '%s' "$input" | jq -r '.transcript_path')
+    local_session_dir="${transcript_path%.jsonl}"
+    session_id=$(basename "$local_session_dir")
+    local_project_dir=$(dirname "$local_session_dir")
+    remote_project_dir="$CLAUDE_REMOTE_SHELL_DIR/project"
+    remote_session_dir="$remote_project_dir/$session_id"
+
+    mkdir -p "$local_session_dir"
+    ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" "mkdir -p '$remote_session_dir'"
+    if [[ "${CLAUDE_REMOTE_SYNC_MODE:-mutagen}" == mutagen ]]; then
+        mutagen sync create \
+            --name="claude-session-data-$session_id" \
+            --sync-mode=one-way-safe \
+            --symlink-mode=posix-raw \
+            --ignore="*" \
+            --ignore="!tool-results" \
+            --ignore="!tool-results/**" \
+            "$local_session_dir" \
+            "$CLAUDE_REMOTE_HOST:$remote_session_dir" >/dev/null
+    else
+        # git sync has no daemon; the shell wrapper tars tool-results across per command.
+        printf 'export CLAUDE_LOCAL_SESSION_DIR=%q\n' "$local_session_dir" >> "$CLAUDE_ENV_FILE"
+        printf 'export CLAUDE_REMOTE_SESSION_DIR=%q\n' "$remote_session_dir" >> "$CLAUDE_ENV_FILE"
+    fi
+
+    # Persist path mappings for the bash wrapper via Claude's env mechanism.
+    printf 'export CLAUDE_LOCAL_PROJECT_DIR=%q\n' "$local_project_dir" >> "$CLAUDE_ENV_FILE"
+    printf 'export CLAUDE_REMOTE_PROJECT_DIR=%q\n' "$remote_project_dir" >> "$CLAUDE_ENV_FILE"
+    ;;
+
+session-end)
+    input=$(cat)
+    transcript_path=$(printf '%s' "$input" | jq -r '.transcript_path')
+    local_session_dir="${transcript_path%.jsonl}"
+    session_id=$(basename "$local_session_dir")
+    [[ "${CLAUDE_REMOTE_SYNC_MODE:-mutagen}" == mutagen ]] &&
+        mutagen sync terminate "claude-session-data-$session_id" >/dev/null 2>&1
+    exit 0
+    ;;
+
+bash | zsh)
+    # Shell-wrapper mode: invoked by Claude Code via the CLAUDE_CODE_SHELL symlink.
+    # Args: -c [-l] <command>  (-l present when no shell snapshot exists)
+    # The command string is always the last argument.
+    # The symlink is named after the remote shell, so $0 carries it here.
+    remote_shell="$(basename "$0")"
+    cmd="${@: -1}"
+
+    # Translate local paths to remote paths in the command and cwd.
+    remote_cwd="$PWD"
+    map_path=false
+    [[ -n "${CLAUDE_LOCAL_PATH:-}" && "${CLAUDE_LOCAL_PATH:-}" != "${CLAUDE_REMOTE_PATH:-}" ]] && map_path=true
+
+    if $map_path; then
+        cmd="${cmd//$CLAUDE_LOCAL_PATH/$CLAUDE_REMOTE_PATH}"
+        remote_cwd="${PWD//$CLAUDE_LOCAL_PATH/$CLAUDE_REMOTE_PATH}"
+    fi
+
+    # Translate local project-data paths to remote (set up by session-start hook).
+    [[ -n "${CLAUDE_LOCAL_PROJECT_DIR:-}" ]] && \
+        cmd="${cmd//$CLAUDE_LOCAL_PROJECT_DIR/$CLAUDE_REMOTE_PROJECT_DIR}"
+
+    # Build the remote command: cd to the same cwd, then run the command
+    # as-is (including Claude's pwd capture suffix, which writes to the
+    # synced tmpdir on the remote and gets flushed back after).
+    # zsh assigns the first operand after the -c string to $0 exactly as bash does
+    # (man zsh, Invocation), so the same positional layout works for both.
+    remote_script='export SHELL="$4" TMPDIR="$3" && mkdir -p "$TMPDIR" && cd "$1" && eval "$2"'
+    remote_cmd=$(printf '%s -c %q _ %q %q %q %q' \
+        "$remote_shell" "$remote_script" "$remote_cwd" "$cmd" "$TMPDIR" "$remote_shell")
+
+    sync_before
+
+    if $map_path; then
+        # Stream stdout/stderr through FIFOs with awk filters to translate remote paths back to local.
+        fifo_dir=$(mktemp -d)
+        mkfifo "$fifo_dir/stdout" "$fifo_dir/stderr"
+
+        awk_map_path='BEGIN { gsub(/[][\\^$.|*+?(){}]/, "\\\\&", r) }
+            { gsub(r, l); print > out; fflush(out) }'
+
+        awk -v r="$CLAUDE_REMOTE_PATH" -v l="$CLAUDE_LOCAL_PATH" -v out="/dev/stdout" \
+            "$awk_map_path" <"$fifo_dir/stdout" &
+        stdout_pid=$!
+
+        awk -v r="$CLAUDE_REMOTE_PATH" -v l="$CLAUDE_LOCAL_PATH" -v out="/dev/stderr" \
+            "$awk_map_path" <"$fifo_dir/stderr" &
+        stderr_pid=$!
+
+        # `|| exit_code=$?` rather than `$?`: set -e would abort the script on a
+        # non-zero remote exit, skipping the sync_flush that brings changes back.
+        exit_code=0
+        ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" "$remote_cmd" \
+            >"$fifo_dir/stdout" 2>"$fifo_dir/stderr" || exit_code=$?
+
+        wait "$stdout_pid" "$stderr_pid" 2>/dev/null || true
+        rm -rf "$fifo_dir"
+    else
+        exit_code=0
+        ssh $CLAUDE_REMOTE_SSH_OPTIONS "$CLAUDE_REMOTE_HOST" "$remote_cmd" || exit_code=$?
+    fi
+
+    sync_after
+
+    exit $exit_code
+    ;;
+esac
