@@ -45,6 +45,22 @@ source ~/.zshrc
 
 All configuration options are stored in [`config.sh`](./config.sh). Flags are **additive** (e.g., `--mouseless` adds that feature to defaults). Use `--minimal` to disable most options.
 
+### The `dotf` CLI
+
+Once the shell is deployed, [`custom_bins/dotf`](./custom_bins/dotf) wraps both scripts and works from any directory — it finds the repo from its own location, so you never have to `cd` into the checkout.
+
+```bash
+dotf setup                    # first run: install, then deploy
+dotf install --only zsh tmux  # just those components
+dotf deploy --only claude     # repoint ~/.claude and friends
+dotf status                   # platform, profile, what would run, symlink health
+dotf doctor                   # missing tools and broken symlinks, with fixes
+dotf components               # every component in the registries
+dotf update --deploy          # git pull, then re-deploy
+```
+
+Add `--dry-run` to any command to print the underlying `install.sh` / `deploy.sh` invocation instead of running it. All component flags are forwarded verbatim, so `dotf install --help` shows `install.sh`'s own help rather than a second copy that can drift.
+
 
 ---
 
@@ -84,6 +100,7 @@ For cloud environments (Hetzner, RunPod, Lambda Labs, etc). Identity defaults (u
 ## Table of Contents
 
 - [Quickstart](#quickstart)
+  - [The `dotf` CLI](#the-dotf-cli)
 - [Adopting These Dotfiles](#adopting-these-dotfiles)
 - [Rust CLI Tools](#rust-cli-tools)
 - [Installation](#installation)

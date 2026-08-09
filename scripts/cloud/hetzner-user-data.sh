@@ -10,9 +10,18 @@
 #       --ssh-key <key-name> --user-data-from-file "$TMPDIR/user-data.yaml"
 #
 #   scripts/cloud/hetzner-user-data.sh --no-secrets   # plain template passthrough
+#   scripts/cloud/hetzner-user-data.sh --branch my-wip > "$TMPDIR/user-data.yaml"
+#
+# Options:
+#   --no-secrets      emit the template verbatim, resolving nothing
+#   --branch <name>   dotfiles branch the box bootstraps from (default: main)
 #
 # Secrets injected when resolvable: TAILSCALE_AUTH_KEY, BWS_TOKEN. Unresolved
 # names stay commented out in the template (post-boot setup still works).
+#
+# Deliberately NOT injected: GITHUB_TOKEN. user-data is served by the instance
+# metadata service to every local user, so a PAT here is readable by anything
+# on the box. `hz create --github-auth` pushes it over SSH after boot instead.
 #
 # Same exposure caveat as filling the env block by hand: user-data is readable
 # from the instance metadata service and lands root-readable (0600) on disk.
@@ -20,12 +29,21 @@ set -euo pipefail
 
 TEMPLATE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hetzner-cloud-init.yaml"
 INJECT=1
-case "${1:-}" in
-    --no-secrets) INJECT=0 ;;
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    "") ;;
-    *) echo "Unknown option: ${1} (only --no-secrets)" >&2; exit 1 ;;
-esac
+BRANCH="main"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-secrets) INJECT=0; shift ;;
+        --branch) BRANCH="${2:?--branch needs a value}"; shift 2 ;;
+        --branch=*) BRANCH="${1#*=}"; shift ;;
+        -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "Unknown option: ${1} (--no-secrets, --branch <name>)" >&2; exit 1 ;;
+    esac
+done
+
+# The branch name is interpolated into the YAML and later into a URL on the
+# box; keep it to what git actually allows in a ref so neither can be escaped.
+[[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] \
+    || { echo "Invalid branch name: $BRANCH" >&2; exit 1; }
 
 if [[ "$INJECT" == "1" && -t 1 ]]; then
     echo "stdout is a terminal and output may contain secrets — redirect it, e.g.:" >&2
@@ -56,6 +74,8 @@ while IFS= read -r line; do
         line="${line%%#*}TAILSCALE_AUTH_KEY='$TS'"
     elif [[ -n "$BWS" && "$line" == *"#BWS_TOKEN="* ]]; then
         line="${line%%#*}BWS_TOKEN='$BWS'"
+    elif [[ "$line" == *"DOTFILES_BRANCH=main" ]]; then
+        line="${line%DOTFILES_BRANCH=main}DOTFILES_BRANCH=$BRANCH"
     fi
     printf '%s\n' "$line"
 done < "$TEMPLATE"

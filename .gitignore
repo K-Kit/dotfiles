@@ -576,3 +576,4 @@ Untitled.md
 
 # pytest falls back to a repo-local basetemp because $TMPDIR is read-only here
 pytest-of-*/
+codex/thread-writer-locks/.coordination.lock

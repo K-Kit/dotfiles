@@ -20,6 +20,28 @@ session_source=$(printf '%s' "$hook_input" | jq -r '.source // ""' 2>/dev/null |
 QUIET=false
 [ "$session_source" = "compact" ] && QUIET=true
 
+# DOT_DIR is exported by config/zshrc.sh, but a hook is not always a child of a
+# login shell (GUI launcher, systemd, cron, `claude` over a bare ssh command), so
+# it can legitimately arrive unset. Derive it from this file's own realpath
+# instead of hardcoding a checkout location: ~/.claude is a symlink to
+# $DOT_DIR/claude, so two levels up from the resolved path IS the checkout,
+# wherever it lives. The literal is only a last resort for a realpath-less box.
+#
+# The markers are load-bearing: tests/test_cloud_provisioning.sh extracts exactly
+# this block and exercises it against a fixture that mimics the deployed symlink
+# layout, so the resolver is tested without running the rest of the hook.
+# BEGIN dot-dir-resolver
+if [ -z "${DOT_DIR:-}" ]; then
+    _self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "")
+    if [ -n "$_self" ] && [ -d "${_self%/*/*/*}/config" ]; then
+        DOT_DIR="${_self%/*/*/*}"
+    else
+        DOT_DIR="$HOME/code/dotfiles"
+    fi
+    unset _self
+fi
+# END dot-dir-resolver
+
 CONTEXT_FILE=".claude/context.yaml"
 if [ -f "$CONTEXT_FILE" ]; then
     # The applied-profiles banner is a fixed block that cannot change during a
@@ -60,13 +82,13 @@ fi
 
 if $should_sync && command -v claude-tools &>/dev/null; then
     # Run sync in background, then clean plugin symlinks (anthropics/claude-code#14549)
-    CLEAN_SCRIPT="${DOT_DIR:-$HOME/code/dotfiles}/scripts/cleanup/clean_plugin_symlinks.sh"
+    CLEAN_SCRIPT="$DOT_DIR/scripts/cleanup/clean_plugin_symlinks.sh"
     (claude-tools context --sync &>/dev/null && touch "$SYNC_STAMP"; bash "$CLEAN_SCRIPT" &>/dev/null) &
     disown 2>/dev/null
 fi
 
 # Always clean stale plugin symlinks (sync recreates them, but they also appear from other operations)
-CLEAN_SCRIPT="${DOT_DIR:-$HOME/code/dotfiles}/scripts/cleanup/clean_plugin_symlinks.sh"
+CLEAN_SCRIPT="$DOT_DIR/scripts/cleanup/clean_plugin_symlinks.sh"
 if [ -f "$CLEAN_SCRIPT" ]; then
     bash "$CLEAN_SCRIPT" &>/dev/null &
     disown 2>/dev/null
