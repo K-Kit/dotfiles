@@ -1,0 +1,85 @@
+#cloud-config
+users:
+  - name: ${username}
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    groups: sudo
+    shell: /bin/bash
+packages:
+  - curl
+  - git
+# The volume is attached at droplet creation, so it is present by the time
+# cloud-init mounts it. Mounted by filesystem label; the filesystem itself is
+# created once by Terraform (initial_filesystem_type), never here, so a rebuild
+# can not wipe an existing home directory.
+#
+# Options stay minimal on purpose: ext4 has no uid/gid mount options, and
+# passing them makes the mount fail outright. Combined with nofail that failure
+# is silent -- /home would quietly stay on the ephemeral root disk and be lost
+# when the workspace stops. Ownership is set by coder-home-prepare below.
+mounts:
+  - ["LABEL=${home_volume_label}", "/home/${username}", auto, "defaults,nofail"]
+write_files:
+  # Public key of the workspace owner as held by Coder. Coder itself reaches the
+  # workspace through the agent, not port 22 -- this is the break-glass path.
+  - path: /etc/coder-owner-key.pub
+    permissions: "0644"
+    content: |
+      ${ssh_public_key}
+
+  - path: /usr/local/sbin/coder-home-prepare
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      # Note for editors: Terraform's templatefile() renders this file, so a
+      # dollar-brace pair is substituted while a bare $ stays literal. Shell
+      # variables are therefore written plainly, never doubled.
+      home="/home/${username}"
+
+      # `nofail` means a failed mount does not stop the boot, so say so loudly
+      # rather than letting the workspace look healthy on the ephemeral disk.
+      if ! mountpoint -q "$home"; then
+          echo "coder-home-prepare: $home is NOT on the persistent volume -- anything written there is lost when the workspace stops" >&2
+      fi
+
+      chown "${username}:${username}" "$home"
+
+      install -d -o "${username}" -g "${username}" -m 0700 "$home/.ssh"
+      if [[ -s /etc/coder-owner-key.pub ]]; then
+          install -o "${username}" -g "${username}" -m 0600 \
+              /etc/coder-owner-key.pub "$home/.ssh/authorized_keys"
+      fi
+
+  - path: /opt/coder/init
+    permissions: "0755"
+    encoding: b64
+    content: ${init_script}
+
+  - path: /etc/systemd/system/coder-agent.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Coder Agent
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      User=${username}
+      ExecStart=/opt/coder/init
+      Environment=CODER_AGENT_TOKEN=${coder_agent_token}
+      Restart=always
+      RestartSec=10
+      TimeoutStopSec=90
+      KillMode=process
+
+      OOMScoreAdjust=-900
+      SyslogIdentifier=coder-agent
+
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  # Runs after `mounts`, so ownership lands on the persistent volume rather than
+  # the directory it is mounted over.
+  - [/usr/local/sbin/coder-home-prepare]
+  - [systemctl, enable, --now, coder-agent]

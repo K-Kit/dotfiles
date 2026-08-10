@@ -2,6 +2,8 @@
 
 Setup scripts for cloud machines: RunPod containers (below) and Hetzner Cloud servers (§ Hetzner Cloud).
 
+Want disposable workspaces instead of a machine you keep? [`scripts/coder/`](../coder/README.md) has Coder templates for Hetzner and DigitalOcean — an ephemeral VM plus a persistent `/home` volume, managed by the Coder agent. It is a separate, opt-in path; nothing on this page changes.
+
 ## Two-Script Flow
 
 ```
@@ -161,7 +163,7 @@ hcloud server create \
     --user-data-from-file scripts/cloud/hetzner-cloud-init.yaml
 ```
 
-(`cx23` is the cheapest 4 GB shared-vCPU type as of 2026-08-08 — the lineup changes, so check `hcloud server-type list`. `cx22` is gone.)
+(`cx23` — 2 vCPU / 4 GB — is the cheapest 4 GB shared-vCPU type as of 2026-08-08; `cpx11` is cheaper still. `cx22` is gone: retired, and it no longer accepts creates. The lineup changes, so check `hcloud server-type list`, and note that CX types exist only in the EU locations.)
 
 ### Secrets (optional, post-boot)
 
