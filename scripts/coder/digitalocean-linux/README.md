@@ -52,6 +52,18 @@ Template variables (`--var`) rather than workspace parameters: `do_token`, `proj
 
 Unlike upstream, `project_uuid` defaults to empty and the `digitalocean_project_resources` resource is skipped when it is — so `coder templates push` followed by a workspace build works with no `--var` at all.
 
+## Persistent /home, and how you find out when it isn't
+
+The volume is attached at droplet creation and mounted by filesystem label, so it is present by the time cloud-init's `mounts` module runs. The filesystem is created once by Terraform's `initial_filesystem_type` and never here, so no rebuild can `mkfs` over your files.
+
+Mount options stay minimal on purpose: ext4 has no `uid`/`gid` options, and passing them makes the mount fail outright. Combined with `nofail`, that failure is silent — `/home` quietly stays on the ephemeral root disk and is lost when the workspace stops.
+
+`coder_agent.main.startup_script` closes that gap. It runs `mountpoint -q /home/<owner>` and exits non-zero when the home directory is not on the volume, which Coder surfaces as a **failed startup script** in the UI — `coder-home-prepare` also warns, but only to a boot console nobody reads. The guard is deliberately `non-blocking` despite the provider recommending `blocking`, because the point is to stay reachable so you can investigate.
+
+## The agent token
+
+`CODER_AGENT_TOKEN` authenticates to the Coder deployment as this workspace, so it is written to `/etc/coder-agent.env` at mode `0600` and pulled in with `EnvironmentFile=`, rather than sitting inline in the unit. Mode on the unit file is not enough on its own: systemd reports `Environment=` values to any local user through `systemctl show coder-agent`, while it never echoes the contents of an `EnvironmentFile`. systemd reads that file as root before dropping to `User=`, so the agent user needs no access to it.
+
 ## ARM droplets
 
 `coder_agent.main` hardcodes `arch = "amd64"` and every size option above is x86. If you add an ARM droplet size, flip `arch` to `arm64` at the same time — a mismatch produces a workspace that builds successfully and never connects.

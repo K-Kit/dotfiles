@@ -45,6 +45,14 @@ write_files:
 
       chown "${username}:${username}" "$home"
 
+      # The `mounts` module runs before users-groups, so /etc/skel normally lands
+      # on the volume already and this is a no-op. It is here so that a change to
+      # that ordering degrades into a missing-skel copy rather than a home with no
+      # .bashrc or .profile at all. -n never overwrites an existing file.
+      if [[ -d /etc/skel ]]; then
+          runuser -u "${username}" -- cp -rn /etc/skel/. "$home"/ || true
+      fi
+
       install -d -o "${username}" -g "${username}" -m 0700 "$home/.ssh"
       if [[ -s /etc/coder-owner-key.pub ]]; then
           install -o "${username}" -g "${username}" -m 0600 \
@@ -55,6 +63,16 @@ write_files:
     permissions: "0755"
     encoding: b64
     content: ${init_script}
+
+  # The agent token authenticates to the Coder deployment as this workspace, so
+  # it is kept out of the unit file: `Environment=` values are readable by any
+  # local user through `systemctl show coder-agent`, whatever the unit's mode.
+  # systemd reads EnvironmentFile as root before dropping to User=, so 0600
+  # root-only is enough -- the agent user does not need to read it itself.
+  - path: /etc/coder-agent.env
+    permissions: "0600"
+    content: |
+      CODER_AGENT_TOKEN=${coder_agent_token}
 
   - path: /etc/systemd/system/coder-agent.service
     permissions: "0644"
@@ -67,7 +85,7 @@ write_files:
       [Service]
       User=${username}
       ExecStart=/opt/coder/init
-      Environment=CODER_AGENT_TOKEN=${coder_agent_token}
+      EnvironmentFile=/etc/coder-agent.env
       Restart=always
       RestartSec=10
       TimeoutStopSec=90

@@ -107,35 +107,52 @@ data "coder_parameter" "location" {
 data "coder_parameter" "server_type" {
   name         = "server_type"
   display_name = "Server type"
-  description  = "Shared-vCPU Hetzner server type. CX types are EU-only; CPX types are available in every location."
+  description  = "Shared-vCPU Hetzner server type. Availability is regional: CX types exist only in the EU locations, and the CPX generations differ between the EU, the US and Singapore. Pick a type from the group matching your Location -- the plan fails with an explanation if the pair is wrong."
   icon         = "/icon/memory.svg"
   type         = "string"
-  default      = "cx23"
-  mutable      = false
+
+  # cx23, paired with the fsn1 default above. There is no type that is valid in
+  # every location -- Hetzner partitions the families by region -- so "pick a
+  # universal default" is not an available move, and an earlier attempt to do it
+  # (cpx21, which is US-only) broke the default pair outright. The cross-parameter
+  # problem is handled by the precondition on hcloud_server instead, which is
+  # where it belongs: Terraform can compare two values at plan time, and a
+  # coder_parameter cannot.
+  default = "cx23"
+
+  mutable = false
 
   option {
-    name  = "cpx11 -- 2 vCPU, 2 GB RAM, 40 GB (cheapest, all locations)"
-    value = "cpx11"
-  }
-  option {
-    name  = "cx23 -- 2 vCPU, 4 GB RAM, 40 GB (EU only)"
+    name  = "cx23 -- 2 vCPU, 4 GB RAM, 40 GB (EU: fsn1/nbg1/hel1)"
     value = "cx23"
   }
   option {
-    name  = "cpx21 -- 3 vCPU, 4 GB RAM, 80 GB (all locations)"
-    value = "cpx21"
-  }
-  option {
-    name  = "cx33 -- 4 vCPU, 8 GB RAM, 80 GB (EU only)"
+    name  = "cx33 -- 4 vCPU, 8 GB RAM, 80 GB (EU: fsn1/nbg1/hel1)"
     value = "cx33"
   }
   option {
-    name  = "cpx31 -- 4 vCPU, 8 GB RAM, 160 GB (all locations)"
+    name  = "cx43 -- 8 vCPU, 16 GB RAM, 160 GB (EU: fsn1/nbg1/hel1)"
+    value = "cx43"
+  }
+  option {
+    name  = "cpx11 -- 2 vCPU, 2 GB RAM, 40 GB (US: ash/hil)"
+    value = "cpx11"
+  }
+  option {
+    name  = "cpx21 -- 3 vCPU, 4 GB RAM, 80 GB (US: ash/hil)"
+    value = "cpx21"
+  }
+  option {
+    name  = "cpx31 -- 4 vCPU, 8 GB RAM, 160 GB (US: ash/hil)"
     value = "cpx31"
   }
   option {
-    name  = "cx43 -- 8 vCPU, 16 GB RAM, 160 GB (EU only)"
-    value = "cx43"
+    name  = "cpx22 -- 3 vCPU, 4 GB RAM, 80 GB (EU and Singapore)"
+    value = "cpx22"
+  }
+  option {
+    name  = "cpx32 -- 4 vCPU, 8 GB RAM, 160 GB (EU and Singapore)"
+    value = "cpx32"
   }
 }
 
@@ -182,6 +199,28 @@ data "coder_parameter" "home_volume_size" {
 resource "coder_agent" "main" {
   os   = "linux"
   arch = "amd64"
+
+  # The home mount is `nofail`, and coder-home-mount exits 0 when the device never
+  # appears -- both deliberate, since a workspace that refuses to boot is worse
+  # than one on the wrong disk. The cost is that a workspace left on the ephemeral
+  # root disk looks perfectly healthy while everything written to /home is thrown
+  # away at the next stop. Failing here turns that into a visible red startup
+  # script in the UI.
+  #
+  # Deliberately non-blocking despite the provider recommending "blocking": the
+  # whole point is to stay reachable so the volume can be investigated by hand.
+  startup_script_behavior = "non-blocking"
+  startup_script          = <<-EOT
+    set -eu
+    home="/home/${local.username}"
+    if ! mountpoint -q "$home"; then
+      echo "FATAL: $home is not mounted from the persistent volume." >&2
+      echo "Anything written there is LOST when this workspace stops." >&2
+      echo "Check: journalctl -u cloud-final, then /usr/local/sbin/coder-home-mount" >&2
+      exit 1
+    fi
+    echo "Persistent home OK: $home"
+  EOT
 
   metadata {
     key          = "cpu"

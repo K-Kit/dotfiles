@@ -1,5 +1,6 @@
 {
   "enabledPlugins": {
+    "bear-mcp@productivity-tools": true,
     "claude-md-management@claude-plugins-official": true,
     "code-simplifier@claude-plugins-official": true,
     "code@ai-safety-plugins": true,
@@ -10,6 +11,7 @@
     "dev-browser@dev-browser-marketplace": false,
     "figma@claude-plugins-official": true,
     "frontend-design@claude-plugins-official": true,
+    "gitkraken-hooks@gitkraken": false,
     "gopls-lsp@claude-plugins-official": false,
     "hookify@claude-plugins-official": true,
     "huggingface-skills@claude-plugins-official": false,
