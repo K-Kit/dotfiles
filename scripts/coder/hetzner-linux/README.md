@@ -43,11 +43,25 @@ coder templates push hetzner-linux \
 | Parameter | Default | Notes |
 |---|---|---|
 | Location | `fsn1` | `fsn1`/`nbg1`/`hel1` (EU), `ash`/`hil` (US), `sin` (APAC) |
-| Server type | `cpx21` | 3 vCPU / 4 GB. **CX types exist only in the EU locations**, so the default is a CPX one that stays valid wherever Location lands; `cx23` is the cheaper EU-only equivalent and `cpx11` the cheapest of all |
+| Server type | `cx23` | 2 vCPU / 4 GB, EU only. Availability is regional — see below. Changing Location away from the EU means changing this too |
 | Image | `ubuntu-24.04` | Ubuntu 22.04 and Debian 12 also offered |
 | Home volume size | `20` GB | Hetzner volumes start at 10 GB |
 
 Template variables (`--var`) rather than workspace parameters: `hcloud_token`, `ssh_keys`, `dotfiles_uri`.
+
+## Location and server type are coupled
+
+There is no shared-vCPU type that exists in every Hetzner location — the families are partitioned by region, so "just pick a universally-valid default" is not an available move:
+
+| Location | Types |
+|---|---|
+| `fsn1`, `nbg1`, `hel1` (EU) | `cx23`, `cx33`, `cx43`, `cpx22`, `cpx32` |
+| `ash`, `hil` (US) | `cpx11`, `cpx21`, `cpx31` |
+| `sin` (Singapore) | `cpx12`, `cpx22`, `cpx32` |
+
+Coder parameters cannot validate against one another, so nothing in the workspace form stops you from choosing an impossible pair. Terraform can: `hcloud_volume.home` carries a `precondition` that compares the two, and because both values are known before apply it is checked during **plan** — a bad pair is refused with an explanation and nothing is created. It sits on the volume rather than the server because the volume has no `count`, so it is evaluated even while the workspace is stopped; that is the case where a server-side check would let you bank a billable volume you cannot boot.
+
+Only the CX rule is enforced. It is Hetzner's own documented constraint. The CPX generation split (`cpx*2` in the EU and Singapore, `cpx*1` in the US) is recorded in the option labels but deliberately not hard-blocked — a wrong entry in a plan-time precondition refuses a build that would have worked, which is worse than the apply-time error it would have replaced. Check a specific pair with `hcloud server-type describe <type>`.
 
 ## Persistent /home, and how you find out when it isn't
 
@@ -67,7 +81,7 @@ Because the mount happens in `runcmd`, after cloud-init's `users-groups` module 
 
 `coder_agent.main` hardcodes `arch = "amd64"`, and the agent's init script downloads a binary for that architecture. Adding a `cax*` option to the `server_type` parameter without also changing `arch` to `arm64` produces a workspace that **builds successfully and never connects** — there is no build-time error to catch it.
 
-To run on ARM (`cax11` is 2 vCPU / 4 GB and cheaper than `cx23`), either flip `arch` to `arm64` and offer only CAX types, or derive it from the selected type. Do not mix the two behind one parameter with a fixed `arch`.
+To run on ARM (`cax11` is 2 vCPU / 4 GB and cheaper than `cx23`), either flip `arch` to `arm64` and offer only CAX types, or derive it from the selected type. Do not mix the two behind one parameter with a fixed `arch`. CAX types are EU-only, so they carry the same location coupling as CX.
 
 ## Dotfiles
 

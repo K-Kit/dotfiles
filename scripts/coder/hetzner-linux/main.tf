@@ -63,7 +63,7 @@ locals {
 data "coder_parameter" "location" {
   name         = "location"
   display_name = "Location"
-  description  = "Hetzner Cloud location. CX server types only exist in the EU locations; use a CPX or CAX type in ash/hil/sin."
+  description  = "Hetzner Cloud location. CX server types only exist in the EU locations; pick a CPX type for ash/hil/sin. The plan refuses an incompatible pair before anything is created."
   icon         = "/emojis/1f30e.png"
   type         = "string"
   default      = "fsn1"
@@ -293,6 +293,28 @@ resource "hcloud_volume" "home" {
   # Protect the volume from being deleted due to changes in attributes.
   lifecycle {
     ignore_changes = all
+
+    # Coder cannot validate one parameter against another, but Terraform can:
+    # both values are known before apply, so this is checked during `plan` and
+    # nothing is created when it fails. The check lives on the volume rather
+    # than on hcloud_server because the volume has no `count` -- it is the first
+    # billable resource and it is created even while the workspace is stopped,
+    # so a server-side check would let a stopped workspace bank an unusable
+    # volume and only fail on the next start.
+    #
+    # Only the CX rule is enforced. It is Hetzner's own documented constraint
+    # and it is the one this template already stated in the Location
+    # description. The CPX generations also vary by region (the EU and
+    # Singapore get cpx*2, the US gets cpx*1), but that is recorded in the
+    # server_type option labels and deliberately not hard-blocked: a wrong entry
+    # in a plan-time precondition refuses a build that would have worked.
+    precondition {
+      condition = !(
+        substr(data.coder_parameter.server_type.value, 0, 2) == "cx" &&
+        !contains(["fsn1", "nbg1", "hel1"], data.coder_parameter.location.value)
+      )
+      error_message = "CX server types exist only in the EU locations (fsn1, nbg1, hel1). Server type '${data.coder_parameter.server_type.value}' cannot be built in '${data.coder_parameter.location.value}' -- pick a CPX type for that location, or move the workspace to the EU."
+    }
   }
 }
 

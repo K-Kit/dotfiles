@@ -45,11 +45,30 @@ class Mutation:
 
 
 MUTATIONS = [
+    # The actual regression this suite was extended for: cpx21 is a real Hetzner
+    # type, just a US-only one, so pairing it with the fsn1 default fails at
+    # apply. Doc/code parity would not have caught it -- the docs were updated to
+    # match the wrong value.
     Mutation(
-        "default server type back to EU-only cx23",
+        "default server type to the US-only cpx21 while location stays fsn1",
         HZ_TF,
-        'default = "cpx21"',
         'default = "cx23"',
+        'default = "cpx21"',
+    ),
+    # Legal Terraform that always holds, rather than a syntax error: the point is
+    # a precondition that still exists and still parses but no longer compares
+    # the two parameters.
+    Mutation(
+        "neuter the precondition so it no longer looks at the location",
+        HZ_TF,
+        '!contains(["fsn1", "nbg1", "hel1"], data.coder_parameter.location.value)',
+        "false",
+    ),
+    Mutation(
+        "narrow the precondition so hel1 pairs are rejected",
+        HZ_TF,
+        '["fsn1", "nbg1", "hel1"]',
+        '["fsn1", "nbg1"]',
     ),
     Mutation(
         "offer an ARM cax11 type while arch stays amd64",

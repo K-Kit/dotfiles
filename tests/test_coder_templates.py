@@ -430,6 +430,77 @@ def shellcheck_embedded(t: Template, files: dict[str, WrittenFile], tmp: Path) -
         )
 
 
+EU_LOCATIONS = ["fsn1", "nbg1", "hel1"]
+
+
+def check_hetzner_location_coupling() -> None:
+    """Hetzner partitions server-type families by region.
+
+    There is no type available everywhere, so a "universal default" is not an
+    available move -- the default pair has to be internally consistent, and the
+    cross-parameter rule has to be enforced by Terraform, which can compare two
+    known values at plan time where a coder_parameter cannot.
+    """
+    print("\nhetzner-linux location/type coupling")
+    main_tf = (CODER / "hetzner-linux" / "main.tf").read_text()
+
+    loc_body = block_body(main_tf, r'data\s+"coder_parameter"\s+"location"')
+    size_body = block_body(main_tf, r'data\s+"coder_parameter"\s+"server_type"')
+    loc_default = re.search(r'^\s*default\s*=\s*"([^"]+)"', loc_body, re.MULTILINE)
+    size_default = re.search(r'^\s*default\s*=\s*"([^"]+)"', size_body, re.MULTILINE)
+    loc_default = loc_default.group(1) if loc_default else ""
+    size_default = size_default.group(1) if size_default else ""
+
+    # The regression that prompted all of this: cpx21 was made the default on the
+    # false premise that CPX exists everywhere. It is US-only, so it broke the
+    # default pair -- which no amount of doc/code parity would have caught,
+    # because the docs were updated to match the wrong value.
+    check(
+        "the default location/server_type pair is internally consistent",
+        not (size_default.startswith("cx") and loc_default not in EU_LOCATIONS),
+        expected=f"a CX default only alongside one of {EU_LOCATIONS}",
+        got=f"{size_default} in {loc_default}",
+    )
+
+    # A precondition beats a carefully-chosen default, which only protects the
+    # one combination nobody had to think about.
+    vol_body = block_body(main_tf, r'resource\s+"hcloud_volume"\s+"home"')
+    check(
+        "hcloud_volume.home carries a precondition",
+        "precondition {" in vol_body,
+        expected="a lifecycle precondition on the volume",
+    )
+    check(
+        "the precondition compares server_type against location",
+        "data.coder_parameter.server_type.value" in vol_body
+        and "data.coder_parameter.location.value" in vol_body,
+        expected="both parameters referenced in the volume block",
+    )
+    check(
+        "the precondition names every EU location",
+        all(f'"{loc}"' in vol_body for loc in EU_LOCATIONS),
+        expected=f"all of {EU_LOCATIONS} in the condition",
+        got=vol_body,
+    )
+    # On the volume specifically: hcloud_server has `count = start_count`, so a
+    # precondition there is skipped while the workspace is stopped -- exactly the
+    # window in which the billable volume gets created.
+    srv_body = block_body(main_tf, r'resource\s+"hcloud_server"\s+"workspace"')
+    check(
+        "the precondition is not on the count-gated server resource instead",
+        "precondition {" not in srv_body,
+        expected="the check on hcloud_volume.home, which has no count",
+    )
+
+    # No option may claim to be universal -- that was the false premise.
+    check(
+        "no server_type option claims to work in all locations",
+        "all locations" not in size_body.lower(),
+        expected="every option labelled with its region",
+        got=size_body,
+    )
+
+
 def main() -> int:
     import tempfile
 
@@ -444,6 +515,11 @@ def main() -> int:
                 lose(f"{t.slug}: {exc}")
             except yaml.YAMLError as exc:
                 lose(f"{t.slug}: rendered cloud-config is not valid YAML", got=str(exc))
+
+    try:
+        check_hetzner_location_coupling()
+    except AssertionError as exc:
+        lose(f"hetzner-linux: {exc}")
 
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0

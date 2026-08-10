@@ -4,7 +4,7 @@ Starter [Coder](https://coder.com) templates that provision cloud VMs as workspa
 
 | Template | Provider | Default box |
 |---|---|---|
-| [`hetzner-linux/`](hetzner-linux/README.md) | `hetznercloud/hcloud` | `cpx21` (3 vCPU / 4 GB) in `fsn1`, Ubuntu 24.04 |
+| [`hetzner-linux/`](hetzner-linux/README.md) | `hetznercloud/hcloud` | `cx23` (2 vCPU / 4 GB) in `fsn1`, Ubuntu 24.04 |
 | [`digitalocean-linux/`](digitalocean-linux/README.md) | `digitalocean/digitalocean` | `s-1vcpu-2gb` in `ams3`, Ubuntu 24.04 |
 
 Both follow the same shape as Coder's own [`digitalocean-linux`](https://github.com/coder/coder/tree/main/examples/templates/digitalocean-linux) example — an ephemeral VM plus a persistent volume mounted at `/home/<owner>` — so stopping a workspace destroys the VM and keeps your files. Coder ships no Hetzner example; that one is written to match.
@@ -97,16 +97,16 @@ They are meant as starting points. Two things to be careful about:
 - **`coder_agent.arch` must match the VM's architecture.** Both templates hardcode `amd64` and offer only x86 machine types. Adding an ARM option (Hetzner `cax*`) without flipping `arch` to `arm64` produces a workspace that builds successfully and never connects — nothing catches it at plan time.
 - **Never format the volume from cloud-init.** Terraform creates the filesystem once at volume-create time; the cloud-init scripts only mount it. A `mkfs` in the boot path would wipe `/home` on every rebuild.
 - **In a `.tftpl`, only `$${` is an escape.** `$$var` renders literally as `$$var` — the shell's PID followed by text. Shell variables are written with a single `$`.
-- **The machine-type default has to stay valid for every location.** Coder cannot validate one parameter against another, so a Hetzner `cx*` default silently pairs with `ash`/`hil`/`sin` to make a combination that only fails at apply time. That is why the default is `cpx21` and not the cheaper EU-only `cx23`.
+- **Machine type and location are coupled, and no default fixes that.** Coder cannot validate one parameter against another, so nothing in the workspace form stops an impossible pair. On Hetzner there is no type available in every location either — the families are partitioned by region, and picking a "universal" default just moves the failure (`cpx21` is US-only and breaks the `fsn1` default). Validate the pair with a Terraform `lifecycle.precondition` instead: both values are known before apply, so it is checked at plan time and nothing gets created. Put it on the resource with no `count`, or a stopped workspace banks a billable volume it cannot boot. See [`hetzner-linux/README.md`](hetzner-linux/README.md) § Location and server type are coupled.
 
 ## Testing
 
 ```bash
-uv run tests/test_coder_templates.py     # 68 assertions, hermetic
+uv run tests/test_coder_templates.py     # 74 assertions, hermetic
 uv run tests/mutate_coder_templates.py   # proves the suite can fail
 ```
 
-There is no Terraform or OpenTofu on this machine, so `terraform validate` is not available. `tests/test_coder_templates.py` is the substitute: it renders each `.tftpl` the way `templatefile()` would, checks the `main.tf` ↔ template variable map in both directions, parses the result as cloud-init YAML, shellchecks the scripts embedded in it, and asserts the agent token never lands anywhere world-readable. It also pins doc/code parity for the default machine type in both READMEs — the `hz` lesson, where the code default drifted from the documented one and billed for a bigger box.
+There is no Terraform or OpenTofu on this machine, so `terraform validate` is not available. `tests/test_coder_templates.py` is the substitute: it renders each `.tftpl` the way `templatefile()` would, checks the `main.tf` ↔ template variable map in both directions, parses the result as cloud-init YAML, shellchecks the scripts embedded in it, and asserts the agent token never lands anywhere world-readable. It also pins doc/code parity for the default machine type in both READMEs — the `hz` lesson, where the code default drifted from the documented one and billed for a bigger box — and, for Hetzner, that the default location/type pair is internally consistent and the plan-time precondition guarding that pair is still in place.
 
 `tests/mutate_coder_templates.py` breaks each of those properties in turn — `cx23`, `blocking`, `0644`, `cp -r` — using values the tools would genuinely accept, and fails if the suite stays green. An illegal value would only prove that a membership check works. It mutates a staged copy under `$TMPDIR`, never your working tree. Both templates are mutated, not just Hetzner: the suite asserts the same properties for each, so mutating one half would leave the other half's assertions unproven.
 
