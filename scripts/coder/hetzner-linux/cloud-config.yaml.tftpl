@@ -11,8 +11,8 @@ write_files:
   # Mount the persistent volume over /home/<user>. The volume is attached by a
   # separate Terraform resource, so at first boot the device may not exist yet --
   # wait for it rather than failing. The filesystem is created once by Terraform
-  # (hcloud_volume.format); this script never runs mkfs, so a rebuild can never
-  # wipe an existing home directory.
+  # (the `format` argument on hcloud_volume.home); this script never runs mkfs,
+  # so a rebuild can never wipe an existing home directory.
   - path: /usr/local/sbin/coder-home-mount
     permissions: "0755"
     content: |
@@ -44,6 +44,15 @@ write_files:
       mountpoint -q "$home" || mount "$home"
       chown "${username}:${username}" "$home"
 
+      # cloud-init's users-groups module already populated /home/<user> from
+      # /etc/skel, but it did so on the root disk, and the mount above has just
+      # hidden it -- a fresh volume would otherwise have no .bashrc or .profile.
+      # Copied as the user so ownership is right without a recursive chown of the
+      # whole volume, and -n so an existing home is never overwritten.
+      if [[ -d /etc/skel ]]; then
+          runuser -u "${username}" -- cp -rn /etc/skel/. "$home"/ || true
+      fi
+
       install -d -o "${username}" -g "${username}" -m 0700 "$home/.ssh"
       if [[ -s /etc/coder-owner-key.pub ]]; then
           install -o "${username}" -g "${username}" -m 0600 \
@@ -62,6 +71,16 @@ write_files:
     encoding: b64
     content: ${init_script}
 
+  # The agent token authenticates to the Coder deployment as this workspace, so
+  # it is kept out of the unit file: `Environment=` values are readable by any
+  # local user through `systemctl show coder-agent`, whatever the unit's mode.
+  # systemd reads EnvironmentFile as root before dropping to User=, so 0600
+  # root-only is enough -- the agent user does not need to read it itself.
+  - path: /etc/coder-agent.env
+    permissions: "0600"
+    content: |
+      CODER_AGENT_TOKEN=${coder_agent_token}
+
   - path: /etc/systemd/system/coder-agent.service
     permissions: "0644"
     content: |
@@ -73,7 +92,7 @@ write_files:
       [Service]
       User=${username}
       ExecStart=/opt/coder/init
-      Environment=CODER_AGENT_TOKEN=${coder_agent_token}
+      EnvironmentFile=/etc/coder-agent.env
       Restart=always
       RestartSec=10
       TimeoutStopSec=90

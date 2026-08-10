@@ -218,6 +218,27 @@ resource "coder_agent" "main" {
   os   = "linux"
   arch = "amd64"
 
+  # The home mount is `nofail`, so a failed mount never stops the boot -- the
+  # workspace comes up looking healthy on the ephemeral root disk and everything
+  # written to /home is thrown away at the next stop. coder-home-prepare warns
+  # about this to the console, where nobody sees it; failing here turns it into a
+  # visible red startup script in the UI.
+  #
+  # Deliberately non-blocking despite the provider recommending "blocking": the
+  # whole point is to stay reachable so the volume can be investigated by hand.
+  startup_script_behavior = "non-blocking"
+  startup_script          = <<-EOT
+    set -eu
+    home="/home/${local.username}"
+    if ! mountpoint -q "$home"; then
+      echo "FATAL: $home is not mounted from the persistent volume." >&2
+      echo "Anything written there is LOST when this workspace stops." >&2
+      echo "Check: journalctl -u cloud-final, then /usr/local/sbin/coder-home-prepare" >&2
+      exit 1
+    fi
+    echo "Persistent home OK: $home"
+  EOT
+
   metadata {
     key          = "cpu"
     display_name = "CPU Usage"

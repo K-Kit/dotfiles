@@ -43,11 +43,25 @@ coder templates push hetzner-linux \
 | Parameter | Default | Notes |
 |---|---|---|
 | Location | `fsn1` | `fsn1`/`nbg1`/`hel1` (EU), `ash`/`hil` (US), `sin` (APAC) |
-| Server type | `cx23` | 2 vCPU / 4 GB. `cpx11` is cheaper; **CX types exist only in the EU locations** — pick a CPX type for `ash`/`hil`/`sin` |
+| Server type | `cpx21` | 3 vCPU / 4 GB. **CX types exist only in the EU locations**, so the default is a CPX one that stays valid wherever Location lands; `cx23` is the cheaper EU-only equivalent and `cpx11` the cheapest of all |
 | Image | `ubuntu-24.04` | Ubuntu 22.04 and Debian 12 also offered |
 | Home volume size | `20` GB | Hetzner volumes start at 10 GB |
 
 Template variables (`--var`) rather than workspace parameters: `hcloud_token`, `ssh_keys`, `dotfiles_uri`.
+
+## Persistent /home, and how you find out when it isn't
+
+The volume is created with `location` rather than `server_id`, so it outlives the server that Coder destroys on every stop. It is formatted exactly once, by Terraform's `format` argument — `coder-home-mount` only ever mounts it, so no rebuild can run `mkfs` over your files.
+
+The mount is `defaults,nofail`, and `coder-home-mount` exits 0 when the device never appears. Both are deliberate: a workspace that refuses to boot is worse than one on the wrong disk. The cost is that the failure is otherwise invisible — the workspace comes up healthy, `/home` is quietly on the ephemeral root disk, and everything written there is destroyed at the next stop.
+
+`coder_agent.main.startup_script` closes that gap. It runs `mountpoint -q /home/<owner>` and exits non-zero when the home directory is not on the volume, which Coder surfaces as a **failed startup script** in the UI. It is deliberately `non-blocking` despite the provider recommending `blocking`, because the whole point is to stay reachable so you can look at the volume by hand.
+
+Because the mount happens in `runcmd`, after cloud-init's `users-groups` module has already written `/etc/skel` to the root disk, the helper copies the skel files onto the volume afterwards — otherwise a brand-new workspace gets a home with no `.bashrc` or `.profile`. The copy is `cp -rn`, so an existing home is never overwritten.
+
+## The agent token
+
+`CODER_AGENT_TOKEN` authenticates to the Coder deployment as this workspace, so it is written to `/etc/coder-agent.env` at mode `0600` and pulled in with `EnvironmentFile=`, rather than sitting inline in the unit. Mode on the unit file is not enough on its own: systemd reports `Environment=` values to any local user through `systemctl show coder-agent`, while it never echoes the contents of an `EnvironmentFile`. systemd reads that file as root before dropping to `User=`, so the agent user needs no access to it.
 
 ## ARM (CAX) server types
 
