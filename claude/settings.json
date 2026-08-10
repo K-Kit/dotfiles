@@ -1113,10 +1113,10 @@
       ],
       "command": "zotero-mcp",
       "env": {
+        "ZOTERO_LOCAL": "true",
         "ZOTERO_API_KEY": "${ZOTERO_API_KEY}",
         "ZOTERO_LIBRARY_ID": "${ZOTERO_LIBRARY_ID}",
-        "ZOTERO_LIBRARY_TYPE": "${ZOTERO_LIBRARY_TYPE:-user}",
-        "ZOTERO_LOCAL": "true"
+        "ZOTERO_LIBRARY_TYPE": "${ZOTERO_LIBRARY_TYPE:-user}"
       }
     }
   }
