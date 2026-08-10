@@ -23,26 +23,41 @@ struct SelectArgs {
     items_path: Option<PathBuf>,
 }
 
-fn parse_args(args: &[String]) -> SelectArgs {
+/// Parse `select` arguments, rejecting anything unrecognised.
+///
+/// Silently skipping unknown flags is what let this break in the first place:
+/// `helpers.sh` shipped `--items <file>` before the binary understood it, the
+/// old parser ignored it, and the menu vanished with exit 0. A hard error makes
+/// the next caller/binary skew loud — the caller treats a non-zero exit as
+/// "keep the defaults", which is the safe direction.
+fn parse_args(args: &[String]) -> Result<SelectArgs, String> {
     let mut parsed = SelectArgs {
         title: "Select components".to_string(),
         items_path: None,
     };
-    let mut i = 1; // args[0] is "claude-tools-select"
+    let mut i = 1; // args[0] is the subcommand name
     while i < args.len() {
-        match args[i].as_str() {
-            "--title" if i + 1 < args.len() => {
-                parsed.title = args[i + 1].clone();
+        let flag = args[i].as_str();
+        match flag {
+            "--title" | "--items" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| format!("{flag} requires a value"))?;
+                if flag == "--title" {
+                    parsed.title = value.clone();
+                } else {
+                    parsed.items_path = Some(PathBuf::from(value));
+                }
                 i += 2;
             }
-            "--items" if i + 1 < args.len() => {
-                parsed.items_path = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
+            other => {
+                return Err(format!(
+                    "unrecognised option {other:?} (supported: --title <text>, --items <file>)"
+                ))
             }
-            _ => i += 1,
         }
     }
-    parsed
+    Ok(parsed)
 }
 
 fn read_items<R: BufRead>(reader: R) -> Result<Vec<ListItem>, io::Error> {
@@ -82,15 +97,19 @@ fn read_items<R: BufRead>(reader: R) -> Result<Vec<ListItem>, io::Error> {
 }
 
 pub fn run(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
-    let args = parse_args(&args);
-    let items = if let Some(path) = args.items_path {
-        read_items(BufReader::new(File::open(path)?))?
-    } else {
-        read_items(io::stdin().lock())?
+    let args = parse_args(&args).map_err(|e| format!("claude-tools select: {e}"))?;
+    let items = match &args.items_path {
+        // --items keeps stdin on the terminal. Piping items in makes fd 0 a pipe,
+        // which pushes crossterm onto a fragile /dev/tty fallback for keyboard
+        // input ("Failed to initialize input reader" on some terminals).
+        Some(path) => read_items(BufReader::new(File::open(path)?))?,
+        None => read_items(io::stdin().lock())?,
     };
 
+    // Loud, not silent: returning Ok(()) here printed nothing on stdout, and the
+    // caller read "no output" as "deselect everything".
     if items.is_empty() {
-        return Ok(());
+        return Err("claude-tools select: no items to choose from".into());
     }
 
     let mut state = AppState::new(items);
@@ -138,11 +157,101 @@ mod tests {
         ];
 
         assert_eq!(
-            parse_args(&args),
+            parse_args(&args).expect("known flags must parse"),
             SelectArgs {
                 title: "Select deploy components".to_string(),
                 items_path: Some(PathBuf::from("/tmp/components")),
             }
+        );
+    }
+
+    #[test]
+    fn rejects_unrecognised_and_incomplete_flags() {
+        // A silently-skipped unknown flag is the exact bug this guards: helpers.sh
+        // sent --items to a binary that ignored it, and the menu vanished.
+        // argv[0] is the synthetic program name main.rs prepends, never a flag.
+        for argv in [
+            vec![
+                "claude-tools-select".to_string(),
+                "--itmes".to_string(),
+                "/x".to_string(),
+            ],
+            vec!["claude-tools-select".to_string(), "--items".to_string()],
+            vec!["claude-tools-select".to_string(), "--title".to_string()],
+            vec!["claude-tools-select".to_string(), "stray".to_string()],
+        ] {
+            assert!(
+                parse_args(&argv).is_err(),
+                "expected {argv:?} to be rejected"
+            );
+        }
+    }
+
+    /// Caller/callee parity: every long option `helpers.sh` actually passes to
+    /// `claude-tools select` must be one this parser accepts. Unit tests over
+    /// parse_args alone all passed while the menu was broken, because the defect
+    /// lived in the shell↔binary contract, not in either side on its own.
+    #[test]
+    fn helpers_sh_passes_only_flags_this_parser_accepts() {
+        let helpers = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/shared/helpers.sh"
+        ))
+        .expect("helpers.sh is the caller under test");
+
+        let invocation = helpers
+            .lines()
+            .find(|l| l.contains("claude-tools select"))
+            .expect("helpers.sh must invoke `claude-tools select`");
+
+        let flags: Vec<&str> = invocation
+            .split_whitespace()
+            .filter(|t| t.starts_with("--"))
+            .collect();
+        assert!(
+            !flags.is_empty(),
+            "found no flags in {invocation:?} — the extractor is vacuous"
+        );
+
+        for flag in flags {
+            let argv = vec![
+                "claude-tools-select".to_string(),
+                flag.to_string(),
+                "placeholder".to_string(),
+            ];
+            assert!(
+                parse_args(&argv).is_ok(),
+                "helpers.sh passes {flag}, which this parser rejects"
+            );
+        }
+    }
+
+    /// parse_args starts at index 1 because main.rs prepends a synthetic program
+    /// name. If main.rs ever forwarded the real argv instead, index 1 would land
+    /// on the "select" subcommand token and the strict parser would reject every
+    /// invocation — a break the tests above cannot see, since they supply argv[0]
+    /// themselves.
+    #[test]
+    fn main_prepends_a_synthetic_argv0_before_the_select_flags() {
+        let main_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/main.rs"
+        ))
+        .expect("main.rs is the dispatcher under test");
+
+        let dispatch = main_rs
+            .split_once("\"select\" =>")
+            .expect("main.rs must dispatch the select subcommand")
+            .1;
+        let dispatch = &dispatch[..dispatch.find("select::run").expect("dispatch calls select::run")];
+
+        assert!(
+            dispatch.contains("\"claude-tools-select\".to_string()"),
+            "select dispatch no longer seeds a synthetic argv[0]: {dispatch}"
+        );
+        assert!(
+            dispatch.contains("args[2..]"),
+            "select dispatch no longer forwards args[2..] (the flags only): {dispatch}"
         );
     }
 

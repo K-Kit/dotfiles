@@ -203,24 +203,42 @@ show_component_menu() {
     rm -f "$items_file"
     [[ $rc -ne 0 ]] && return 0
 
+    _apply_component_selection "$mode" "$result" "${all_names[@]}"
+}
+
+# Usage: _apply_component_selection install|deploy <tui-output> <name>...
+# Turn the TUI's selected-names output into INSTALL_*/DEPLOY_* variables.
+# Split out from show_component_menu so the policy below is testable without a
+# pty — tests/test_component_menu.zsh drives it directly.
+_apply_component_selection() {
+    local mode="$1" result="$2"
+    shift 2
+    local all_names=("$@")
+    local prefix name var_name line
+    [[ "$mode" == "install" ]] && prefix="INSTALL" || prefix="DEPLOY"
+
+    # Empty output on success means "keep the defaults", NEVER "select nothing".
+    # Without this the loop below disables every component and re-enables none —
+    # an exit-0 run that silently does nothing at all. That is exactly what a
+    # claude-tools too old to understand --items produces: it ignores the unknown
+    # flag, reads no items, and returns 0 with no output.
+    # Cost of the choice: deselecting everything in the TUI is not expressible.
+    # Use --minimal / --no-<component> for that; a no-op run is the worse error.
+    if [[ -z "${result//[[:space:]]/}" ]]; then
+        log_warning "No components selected — keeping defaults (use --minimal to select none)"
+        return 0
+    fi
+
     # Disable all filtered components, then re-enable selected ones
     for name in "${all_names[@]}"; do
-        local var_name="${(U)name//-/_}"
-        if [[ "$mode" == "install" ]]; then
-            typeset -g "INSTALL_${var_name}=false"
-        else
-            typeset -g "DEPLOY_${var_name}=false"
-        fi
+        var_name="${(U)name//-/_}"
+        typeset -g "${prefix}_${var_name}=false"
     done
 
     while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        local var_name="${(U)line//-/_}"
-        if [[ "$mode" == "install" ]]; then
-            typeset -g "INSTALL_${var_name}=true"
-        else
-            typeset -g "DEPLOY_${var_name}=true"
-        fi
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        var_name="${(U)line//-/_}"
+        typeset -g "${prefix}_${var_name}=true"
     done <<< "$result"
 }
 

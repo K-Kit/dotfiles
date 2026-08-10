@@ -11,7 +11,6 @@
     "dev-browser@dev-browser-marketplace": false,
     "figma@claude-plugins-official": true,
     "frontend-design@claude-plugins-official": true,
-    "gitkraken-hooks@gitkraken": false,
     "gopls-lsp@claude-plugins-official": false,
     "hookify@claude-plugins-official": true,
     "huggingface-skills@claude-plugins-official": false,
