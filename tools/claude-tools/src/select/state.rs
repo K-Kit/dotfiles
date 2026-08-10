@@ -1,6 +1,12 @@
 pub enum ListItem {
-    GroupHeader { name: String },
-    Component { name: String, description: String, selected: bool },
+    GroupHeader {
+        name: String,
+    },
+    Component {
+        name: String,
+        description: String,
+        selected: bool,
+    },
 }
 
 pub struct AppState {
@@ -12,7 +18,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(items: Vec<ListItem>) -> Self {
-        let first_component = items.iter()
+        let first_component = items
+            .iter()
             .position(|i| matches!(i, ListItem::Component { .. }))
             .unwrap_or(0);
 
@@ -50,14 +57,18 @@ impl AppState {
     }
 
     pub fn move_up(&mut self) {
-        if self.cursor == 0 { return; }
+        if self.cursor == 0 {
+            return;
+        }
         let mut prev = self.cursor - 1;
         loop {
             if matches!(self.items[prev], ListItem::Component { .. }) {
                 self.cursor = prev;
                 return;
             }
-            if prev == 0 { break; }
+            if prev == 0 {
+                break;
+            }
             prev -= 1;
         }
         // Wrap around
@@ -70,13 +81,22 @@ impl AppState {
     }
 
     pub fn selected_count(&self) -> usize {
-        self.items.iter().filter(|i| matches!(i, ListItem::Component { selected: true, .. })).count()
+        self.items
+            .iter()
+            .filter(|i| matches!(i, ListItem::Component { selected: true, .. }))
+            .count()
     }
 
     pub fn selected_names(&self) -> Vec<String> {
-        self.items.iter()
+        self.items
+            .iter()
             .filter_map(|item| {
-                if let ListItem::Component { name, selected: true, .. } = item {
+                if let ListItem::Component {
+                    name,
+                    selected: true,
+                    ..
+                } = item
+                {
                     Some(name.clone())
                 } else {
                     None
