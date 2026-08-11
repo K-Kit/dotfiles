@@ -2,7 +2,8 @@ model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 service_tier = "default"
 approvals_reviewer = "user"
-notify = ["/Users/kit/dotfiles/codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
+
+notify = ["/Users/kit/code/dotfiles/codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
 
 [projects."/Users/kit/dotfiles"]
 trust_level = "trusted"
@@ -13,6 +14,21 @@ trust_level = "trusted"
 [projects."/home"]
 trust_level = "trusted"
 
+[projects."/Users/kit/Documents/Codex/2026-08-10/revie-and-write-a-siimpler-response"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/ChatGPT/lit"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-10/revie-and-write-a-siimpler-response-2"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-10/revie-and-write-a-siimpler-response-3"]
+trust_level = "trusted"
+
+[projects."/Users/kit/lit"]
+trust_level = "trusted"
+
 [tui.model_availability_nux]
 "gpt-5.6-sol" = 1
 
@@ -21,9 +37,9 @@ followUpQueueMode = "queue"
 dock-icon-preference = "app-default"
 
 [marketplaces.openai-bundled]
-last_updated = "2026-08-10T00:19:02Z"
+last_updated = "2026-08-10T07:13:51Z"
 source_type = "local"
-source = "/Users/kit/dotfiles/codex/.tmp/bundled-marketplaces/openai-bundled"
+source = "/Users/kit/code/dotfiles/codex/.tmp/bundled-marketplaces/openai-bundled"
 
 [marketplaces.openai-primary-runtime]
 last_updated = "2026-08-09T23:22:26Z"

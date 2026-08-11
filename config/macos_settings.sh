@@ -21,13 +21,9 @@ echo "Configuring macOS system defaults..."
 configure_keyboard() {
     echo "  → Configuring keyboard..."
 
-    # Fast key repeat (1 = fastest, 10 = short delay before repeat)
-    defaults write -g InitialKeyRepeat -int 10 2>/dev/null || true
-    defaults write -g KeyRepeat -int 1 2>/dev/null || true
-
-    # Enable key repeat (disable press-and-hold accents)
-    defaults write NSGlobalDomain ApplePressAndHoldEnabled -bool false 2>/dev/null || true
-    defaults write com.microsoft.VSCode ApplePressAndHoldEnabled -bool false 2>/dev/null || true
+    # Key repeat rate and press-and-hold are deliberately NOT set here — the
+    # fastest-possible values (KeyRepeat 1 / InitialKeyRepeat 10) were unusable.
+    # Tune them by hand in System Settings > Keyboard.
 
     # Disable auto-capitalize
     defaults write NSGlobalDomain NSAutomaticCapitalizationEnabled -bool false 2>/dev/null || true
@@ -53,10 +49,10 @@ configure_keyboard() {
 configure_trackpad() {
     echo "  → Configuring trackpad..."
 
-    # Tap to click (both built-in and Bluetooth trackpad)
-    defaults write com.apple.AppleMultitouchTrackpad Clicking -bool true 2>/dev/null || true
-    defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad Clicking -bool true 2>/dev/null || true
-    defaults -currentHost write NSGlobalDomain com.apple.mouse.tapBehavior -int 1 2>/dev/null || true
+    # Tap to click OFF — accidental taps registered as clicks. Click by pressing.
+    defaults write com.apple.AppleMultitouchTrackpad Clicking -bool false 2>/dev/null || true
+    defaults write com.apple.driver.AppleBluetoothMultitouch.trackpad Clicking -bool false 2>/dev/null || true
+    defaults -currentHost write NSGlobalDomain com.apple.mouse.tapBehavior -int 0 2>/dev/null || true
 
     # Three-finger vertical swipe → App Expose
     defaults write com.apple.AppleMultitouchTrackpad TrackpadThreeFingerVertSwipeGesture -int 2 2>/dev/null || true
@@ -68,7 +64,9 @@ configure_trackpad() {
 
 configure_mouse() {
     echo "  → Configuring mouse..."
-    defaults write -g com.apple.mouse.scaling 5.0 2>/dev/null || true
+    # Pointer tracking speed is deliberately NOT set here — the previous 5.0
+    # (near max) made the cursor unusable. Tune it in System Settings > Trackpad.
+    :
 }
 
 # ─── Dock ─────────────────────────────────────────────────────────────────────
