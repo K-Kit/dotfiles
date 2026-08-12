@@ -195,11 +195,16 @@ show_component_menu() {
     # which forces crossterm onto a fragile /dev/tty fallback for keyboard input
     # that fails on some terminals ("Failed to initialize input reader") and
     # silently drops the menu. Keeping stdin on the terminal is the reliable path.
-    local items_file result
+    local items_file result rc=0
     items_file=$(mktemp "${TMPDIR:-/tmp}/claude-tools-select.XXXXXX")
     printf '%s' "$stdin_input" > "$items_file"
-    result=$(claude-tools select --title "Select ${mode} components" --items "$items_file")
-    local rc=$?
+    # Capture the status with `|| rc=$?` rather than a plain assignment plus `$?`.
+    # The early return above already covers a missing binary, so the live case is a
+    # user cancel: callers invoke this function plainly (deploy.sh:176, install.sh:94),
+    # so under `set -euo pipefail` pressing Esc/Ctrl-C exited 1 and aborted the entire
+    # deploy before `$?` was ever read — instead of keeping current values as intended
+    # — and leaked $items_file on the way out.
+    result=$(claude-tools select --title "Select ${mode} components" --items "$items_file") || rc=$?
     rm -f "$items_file"
     [[ $rc -ne 0 ]] && return 0
 
@@ -714,7 +719,9 @@ set_zsh_default() {
     [[ "$SHELL" == *"zsh"* ]] && return 0
 
     local zsh_path
-    zsh_path=$(which zsh 2>/dev/null)
+    # `|| true`: with zsh absent `which` exits nonzero and this plain assignment
+    # would abort the caller under errexit. Empty is handled by the -x test below.
+    zsh_path=$(which zsh 2>/dev/null || true)
 
     if [[ -x "$zsh_path" ]] && sudo -n true 2>/dev/null; then
         log_info "Setting ZSH as default shell..."
@@ -744,20 +751,26 @@ install_ohmyzsh() {
     local zsh_dir="$HOME/.oh-my-zsh"
     local zsh_custom="$zsh_dir/custom"
 
+    # Base install is skipped when already present, but the theme/plugin clones
+    # below always run — they are idempotent, and skipping them meant a partial
+    # install (missing theme/plugins) could never be repaired by re-running.
     if [[ -d "$zsh_dir" && "${FORCE_REINSTALL:-false}" != "true" ]]; then
         log_info "oh-my-zsh already installed (use FORCE_REINSTALL=true to reinstall)"
-        return 0
+    else
+        log_info "Installing oh-my-zsh..."
+        rm -rf "$zsh_dir"
+        # Unset ZSH so the official installer doesn't refuse when $ZSH points elsewhere
+        # (e.g., RunPod containers where /root/.oh-my-zsh exists but HOME=/workspace)
+        ZSH="$zsh_dir" sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
     fi
 
-    log_info "Installing oh-my-zsh..."
-    rm -rf "$zsh_dir"
-    # Unset ZSH so the official installer doesn't refuse when $ZSH points elsewhere
-    # (e.g., RunPod containers where /root/.oh-my-zsh exists but HOME=/workspace)
-    ZSH="$zsh_dir" sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-
-    log_info "Installing powerlevel10k theme..."
-    git clone --quiet https://github.com/romkatv/powerlevel10k.git \
-        "${zsh_custom}/themes/powerlevel10k" 2>/dev/null || log_warning "powerlevel10k failed"
+    if [[ ! -d "${zsh_custom}/themes/powerlevel10k" ]]; then
+        log_info "Installing powerlevel10k theme..."
+        git clone --quiet https://github.com/romkatv/powerlevel10k.git \
+            "${zsh_custom}/themes/powerlevel10k" 2>/dev/null || log_warning "powerlevel10k failed"
+    else
+        log_info "powerlevel10k already installed"
+    fi
 
     log_info "Installing zsh plugins..."
     clone_zsh_plugin "https://github.com/zsh-users/zsh-syntax-highlighting.git"
@@ -1720,9 +1733,14 @@ guard_not_worktree() {
     # A linked worktree has its own .git dir distinct from the shared common dir.
     # Both queries return paths relative to DOT_DIR when not already absolute;
     # canonicalise so the comparison is not defeated by symlinks or `..`.
+    # `|| true`: _resolve_git_dir ends in `(cd "$path" && pwd -P)`, which exits 1 on an
+    # unreadable/missing path, and guard_not_worktree is called plainly (deploy.sh:34,
+    # install.sh:28). Under errexit that killed the script with a bare exit 1 and no
+    # message, bypassing the deliberate fail-closed branch below — the one case where
+    # a silent abort is worst. Empty is exactly what that branch tests for.
     local git_dir common_dir
-    git_dir="$(_resolve_git_dir "$(git -C "$DOT_DIR" rev-parse --git-dir 2>/dev/null)")"
-    common_dir="$(_resolve_git_dir "$(git -C "$DOT_DIR" rev-parse --git-common-dir 2>/dev/null)")"
+    git_dir="$(_resolve_git_dir "$(git -C "$DOT_DIR" rev-parse --git-dir 2>/dev/null)" || true)"
+    common_dir="$(_resolve_git_dir "$(git -C "$DOT_DIR" rev-parse --git-common-dir 2>/dev/null)" || true)"
 
     # Inside a repo but detection failed — old git without --git-common-dir, a
     # safe.directory rejection, an unreadable path. Fail closed: an unusable

@@ -27,3 +27,24 @@ chrome-native-hosts-v2.json
 .codex-chronicle-assets-to-install.marker
 mcp-oauth-locks/
 packages/
+
+# Private Codex CLI application state. ~/.codex is a symlink into this PUBLIC
+# repo, so anything the CLI writes here lands in the working tree — these must
+# never become committable.
+agents/
+archived_sessions/
+context-mode/
+generated_images/
+hooks/
+hooks.json
+ipc/
+lsp-install-decisions.json
+orchestrations/
+visualizations/
+worktrees/
+
+# SQLite databases and their WAL/SHM sidecars. Sidecars were previously covered
+# only by the machine-local ~/.gitignore_global, which is not part of this repo.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

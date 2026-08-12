@@ -202,6 +202,12 @@ RC_FILE="$HOME/.zshrc"
 
 if [[ "$DEPLOY_TMUX" == "true" ]]; then
     log_info "Deploying tmux configuration..."
+    # Truncating mode clobbers the file — back it up first, but only when the
+    # content differs, or every run litters $HOME with identical backups.
+    if [[ "$DEPLOY_APPEND" != "true" && -f "$HOME/.tmux.conf" ]] &&
+       [[ "$(cat "$HOME/.tmux.conf")" != "source $DOT_DIR/config/tmux.conf" ]]; then
+        backup_file "$HOME/.tmux.conf"
+    fi
     eval "echo \"source $DOT_DIR/config/tmux.conf\" $OP \"\$HOME/.tmux.conf\""
 
     # Ensure TPM is installed (idempotent — skips if already present)
@@ -252,6 +258,12 @@ if [[ "$DEPLOY_SHELL" == "true" ]]; then
     log_info "Deploying shell configuration for $CURRENT_SHELL..."
 
     if [[ "$CURRENT_SHELL" == "zsh" ]]; then
+        # See the tmux note above: back up only when truncating a file whose
+        # content is not already exactly what we are about to write.
+        if [[ "$DEPLOY_APPEND" != "true" && -f "$HOME/.zshrc" ]] &&
+           [[ "$(cat "$HOME/.zshrc")" != "source $DOT_DIR/config/zshrc.sh" ]]; then
+            backup_file "$HOME/.zshrc"
+        fi
         eval "echo \"source $DOT_DIR/config/zshrc.sh\" $OP \"\$HOME/.zshrc\""
         RC_FILE="$HOME/.zshrc"
     elif [[ "$CURRENT_SHELL" == "bash" ]]; then
@@ -298,6 +310,10 @@ PROFILE
         RC_FILE="$HOME/.bashrc"
     else
         log_warning "Unknown shell '$CURRENT_SHELL', defaulting to zsh"
+        if [[ "$DEPLOY_APPEND" != "true" && -f "$HOME/.zshrc" ]] &&
+           [[ "$(cat "$HOME/.zshrc")" != "source $DOT_DIR/config/zshrc.sh" ]]; then
+            backup_file "$HOME/.zshrc"
+        fi
         eval "echo \"source $DOT_DIR/config/zshrc.sh\" $OP \"\$HOME/.zshrc\""
         RC_FILE="$HOME/.zshrc"
     fi
@@ -745,7 +761,8 @@ if [[ "$DEPLOY_CLAUDE" == "true" ]]; then
             restored=0
             for file in "${runtime_files[@]}"; do
                 if [[ -e "$backup_path/$file" ]]; then
-                    cp -r "$backup_path/$file" "$HOME/.claude/" 2>/dev/null && ((restored++))
+                    # Pre-increment: ((n++)) returns 1 when n is 0, aborting under `set -e`
+                    cp -r "$backup_path/$file" "$HOME/.claude/" 2>/dev/null && ((++restored))
                 fi
             done
 
@@ -834,7 +851,8 @@ if [[ "$DEPLOY_CODEX" == "true" ]]; then
             codex_restored=0
             for file in "${codex_runtime_files[@]}"; do
                 if [[ -e "$codex_backup_path/$file" ]]; then
-                    cp -r "$codex_backup_path/$file" "$HOME/.codex/" 2>/dev/null && ((codex_restored++))
+                    # Pre-increment: ((n++)) returns 1 when n is 0, aborting under `set -e`
+                    cp -r "$codex_backup_path/$file" "$HOME/.codex/" 2>/dev/null && ((++codex_restored))
                 fi
             done
 
@@ -1042,16 +1060,26 @@ if [[ "$DEPLOY_PUEUE" == "true" ]] && is_linux; then
             mkdir -p "$pueue_config_dir"
             safe_symlink "$DOT_DIR/config/pueue.yml" "$pueue_config_dir/pueue.yml"
 
-            # Enable and start pueued via systemd
-            systemctl --user enable pueued.service 2>/dev/null
+            # Enable and start pueued via systemd.
+            # `|| true`: a bare command, not an assignment, but under errexit a
+            # missing/masked pueued.service unit aborts the whole deploy one line
+            # above the fallback below — i.e. exactly the scenario that fallback
+            # exists to handle, so without this the fix below never fires.
+            systemctl --user enable pueued.service 2>/dev/null || true
+            # Condition context, not a plain assignment followed by `$?`: under
+            # errexit the assignment aborted the script the moment systemctl
+            # failed, so the `$?` test never ran and this whole fallback was dead
+            # code — in exactly the case it was written to handle.
             local systemd_err
-            systemd_err=$(systemctl --user start pueued.service 2>&1)
-            if [[ $? -ne 0 ]]; then
+            if ! systemd_err=$(systemctl --user start pueued.service 2>&1); then
                 log_info "systemd start failed (${systemd_err}), falling back to direct pueued..."
                 # Ensure XDG_RUNTIME_DIR is set for the unix socket path
                 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+                # `|| true`: the enclosing guard is `cmd_exists pueue`, a different
+                # binary from pueued — pueued may be absent (127), and failing to
+                # daemonize is the expected condition the next line reports.
                 local pueued_err
-                pueued_err=$(pueued --daemonize 2>&1)
+                pueued_err=$(pueued --daemonize 2>&1) || true
                 [[ -n "$pueued_err" ]] && log_info "pueued: $pueued_err"
             fi
 
@@ -1319,7 +1347,16 @@ if [[ "${DEPLOY_BWS:-false}" == "true" ]]; then
 
     BWS_VERSION="2.0.0"
     BWS_INSTALL_DIR="${HOME}/.local/bin"
-    BWS_INSTALLED_VERSION="$(bws --version 2>/dev/null | awk '{print $2}')"
+    # Query the installed version only when bws exists. As a PLAIN assignment this
+    # pipeline yields 127 when bws is missing and `set -euo pipefail` then aborts the
+    # entire script — taking out every section below it (obsidian sync, the
+    # claude-tools wait, the final summary). Empty is the correct "not installed"
+    # value: the install/upgrade branch below is written to handle it. The inner
+    # `|| true` covers bws being present but `--version` failing under pipefail.
+    BWS_INSTALLED_VERSION=""
+    if cmd_exists bws; then
+        BWS_INSTALLED_VERSION="$(bws --version 2>/dev/null | awk '{print $2}' || true)"
+    fi
 
     # ── Install/upgrade binary ──
     if [[ "$BWS_INSTALLED_VERSION" == "$BWS_VERSION" ]]; then
