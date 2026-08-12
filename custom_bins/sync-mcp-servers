@@ -4,8 +4,8 @@ set -euo pipefail
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-exec python3 "/Users/kit/code/dotfiles/scripts/helpers/sync_mcp_servers.py" \
-    --source "/Users/kit/code/dotfiles/config/mcp-servers.json" \
-    --claude-settings "/Users/kit/code/dotfiles/claude/settings.json" \
-    --codex-config "/Users/kit/code/dotfiles/codex/config.toml" \
+exec python3 "/home/kit/dotfiles/scripts/helpers/sync_mcp_servers.py" \
+    --source "/home/kit/dotfiles/config/mcp-servers.json" \
+    --claude-settings "/home/kit/dotfiles/claude/settings.json" \
+    --codex-config "/home/kit/dotfiles/codex/config.toml" \
     --apply
