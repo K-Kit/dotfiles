@@ -1,0 +1,43 @@
+# Sample config for scripts/setup/oh-my-openagent.py
+#
+#   cp config/oh-my-openagent.toml.example ~/.config/oh-my-openagent.toml
+#   scripts/setup/oh-my-openagent.py install -c ~/.config/oh-my-openagent.toml
+#
+# Precedence: command-line flags > this file > built-in defaults.
+# Every value below is the built-in default, so an empty file behaves identically.
+#
+# This file must never contain a password. Any key named password/secret/token/
+# passphrase/credential is rejected at parse time — oh-my-openagent reads its own
+# API credentials from the environment, and this installer never handles them.
+#
+# Keys may sit at the top level or under [oh_my_openagent]; unknown keys are an error.
+
+[oh_my_openagent]
+
+# Install root. Each version gets its own directory under <root>/versions/, and
+# <root>/current is a symlink — so update and rollback are a symlink swap.
+root = "~/.local/share/oh-my-openagent"
+
+# Where the generated launcher script is written. The installer warns when this
+# is not on your PATH; it never edits a shell startup file to put it there.
+bin_dir = "~/.local/bin"
+
+# Exact version ("4.19.4") or a dist-tag ("latest", "beta", "next").
+# npm range syntax (^, ~, >=) is rejected: a range would reintroduce the
+# "resolves to something different tomorrow" problem this installer removes.
+version = "latest"
+
+# Refuse any release published fewer than N days ago, mirroring the repo-wide
+# min-release-age quarantine. 0 disables the gate — only do that for a release
+# you have reviewed yourself.
+min_release_age = 7
+
+# Verify the npm registry's ECDSA signature over "<name>@<version>:<integrity>"
+# using the openssl CLI. The sha512 dist.integrity check is mandatory and is NOT
+# controlled by this setting.
+verify_signature = true
+
+# Proceed when the signature cannot be checked at all (no openssl, or the keyid
+# is absent from the registry's published key set). A signature that is checked
+# and FAILS is always a hard refusal, whatever this is set to.
+allow_unverified = false

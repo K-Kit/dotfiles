@@ -1,0 +1,57 @@
+# Sample config for scripts/setup/remote-desktop.py
+#
+#   cp config/remote-desktop.toml.example ~/.config/remote-desktop.toml
+#   scripts/setup/remote-desktop.py plan -c ~/.config/remote-desktop.toml
+#
+# Precedence: command-line flags > this file > built-in defaults.
+# Every value below is the built-in default, so an empty file behaves identically.
+#
+# This file must never contain a password. Any key named password/secret/token/
+# passphrase is rejected at parse time — pass the NAME of an environment
+# variable instead (see vnc.password_env).
+
+[general]
+# "tigervnc" = conventional VNC server (Xvnc) running a GNOME session, the
+#              pragmatic reading of "standard GNOME vncserver". Pairs with noVNC.
+# "kasmvnc"  = KasmVNC, which ships its own web client and TLS. noVNC must be
+#              disabled with this backend (it is a validation error, not a warning).
+backend = "tigervnc"
+user = ""              # empty = the invoking user
+display = 1            # X display :N -> RFB port 5900 + N
+geometry = "1920x1080"
+depth = 24             # 16, 24 or 32
+session = "gnome"      # gnome | gnome-xorg | xfce
+
+[vnc]
+bind = "127.0.0.1"     # loopback, or a Tailscale address. A public bind needs
+                       # security.allow_public_exposure AND TLS — and for plain
+                       # VNC the RFB port may never be public at all.
+port = 0               # 0 = 5900 + display
+password_env = "VNC_PASSWORD"   # env var NAME, never the password itself
+
+[novnc]
+enabled = true
+# Loopback by default. Set this to your Tailscale address (`tailscale ip -4`) to
+# reach the desktop from anywhere on the tailnet with no TLS cert and no opt-in:
+# the tailnet is WireGuard-encrypted and membership is the authentication.
+bind = "127.0.0.1"
+port = 6080
+install_dir = "~/.local/share/novnc"
+# Pinned to tag v1.7.0 / commit 63107bd0 in the script; the clone is verified
+# against that commit, so the checkout cannot silently drift.
+tls_cert = ""          # absolute path; cert and key must be set together
+tls_key = ""
+
+[kasmvnc]
+tls = true
+auth = "basic"         # basic | none — "none" blocks public exposure
+password_env = "KASMVNC_PASSWORD"
+
+[security]
+# Refuses any PUBLIC bind unless this is true AND TLS is configured AND auth is
+# not "none". A command-line flag alone can never open this. Loopback and
+# Tailscale binds are not public and need none of it.
+#
+# The default access path needs none of that either — tunnel over SSH instead:
+#   ssh -N -L 6080:127.0.0.1:6080 user@host    then open http://127.0.0.1:6080/vnc.html
+allow_public_exposure = false

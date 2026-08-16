@@ -131,6 +131,7 @@ For cloud environments (Hetzner, RunPod, Lambda Labs, etc). Identity defaults (u
   - [Text Replacements](#text-replacements-macos)
 - [Cloud Setup](#cloud-setup-runpod-hetzner-etc)
   - [Coder workspaces](#coder-workspaces-hetzner-digitalocean)
+  - [Remote desktop](#remote-desktop-vnc--novnc--kasmvnc)
 - [Getting to Know These Dotfiles](#getting-to-know-these-dotfiles)
 
 ## Adopting These Dotfiles
@@ -825,3 +826,47 @@ coder create --template hetzner-linux my-workspace
 ```
 
 Cloud tokens go on the Coder provisioner, not in the shell you push from — [`scripts/coder/README.md`](./scripts/coder/README.md) covers both ways to supply them from fnox. The `curl | bash` flow above is unaffected.
+
+### Remote desktop (VNC / noVNC / KasmVNC)
+
+[`scripts/setup/remote-desktop.py`](./scripts/setup/remote-desktop.py) sets up a graphical session on a headless Linux box. Two mutually exclusive backends, one optional frontend:
+
+| Setting | What you get |
+|---|---|
+| `backend = "tigervnc"` | TigerVNC `Xvnc` running a GNOME session via `~/.vnc/xstartup` — the conventional "GNOME vncserver". This is the default |
+| `backend = "tigervnc"` + `novnc.enabled` | ...plus [noVNC](https://github.com/novnc/noVNC) served by websockify, so a browser is the only client you need. Default on |
+| `backend = "kasmvnc"` | [KasmVNC](https://github.com/kasmtech/KasmVNC), which bundles its own web client and TLS. noVNC on top of it is a validation error, not a warning |
+
+GNOME rather than `gnome-remote-desktop`: g-r-d is coupled to the host GNOME version and wants a logind seat, so it moves under you between releases. `Xvnc` + `xstartup` is version-stable and works on a box with no seat. `--session xfce` is there for machines too small for GNOME Shell.
+
+Everything is a dry run until `--apply`:
+
+```bash
+scripts/setup/remote-desktop.py plan            # resolved config + what would change
+scripts/setup/remote-desktop.py install --apply # packages, pinned noVNC checkout / KasmVNC .deb
+export VNC_PASSWORD=...                         # env var NAME is what the config holds
+scripts/setup/remote-desktop.py configure --apply
+systemctl --user start remote-desktop-vnc@1 remote-desktop-novnc@1
+scripts/setup/remote-desktop.py status
+```
+
+Then tunnel — the services bind loopback and nothing in the firewall is touched:
+
+```bash
+ssh -N -L 6080:127.0.0.1:6080 user@host   # open http://127.0.0.1:6080/vnc.html
+```
+
+Config is TOML with CLI overrides on top: **flags > file > defaults**. Copy [`config/remote-desktop.toml.example`](./config/remote-desktop.toml.example), which documents every key and ships as pure defaults. Both commands are equivalent to the file plus one change:
+
+```bash
+scripts/setup/remote-desktop.py plan -c ~/.config/remote-desktop.toml --display 2 --geometry 2560x1440
+```
+
+Safety properties worth knowing, since they will refuse things:
+
+- **Non-loopback binds are refused** unless the TOML sets `security.allow_public_exposure = true` *and* TLS is configured *and* auth is not `none`. There is deliberately no command-line flag that grants this — the opt-in has to live in a reviewable file. The raw RFB port is refused outright; only the TLS-wrapped noVNC/Kasm port can be exposed.
+- **Passwords are env var names, never values.** A TOML key called `password`/`secret`/`token`/`passphrase` is rejected at parse time. The value is piped to `vncpasswd` on stdin, never placed in argv, and never printed — dry runs show `$VNC_PASSWORD`, not its contents.
+- **Downloads are pinned.** noVNC is cloned at tag `v1.7.0` and verified against commit `63107bd0`; KasmVNC `1.5.0` is verified against a per-distro SHA256 before install. A distro with no pinned checksum refuses rather than downloading unverified.
+- **Units are user units** (`~/.config/systemd/user/`), so nothing here needs root except the package install, which goes through `sudo` explicitly. `daemon-reload` runs only when a unit actually changed.
+
+`tests/test_remote_desktop.py` covers parsing, precedence, generated argv/units, idempotency and every refusal above; it is hermetic and shellchecks the generated `xstartup`.
