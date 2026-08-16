@@ -37,6 +37,11 @@ MOD = load_module()
 
 def run_tool(args, cfg):
     env = dict(os.environ, CLAUDE_CONFIG_DIR=str(cfg))
+    # Pin to the two file-backed sources (both synthetic under cfg) unless the
+    # test picks its own: in a host PID namespace the codex-proc /proc scan
+    # would otherwise pick up whatever codex the developer happens to be running.
+    if "--source" not in args:
+        args = [*args, "--source", "claude,codex-job"]
     return subprocess.run(
         [sys.executable, str(TOOL), *args],
         capture_output=True, text=True, env=env, timeout=30,
@@ -237,7 +242,8 @@ def test_watch_emits_transition(tmp_path):
     write_claude(tmp_path, os.getpid(), status="busy", name="watched")
     env = dict(os.environ, CLAUDE_CONFIG_DIR=str(tmp_path))
     proc = subprocess.Popen(
-        [sys.executable, str(TOOL), "watch", "--interval", "0.05", "--json"],
+        [sys.executable, str(TOOL), "watch", "--interval", "0.05", "--json",
+         "--source", "claude,codex-job"],
         stdout=subprocess.PIPE, text=True, env=env,
     )
     try:
@@ -266,6 +272,24 @@ def test_parse_iso_ms():
     assert MOD.parse_iso_ms("2026-08-16T10:36:33.322Z") == expected
     assert MOD.parse_iso_ms(None) is None
     assert MOD.parse_iso_ms("not-a-date") is None
+
+
+def test_codex_infra_procs_filtered_agents_kept():
+    # The scanner's skip predicate is codex_subcommand(...) in CODEX_INFRA_SUBCOMMANDS.
+    # codex-companion's post-job broker must be filtered; TUI and exec runs kept.
+    assert MOD.codex_subcommand(["/usr/local/bin/codex", "app-server"]) == "app-server"
+    assert "app-server" in MOD.CODEX_INFRA_SUBCOMMANDS
+    assert MOD.codex_subcommand(["codex"]) is None
+    assert None not in MOD.CODEX_INFRA_SUBCOMMANDS
+    assert MOD.codex_subcommand(["codex", "--full-auto", "exec", "fix the bug"]) == "exec"
+    assert "exec" not in MOD.CODEX_INFRA_SUBCOMMANDS
+    # /proc/<pid>/cmdline is NUL-terminated, so the split leaves a trailing ""
+    assert MOD.codex_subcommand(["codex", "app-server", ""]) == "app-server"
+    # `-c key=val` config overrides: the value is not a subcommand (live TUI shape)
+    assert MOD.codex_subcommand(["codex", "-c", "features.code_mode_host=true"]) is None
+    # Real broker argv observed live: the k=v prefix must not mask the subcommand
+    broker = ["codex", "-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"]
+    assert MOD.codex_subcommand(broker) == "app-server"
 
 
 def test_pid_ancestors_contains_self_and_parent():

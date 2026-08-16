@@ -219,6 +219,22 @@ def load_codex_jobs(cfg):
     return records
 
 
+# codex subcommands that are plumbing, not agents: codex-companion keeps an
+# `app-server` broker alive through its idle timeout after a job completes, so
+# counting it would leave a phantom agent pinning in-use/cwclean guards.
+CODEX_INFRA_SUBCOMMANDS = {"app-server", "mcp", "mcp-server", "login", "logout", "completion"}
+
+
+def codex_subcommand(cmdline):
+    """First non-flag token after argv[0] ('app-server', 'exec', ...), None for
+    a bare `codex` TUI. Tokens containing '=' are flag values (`-c key=val`),
+    never subcommands."""
+    for token in cmdline[1:]:
+        if token and not token.startswith("-") and "=" not in token:
+            return token
+    return None
+
+
 def load_codex_procs(exclude_pids):
     """Running codex processes from /proc (empty off-Linux). No semantic state —
     unlike the claude registry this is presence detection only, so status is
@@ -246,6 +262,14 @@ def load_codex_procs(exclude_pids):
         except OSError:
             continue
         try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmdline = fh.read().decode(errors="replace").split("\0")
+        except OSError:
+            cmdline = []  # unreadable cmdline: fail open, treat as an agent
+        subcmd = codex_subcommand(cmdline)
+        if subcmd in CODEX_INFRA_SUBCOMMANDS:
+            continue
+        try:
             cwd = os.readlink(f"/proc/{pid}/cwd")
         except OSError:
             cwd = "-"
@@ -258,7 +282,7 @@ def load_codex_procs(exclude_pids):
             "live": True,
             "stale": False,
             "pid": pid,
-            "kind": "cli",
+            "kind": subcmd or "cli",
             "cwd": cwd,
             "updated_ms": started,
             "session_id": None,

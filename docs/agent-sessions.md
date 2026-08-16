@@ -8,7 +8,7 @@
 |---|---|---|
 | `claude` | `$CLAUDE_CONFIG_DIR/sessions/*.json` (default `~/.claude/sessions/`) | Authoritative: Claude Code maintains `status` (`busy`/`shell`/`idle`/`waiting`), name, cwd, pid, kind |
 | `codex-job` | `$CLAUDE_CONFIG_DIR/plugins/data/codex-*/state/*/jobs/*.json` | Authoritative: codex-companion job status, pid, workspace, timestamps |
-| `codex-proc` | `/proc` scan for `codex` processes (Linux only) | Presence only: pid, cwd, start time — status is always `running` |
+| `codex-proc` | `/proc` scan for `codex` processes (Linux only) | Presence only: pid, cwd, start time — status is always `running`; plumbing subcommands (`app-server`, `mcp`, …) are filtered out so codex-companion's post-job broker never reads as a live agent |
 
 Liveness everywhere is `os.kill(pid, 0)` plus the registry's `procStart` start-time token (guards recycled pids). A `running` codex job whose pid is dead renders `(stale)`; the Claude registry self-cleans on graceful exit, so its stale records are crash debris.
 
