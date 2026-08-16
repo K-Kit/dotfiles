@@ -1,0 +1,668 @@
+#!/usr/bin/env python3
+"""Fleet view and orchestration primitives over local coding-agent state.
+
+Sources (all read-only, no daemon):
+  claude      Claude Code's native session registry: $CLAUDE_CONFIG_DIR/sessions/*.json
+  codex-job   codex-companion job state: $CLAUDE_CONFIG_DIR/plugins/data/codex-*/state/*/jobs/*.json
+  codex-proc  running `codex` processes discovered via /proc (Linux only)
+
+Subcommands: list (default), wait, watch, attach, in-use, worktrees.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+SOURCES = ("claude", "codex-job", "codex-proc")
+
+# Claude Code validates registry status against ["busy","shell","idle","waiting"];
+# waiting (blocked on a permission prompt) is the state most worth surfacing first.
+STATUS_RANK = {"waiting": 0, "busy": 1}
+DEFAULT_RANK = 2
+
+# codex-companion job statuses that mean "no longer running".
+TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled", "canceled", "error", "done"}
+
+WAIT_STATES = ("busy", "idle", "waiting", "shell", "gone", "done")
+
+# watch --notify fires only on transitions into these: the agent finished,
+# needs attention, or vanished. busy->busy noise stays out of notifications.
+NOTIFY_STATES = {"waiting", "idle", "completed", "failed", "done", "gone"}
+
+EXIT_OK = 0
+EXIT_NOT_FOUND = 1
+EXIT_AMBIGUOUS = 2
+EXIT_TIMEOUT = 3
+EXIT_NO_TARGET = 4
+
+
+def config_dir():
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+
+def humanize(ms, now_ms):
+    """Render milliseconds-since-epoch as an approximate age: 3m, 2h, 5d."""
+    if not isinstance(ms, (int, float)):
+        return "-"
+    secs = max(0, int((now_ms - ms) / 1000))  # clock skew must not render "-3m"
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
+
+
+def parse_iso_ms(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def proc_start_ticks(pid):
+    """Linux process start time in clock ticks (/proc/<pid>/stat field 22), or None."""
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return int(fh.read().rsplit(") ", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def is_alive(pid, proc_start=None):
+    if not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # exists, owned by another user
+    except OSError:
+        return False
+    if proc_start is not None:
+        # The registry's procStart is the /proc starttime tick count; a mismatch
+        # means the pid was recycled by an unrelated process after a crash.
+        ticks = proc_start_ticks(pid)
+        if ticks is not None and str(ticks) != str(proc_start):
+            return False
+    return True
+
+
+def pid_ancestors(pid):
+    """Set of pids on the parent chain of pid (inclusive), via /proc or ps."""
+    seen = set()
+    current = pid
+    while isinstance(current, int) and current > 1 and current not in seen:
+        seen.add(current)
+        parent = None
+        try:
+            with open(f"/proc/{current}/stat") as fh:
+                parent = int(fh.read().rsplit(") ", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            try:
+                out = subprocess.run(
+                    ["ps", "-o", "ppid=", "-p", str(current)],
+                    capture_output=True, text=True, timeout=5,
+                ).stdout.strip()
+                parent = int(out) if out else None
+            except (OSError, ValueError, subprocess.SubprocessError):
+                parent = None
+        current = parent
+    return seen
+
+
+def abbrev_home(path):
+    home = str(Path.home())
+    if path == home:
+        return "~"
+    if path.startswith(home + os.sep):
+        return "~" + path[len(home):]
+    return path
+
+
+def warn(msg):
+    print(f"agent-sessions: {msg}", file=sys.stderr)
+
+
+def read_json(path):
+    """Parsed JSON object from path, or None (with a warning for real damage)."""
+    try:
+        with path.open() as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return None  # state dirs are live; files can vanish mid-scan
+    except (OSError, ValueError) as exc:
+        warn(f"skipping {path.name}: {exc}")
+        return None
+    if not isinstance(data, dict):
+        warn(f"skipping {path.name}: not a JSON object")
+        return None
+    return data
+
+
+def load_claude(cfg):
+    """Normalized records from the Claude Code session registry."""
+    records = []
+    registry = cfg / "sessions"
+    if not registry.is_dir():
+        return records
+    for path in sorted(registry.glob("*.json")):
+        data = read_json(path)
+        if data is None:
+            continue
+        pid = data.get("pid")
+        if not isinstance(pid, int):
+            try:
+                pid = int(path.name.split(".")[0])
+            except ValueError:
+                warn(f"skipping {path.name}: no usable pid")
+                continue
+        alive = is_alive(pid, data.get("procStart"))
+        records.append({
+            "source": "claude",
+            "name": str(data.get("name") or "-"),
+            "status": str(data.get("status") or "-"),
+            "live": alive,
+            # The registry self-cleans on graceful exit, so a dead-pid record
+            # is crash debris, not a completed session.
+            "stale": not alive,
+            "pid": pid,
+            "kind": str(data.get("kind") or "-"),
+            "cwd": str(data.get("cwd") or "-"),
+            "updated_ms": data.get("statusUpdatedAt"),
+            "session_id": data.get("sessionId"),
+            "record": data,
+        })
+    return records
+
+
+def load_codex_jobs(cfg):
+    """Normalized records from codex-companion per-workspace job state."""
+    records = []
+    for path in sorted(cfg.glob("plugins/data/codex-*/state/*/jobs/*.json")):
+        data = read_json(path)
+        if data is None:
+            continue
+        status = str(data.get("status") or "unknown")
+        terminal = status in TERMINAL_JOB_STATUSES
+        pid = data.get("pid") if isinstance(data.get("pid"), int) else None
+        # A running job with a dead pid is stale; a running job with no pid on
+        # record is trusted (the field is nulled once the job completes).
+        dead = pid is not None and not is_alive(pid)
+        updated = next(
+            (ms for ms in (parse_iso_ms(data.get(k)) for k in ("completedAt", "startedAt", "createdAt")) if ms),
+            None,
+        )
+        records.append({
+            "source": "codex-job",
+            "name": str(data.get("id") or path.stem),
+            "status": status,
+            "live": not terminal and not dead,
+            "stale": not terminal and dead,
+            "pid": pid,
+            "kind": str(data.get("kind") or "job"),
+            "cwd": str(data.get("workspaceRoot") or "-"),
+            "updated_ms": updated,
+            "session_id": data.get("sessionId"),
+            "record": data,
+        })
+    return records
+
+
+def load_codex_procs(exclude_pids):
+    """Running codex processes from /proc (empty off-Linux). No semantic state —
+    unlike the claude registry this is presence detection only, so status is
+    always 'running'."""
+    records = []
+    if not os.path.isdir("/proc"):
+        return records
+    try:
+        btime = next(
+            int(line.split()[1]) for line in open("/proc/stat") if line.startswith("btime")
+        )
+        clk_tck = os.sysconf("SC_CLK_TCK")
+    except (OSError, StopIteration, ValueError):
+        btime, clk_tck = None, 100
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid in exclude_pids:
+            continue  # already represented by its codex-job record
+        try:
+            with open(f"/proc/{pid}/comm") as fh:
+                if fh.read().strip() != "codex":
+                    continue
+        except OSError:
+            continue
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            cwd = "-"
+        ticks = proc_start_ticks(pid)
+        started = int((btime + ticks / clk_tck) * 1000) if btime and ticks else None
+        records.append({
+            "source": "codex-proc",
+            "name": f"codex-{pid}",
+            "status": "running",
+            "live": True,
+            "stale": False,
+            "pid": pid,
+            "kind": "cli",
+            "cwd": cwd,
+            "updated_ms": started,
+            "session_id": None,
+            "record": {},
+        })
+    return records
+
+
+def load_all(sources=SOURCES):
+    cfg = config_dir()
+    records = []
+    if "claude" in sources:
+        records.extend(load_claude(cfg))
+    job_pids = set()
+    if "codex-job" in sources:
+        jobs = load_codex_jobs(cfg)
+        job_pids = {r["pid"] for r in jobs if r["live"] and r["pid"]}
+        records.extend(jobs)
+    if "codex-proc" in sources:
+        records.extend(load_codex_procs(job_pids))
+    return records
+
+
+def effective_state(rec):
+    """Collapsed state for wait/watch: stale claude/codex records read as gone."""
+    if rec is None or rec["stale"]:
+        return "gone"
+    return rec["status"]
+
+
+def state_reached(rec, state):
+    if state == "gone":
+        return rec is None or rec["stale"]
+    if state == "done":
+        # "no longer working": claude sessions vanish on exit; codex jobs go terminal.
+        if rec is None or rec["stale"]:
+            return True
+        return rec["source"] == "codex-job" and rec["status"] in TERMINAL_JOB_STATUSES
+    return rec is not None and rec["live"] and rec["status"] == state
+
+
+def record_key(rec):
+    if rec["source"] == "claude" and rec.get("session_id"):
+        return ("claude", rec["session_id"])
+    if rec["source"] == "codex-proc":
+        return ("codex-proc", rec["pid"])
+    return (rec["source"], rec["name"])
+
+
+def resolve(records, target):
+    """Records matching a target: exact name/pid first, then name or sessionId prefix."""
+    exact = [r for r in records if r["name"] == target or str(r["pid"]) == target]
+    if exact:
+        return exact
+    return [
+        r for r in records
+        if r["name"].startswith(target)
+        or (isinstance(r.get("session_id"), str) and r["session_id"].startswith(target))
+    ]
+
+
+def sort_key(rec):
+    if rec["live"]:
+        rank = STATUS_RANK.get(rec["status"], DEFAULT_RANK)
+    else:
+        rank = DEFAULT_RANK + 1
+    updated = rec.get("updated_ms")
+    return (rank, -updated if isinstance(updated, (int, float)) else 0, rec["name"])
+
+
+def parse_sources(value):
+    chosen = tuple(s.strip() for s in value.split(",") if s.strip())
+    bad = [s for s in chosen if s not in SOURCES]
+    if bad:
+        raise argparse.ArgumentTypeError(f"unknown source(s) {', '.join(bad)}; valid: {', '.join(SOURCES)}")
+    return chosen
+
+
+def render_table(records, now_ms):
+    rows = [("NAME", "STATUS", "AGE", "PID", "SOURCE", "KIND", "CWD")]
+    for rec in records:
+        status = rec["status"]
+        if rec["stale"]:
+            status = f"{status} (stale)"
+        rows.append((
+            rec["name"],
+            status,
+            humanize(rec.get("updated_ms"), now_ms),
+            str(rec["pid"] if rec["pid"] is not None else "-"),
+            rec["source"],
+            rec["kind"],
+            abbrev_home(rec["cwd"]),
+        ))
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    for row in rows:
+        cells = [cell.ljust(widths[i]) for i, cell in enumerate(row[:-1])]
+        print("  ".join(cells + [row[-1]]).rstrip())
+
+
+def emit_json(records):
+    print(json.dumps(records, indent=2))
+
+
+def cmd_list(args):
+    records = load_all(args.source)
+    shown = sorted(records if args.all else [r for r in records if r["live"]], key=sort_key)
+    if args.json:
+        emit_json(shown)
+        return EXIT_OK
+    if not shown:
+        hidden = len(records) - len(shown)
+        suffix = f" ({hidden} stale/terminal hidden; use --all)" if hidden else ""
+        print(f"No live agent sessions{suffix}")
+        return EXIT_OK
+    render_table(shown, time.time() * 1000)
+    hidden = len(records) - len(shown)
+    if hidden and not args.all:
+        print(f"\n{hidden} stale/terminal record(s) hidden; use --all to show them", file=sys.stderr)
+    return EXIT_OK
+
+
+def cmd_wait(args):
+    deadline = time.monotonic() + args.timeout if args.timeout else None
+    key = None
+    while True:
+        records = load_all(args.source)
+        if key is None:
+            matches = resolve(records, args.target)
+            if len(matches) > 1:
+                warn(f"'{args.target}' is ambiguous:")
+                for m in matches:
+                    warn(f"  {m['source']}\t{m['name']}\tpid={m['pid']}")
+                return EXIT_AMBIGUOUS
+            if matches:
+                key = record_key(matches[0])
+            elif args.until in ("gone", "done"):
+                print(f"{args.target} gone")
+                return EXIT_OK
+            else:
+                warn(f"no session or job matches '{args.target}'")
+                return EXIT_NO_TARGET
+        rec = next((r for r in records if record_key(r) == key), None)
+        if state_reached(rec, args.until):
+            print(f"{args.target} {effective_state(rec)}")
+            return EXIT_OK
+        terminal = rec is None or rec["stale"] or (
+            rec["source"] == "codex-job" and rec["status"] in TERMINAL_JOB_STATUSES
+        )
+        if terminal and args.until not in ("gone", "done"):
+            # A vanished, dead, or completed target cannot reach a live state.
+            warn(f"{args.target} ended ({effective_state(rec)}) before reaching {args.until}")
+            return EXIT_NO_TARGET
+        if deadline is not None and time.monotonic() >= deadline:
+            warn(f"timeout: {args.target} is {effective_state(rec)}, not {args.until}, after {args.timeout:g}s")
+            return EXIT_TIMEOUT
+        time.sleep(args.interval)
+
+
+def notify(name, old, new):
+    if shutil.which("notify-send"):
+        subprocess.run(
+            ["notify-send", "agent-sessions", f"{name}: {old} -> {new}"],
+            capture_output=True,
+        )
+        return True
+    return False
+
+
+def cmd_watch(args):
+    prev = {}
+    baseline = True
+    warned_notify = False
+    while True:
+        current = {}
+        for rec in load_all(args.source):
+            k = record_key(rec)
+            current[k] = (rec["name"], effective_state(rec))
+        if not baseline:
+            events = []
+            for k, (name, state) in current.items():
+                old = prev.get(k, (name, "absent"))[1]
+                if old != state:
+                    events.append((rec_source(k), name, old, state))
+            for k, (name, old) in prev.items():
+                if k not in current and old != "gone":
+                    events.append((rec_source(k), name, old, "gone"))
+            for source, name, old, state in events:
+                if args.json:
+                    print(json.dumps({
+                        "ts_ms": int(time.time() * 1000),
+                        "source": source, "name": name, "old": old, "new": state,
+                    }), flush=True)
+                else:
+                    stamp = time.strftime("%H:%M:%S")
+                    print(f"{stamp}  {source:<10}  {name:<24}  {old} -> {state}", flush=True)
+                if args.notify and state in NOTIFY_STATES:
+                    if not notify(name, old, state) and not warned_notify:
+                        warn("--notify: notify-send not found; printing only")
+                        warned_notify = True
+        prev = current
+        baseline = False
+        if args.once:
+            return EXIT_OK
+        time.sleep(args.interval)
+
+
+def rec_source(key):
+    return key[0]
+
+
+def cmd_attach(args):
+    records = [r for r in load_all(args.source) if r["live"] and r["pid"]]
+    matches = resolve(records, args.target)
+    if not matches:
+        warn(f"no live session or job matches '{args.target}'")
+        return EXIT_NO_TARGET
+    if len(matches) > 1:
+        warn(f"'{args.target}' is ambiguous:")
+        for m in matches:
+            warn(f"  {m['source']}\t{m['name']}\tpid={m['pid']}")
+        return EXIT_AMBIGUOUS
+    rec = matches[0]
+    ancestors = pid_ancestors(rec["pid"])
+    try:
+        out = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F",
+             "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_pid}"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    for line in out.splitlines():
+        try:
+            session, window, pane, pane_pid = line.split("\t")
+        except ValueError:
+            continue
+        if pane_pid.isdigit() and int(pane_pid) in ancestors:
+            target = f"{session}:{window}.{pane}"
+            subprocess.run(["tmux", "select-window", "-t", f"{session}:{window}"], capture_output=True)
+            subprocess.run(["tmux", "select-pane", "-t", target], capture_output=True)
+            if os.environ.get("TMUX"):
+                subprocess.run(["tmux", "switch-client", "-t", session])
+            else:
+                os.execvp("tmux", ["tmux", "attach", "-t", session])
+            return EXIT_OK
+    warn(f"no tmux pane hosts {rec['name']} (pid {rec['pid']}); cwd {abbrev_home(rec['cwd'])}")
+    return EXIT_NOT_FOUND
+
+
+def cmd_in_use(args):
+    root = os.path.realpath(args.path)
+    hits = []
+    for rec in load_all(args.source):
+        if not rec["live"]:
+            continue
+        cwd = os.path.realpath(rec["cwd"]) if rec["cwd"] != "-" else rec["cwd"]
+        if cwd == root or cwd.startswith(root + os.sep):
+            hits.append(rec)
+    for rec in hits:
+        print(f"{rec['source']}\t{rec['name']}\t{rec['status']}\t{abbrev_home(rec['cwd'])}")
+    return EXIT_OK if hits else EXIT_NOT_FOUND
+
+
+def parse_worktree_porcelain(text):
+    worktrees = []
+    entry = {}
+    for line in text.splitlines() + [""]:
+        if not line:
+            if entry.get("path"):
+                worktrees.append(entry)
+            entry = {}
+        elif line.startswith("worktree "):
+            entry["path"] = line[len("worktree "):]
+        elif line.startswith("branch refs/heads/"):
+            entry["branch"] = line[len("branch refs/heads/"):]
+        elif line == "detached":
+            entry["branch"] = "(detached)"
+    return worktrees
+
+
+def assign_to_worktrees(worktrees, records):
+    """Map each record to the longest-prefix worktree containing its cwd.
+    Longest wins because linked worktrees nest under the main tree's path."""
+    assigned = {wt["path"]: [] for wt in worktrees}
+    for rec in records:
+        cwd = rec["cwd"]
+        best = None
+        for wt in worktrees:
+            p = wt["path"]
+            if (cwd == p or cwd.startswith(p + os.sep)) and (best is None or len(p) > len(best)):
+                best = p
+        if best is not None:
+            assigned[best].append(rec)
+    return assigned
+
+
+def cmd_worktrees(args):
+    try:
+        out = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    except FileNotFoundError:
+        warn("git not found")
+        return EXIT_NOT_FOUND
+    except subprocess.CalledProcessError as exc:
+        warn(exc.stderr.strip() or "not in a git repository")
+        return EXIT_NOT_FOUND
+    worktrees = parse_worktree_porcelain(out)
+    records = [r for r in load_all(args.source) if r["live"]]
+    assigned = assign_to_worktrees(worktrees, records)
+    if args.json:
+        print(json.dumps([
+            {"path": wt["path"], "branch": wt.get("branch", "-"), "agents": assigned[wt["path"]]}
+            for wt in worktrees
+        ], indent=2))
+        return EXIT_OK
+    rows = [("PATH", "BRANCH", "AGENTS")]
+    for wt in worktrees:
+        counts = {}
+        for rec in assigned[wt["path"]]:
+            label = f"{rec['source']}:{rec['status']}"
+            counts[label] = counts.get(label, 0) + 1
+        agents = ", ".join(
+            label if n == 1 else f"{label} x{n}" for label, n in sorted(counts.items())
+        ) or "-"
+        rows.append((abbrev_home(wt["path"]), wt.get("branch", "-"), agents))
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    for row in rows:
+        cells = [cell.ljust(widths[i]) for i, cell in enumerate(row[:-1])]
+        print("  ".join(cells + [row[-1]]).rstrip())
+    return EXIT_OK
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="agent-sessions",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Liveness is os.kill + the registry's procStart token, and codex "
+        "processes are found via /proc — both are wrong inside a sandboxed "
+        "Claude Bash session (separate PID namespace: everything reads dead). "
+        "Run from a normal shell.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    def common(p, json_flag=True):
+        p.add_argument("--source", type=parse_sources, default=SOURCES,
+                       help=f"comma-separated subset of: {', '.join(SOURCES)}")
+        if json_flag:
+            p.add_argument("--json", action="store_true", help="machine-readable output")
+
+    p = sub.add_parser("list", help="table of agent sessions (the default subcommand)")
+    common(p)
+    p.add_argument("--all", action="store_true", help="include stale and terminal records")
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("wait", help="block until a session or job reaches a state")
+    common(p, json_flag=False)
+    p.add_argument("target", help="session name, pid, job id, or sessionId/name prefix")
+    p.add_argument("--until", required=True, choices=WAIT_STATES,
+                   help="done = codex job finished or claude session exited")
+    p.add_argument("--timeout", type=float, default=None, metavar="SECS",
+                   help="give up after SECS (exit 3); default: wait forever")
+    p.add_argument("--interval", type=float, default=2.0, metavar="SECS")
+    p.set_defaults(func=cmd_wait)
+
+    p = sub.add_parser("watch", help="stream state transitions, one line per change")
+    common(p)
+    p.add_argument("--interval", type=float, default=2.0, metavar="SECS")
+    p.add_argument("--notify", action="store_true",
+                   help="desktop notification (notify-send) on attention transitions")
+    p.add_argument("--once", action="store_true",
+                   help="take the baseline snapshot and exit (mostly for tests)")
+    p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser("attach", help="jump to the tmux pane hosting a session")
+    common(p, json_flag=False)
+    p.add_argument("target", help="session name, pid, job id, or prefix")
+    p.set_defaults(func=cmd_attach)
+
+    p = sub.add_parser("in-use", help="exit 0 if a live agent works under PATH (for cwclean/cwrm)")
+    common(p, json_flag=False)
+    p.add_argument("path")
+    p.set_defaults(func=cmd_in_use)
+
+    p = sub.add_parser("worktrees", help="git worktree list joined with live agents per tree")
+    common(p)
+    p.set_defaults(func=cmd_worktrees)
+
+    return parser
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    commands = {"list", "wait", "watch", "attach", "in-use", "worktrees"}
+    if not argv or (argv[0] not in commands and argv[0] not in ("-h", "--help")):
+        argv.insert(0, "list")
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
