@@ -1,0 +1,41 @@
+# Example config for scripts/setup/oh-my-pi.py
+#
+# Copy somewhere private and pass it explicitly:
+#   scripts/setup/oh-my-pi.py -c ~/.config/oh-my-pi.toml install --apply
+#
+# There is no implicit config path -- the file is only read when you pass -c.
+# Precedence is: command-line flag > this file > the defaults shown below.
+# Unknown keys are an error, not a warning, and any key whose name looks like a
+# credential is rejected outright: this installer never handles secrets.
+# oh-my-pi's own credentials live in ~/.omp/agent/*.yml, which the installer
+# never reads, writes or removes.
+
+[install]
+# Versioned install root. Each release lands in <install_dir>/versions/<tag>/,
+# with a `current` symlink pointing at the active one.
+install_dir = "~/.local/share/oh-my-pi"
+
+# Where the `omp` launcher symlink is created. If an `omp` that this script did
+# not create already exists here -- upstream's `curl | sh` installer writes a
+# real binary to exactly this path -- the install refuses to touch it unless you
+# pass --force, which moves it aside rather than deleting it.
+bin_dir = "~/.local/bin"
+
+# "latest" resolves through the GitHub releases API. Pin a tag to freeze it.
+version = "latest"
+# version = "v17.3.4"
+
+[platform]
+# "auto" checks for an Alpine marker file and a musl dynamic loader; nothing is
+# executed. Force it when installing for a container image you are not running.
+libc = "auto"      # auto | gnu | musl
+
+# Normally detected. Set these only to build an install tree for another host.
+# os = "linux"     # linux | darwin
+# arch = "arm64"   # x64 | arm64
+
+[security]
+# Upstream publishes SHA256SUMS.txt with every release, so this should stay
+# false. Setting it true downgrades a missing checksum file from a hard failure
+# to a warning -- it does NOT skip a mismatch, which is always fatal.
+allow_unverified = false
