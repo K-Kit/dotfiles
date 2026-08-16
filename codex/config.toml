@@ -1,10 +1,10 @@
 personality = "pragmatic"
 model = "gpt-5.6-sol"
-service_tier = "priority"
+service_tier = "fast"
 allow_login_shell = true
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
-approvals_reviewer = "auto_review"
+approvals_reviewer = "user"
 network_access = "enabled"
 model_reasoning_effort = "medium"
 developer_instructions = "<omx version=\"1\">You have oh-my-codex installed through Codex plugin mode. AGENTS.md is the orchestration brain and main control surface. Follow AGENTS.md for skill/keyword routing and $name workflow invocation. When the native surface exposes `agent_type` role routing, set `agent_type` to an installed role and never omit it for OMX work. When it reports `role_routing_unavailable`, do not fabricate `agent_type`; before Ralplan planning, state, HUD, runtime, or delegation work, run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`. Never fake the role via a prompt label or infer authority from session/thread/pointer/transcript/cwd state. Registered Codex plugin marketplace surfaces supply OMX workflows and plugin-scoped companion resources when the plugin is installed; native agent roles are installed as setup-owned Codex agent TOML files in plugin mode so agent_type routing works. User-installed skills may still live under ~/.codex/skills. Use outcome-first, concise progress updates: state the target result, constraints, validation evidence, and stop condition before adding process detail.</omx>"
@@ -82,6 +82,12 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/home/kit/john-advocacy"]
+trust_level = "trusted"
+
+[projects."/home/k-kit/code/dotfiles"]
+trust_level = "trusted"
+
+[projects."/home/k-kit"]
 trust_level = "trusted"
 
 [sandbox_workspace_write]
@@ -285,7 +291,7 @@ trusted_hash = "sha256:9414154878f7ed6af2691aa2d61f3c57d866fb27b65aa638e7ddd635a
 enabled = false
 
 [marketplaces.codex-warp]
-last_updated = "2026-08-12T21:30:41Z"
+last_updated = "2026-08-12T22:48:20Z"
 last_revision = "f11334dc715d48f07d133db6046895cb45f4accb"
 source_type = "git"
 source = "https://github.com/warpdotdev/codex-warp.git"
