@@ -27,6 +27,7 @@ Dotfiles for ZSH, Tmux, Vim, SSH and dev tools across macOS, Linux and RunPod, d
 | Commit / commit + push + PR | `/commit` skill or `/commit-push-sync` |
 | Switch active plugin context | `claude-tools context <profile>` (composable: `code python rust`; `--list` for the current set) |
 | Merge worktree → parent branch | `cwmerge` (or `git merge <branch>` from the parent if the branch isn't `worktree-` prefixed) |
+| See live agent sessions (Claude + Codex) | `agent-sessions` — plus `wait --until <state>`, `watch --notify`, `attach`, `worktrees`; [`docs/agent-sessions.md`](docs/agent-sessions.md) |
 
 ## Where To Look
 
@@ -41,7 +42,7 @@ Dotfiles for ZSH, Tmux, Vim, SSH and dev tools across macOS, Linux and RunPod, d
 
 | Command | What it does |
 |---------|-------------|
-| `cwl` | List all worktrees |
+| `cwl` | List worktrees with live agents per tree (plain `git worktree list` if `agent-sessions` is missing) |
 | `cwmerge [name]` | Merge worktree branch into parent (auto-detects from inside a worktree) |
 | `/merge-worktree` | Claude skill: merge + AI conflict resolution |
 | `cwport <name> [dirs...]` | Copy artifacts (out/, logs/) from worktree to main tree |

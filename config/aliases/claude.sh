@@ -283,7 +283,20 @@ _cw_launch() {
 cw() { _cw_launch "$@"; }
 cwy() { _cw_launch --yolo "$@"; }
 
-alias cwl='git worktree list'
+_cw_in_use() {
+  # Live agent session (claude or codex) rooted under this path? Exit 0 if so.
+  command -v agent-sessions >/dev/null 2>&1 || return 1
+  agent-sessions in-use "$1" >/dev/null 2>&1
+}
+
+cwl() {
+  # Worktree list joined with live agent sessions per tree (from the
+  # ~/.claude/sessions registry + codex state); plain git listing as fallback.
+  if command -v agent-sessions >/dev/null 2>&1; then
+    agent-sessions worktrees "$@" 2>/dev/null && return
+  fi
+  git worktree list "$@"
+}
 
 cwport() {
   # Port gitignored artifacts from a worktree to main tree
@@ -439,6 +452,14 @@ cwrm() {
     cwl; return 1
   fi
 
+  # Refuse to remove a worktree a live agent is still working in
+  if ! $force && _cw_in_use "$wt_path"; then
+    echo "cwrm: live agent session(s) in this worktree:"
+    agent-sessions in-use "$wt_path" | sed 's/^/  /'
+    echo "  Close them first, or: cwrm --force $name"
+    return 1
+  fi
+
   # Check for gitignored artifacts
   if ! $force; then
     local artifacts=()
@@ -497,16 +518,18 @@ cwclean() {
   for wt in "$wt_dir"/*/; do
     [[ ! -d "$wt" ]] && continue
     name=$(basename "$wt")
-    wt_status="active"
 
-    # Check if tmux session for this worktree is alive (= for exact match)
-    if ! tmux has-session -t "=worktree-$name" 2>/dev/null; then
-      if git -C "$wt" diff --quiet HEAD 2>/dev/null && \
+    # Only "clean" is ever removed: tmux session alive → active; a live agent
+    # session cwd'd inside (registry/codex state) → in-use; else clean/dirty.
+    if tmux has-session -t "=worktree-$name" 2>/dev/null; then
+      wt_status="active"
+    elif _cw_in_use "$wt"; then
+      wt_status="in-use"
+    elif git -C "$wt" diff --quiet HEAD 2>/dev/null && \
          [[ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ]]; then
-        wt_status="clean"
-      else
-        wt_status="dirty"
-      fi
+      wt_status="clean"
+    else
+      wt_status="dirty"
     fi
 
     has_artifacts=""
@@ -530,7 +553,7 @@ cwclean() {
   if $dry_run; then
     echo "Would remove $cleaned worktree(s), keep $skipped."
   elif [[ $cleaned -gt 0 || $skipped -gt 0 ]]; then
-    echo "Removed $cleaned, kept $skipped (dirty/active/has artifacts)."
+    echo "Removed $cleaned, kept $skipped (dirty/active/in-use/has artifacts)."
   fi
 }
 
