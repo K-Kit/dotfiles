@@ -1843,9 +1843,6 @@ parse_args() {
             --append)
                 DEPLOY_APPEND=true
                 ;;
-            --ascii=*)
-                DEPLOY_ASCII_FILE="${1#*=}"
-                ;;
             --aliases=*)
                 IFS=',' read -r -a DEPLOY_ALIASES <<< "${1#*=}"
                 ;;

@@ -228,7 +228,7 @@ Both steps show the interactive component picker unless you pass
 
 Every flag goes to BOTH scripts, and neither one errors on a flag it does
 not know — it is absorbed silently. So a script-specific flag
-(--force-reinstall is install-only; --aliases=, --ascii=, --append are
+(--force-reinstall is install-only; --aliases=, --append are
 deploy-only) does nothing in the other script, and --only names are
 validated against both registries at once, so "--only zsh" installs zsh
 and deploys nothing. Run install and deploy separately when that matters.

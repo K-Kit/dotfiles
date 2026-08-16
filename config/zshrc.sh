@@ -284,11 +284,6 @@ add-zsh-hook precmd _reset_terminal_modes_soft
 # mid-session kill -9 of alt-screen apps needs manual fix-term)
 _reset_terminal_modes
 
-# Only display ASCII art in interactive shells
-if [[ -o interactive ]]; then
-  cat $CONFIG_DIR/start.txt
-fi
-
 fs() {
     # Check if user is asking for help
     if [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then

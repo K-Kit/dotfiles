@@ -97,7 +97,6 @@ COMPONENTS:
     --text-replacements  Sync text replacements: macOS + Alfred (macOS only)
     --aliases=LIST    Additional alias scripts (comma-separated)
     --append          Append to existing configs instead of overwrite
-    --ascii=FILE      ASCII art file for shell startup
     --no-<component>  Disable a component (e.g., --no-editor)
     --allow-worktree  Deploy even though DOT_DIR is a git worktree. Refused by
                       default: it repoints ~/.claude and ~20 other user symlinks
@@ -287,9 +286,6 @@ export PATH="\$DOT_DIR/custom_bins:\$PATH"
 [ -f ~/.fzf.bash ] && source ~/.fzf.bash
 [ -d "\$HOME/.cargo" ] && . "\$HOME/.cargo/env"
 [ -d "\$HOME/.local/bin" ] && [ -f "\$HOME/.local/bin/env" ] && source "\$HOME/.local/bin/env"
-
-# ASCII art in interactive shells
-[[ \$- == *i* ]] && [ -f $DOT_DIR/config/start.txt ] && cat $DOT_DIR/config/start.txt
 BASHRC
 
         # Update .bash_profile
@@ -324,12 +320,6 @@ PROFILE
         for alias_name in "${DEPLOY_ALIASES[@]}"; do
             echo "source $DOT_DIR/config/aliases_${alias_name}.sh" >> "$RC_FILE"
         done
-    fi
-
-    # Custom ASCII art
-    if [[ "$DEPLOY_ASCII_FILE" != "start.txt" ]]; then
-        log_info "Using custom ASCII art: $DEPLOY_ASCII_FILE"
-        cp "$DOT_DIR/config/ascii_arts/$DEPLOY_ASCII_FILE" "$DOT_DIR/config/start.txt"
     fi
 fi
 
