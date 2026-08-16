@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""List live Claude Code sessions from the native session registry."""
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+CONFIG_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+REGISTRY = CONFIG_DIR / "sessions"
+
+# Claude Code writes one <pid>.json per session; status is validated against
+# ["busy", "shell", "idle", "waiting"] and may be absent before the first update.
+STATUS_RANK = {"busy": 0}
+DEFAULT_RANK = 1
+
+
+def humanize(ms, now_ms):
+    """Render milliseconds-since-epoch as an approximate age: 3m, 2h, 5d."""
+    if not isinstance(ms, (int, float)):
+        return "-"
+    secs = max(0, int((now_ms - ms) / 1000))  # clock skew must not render "-3m"
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
+
+
+def proc_start_ticks(pid):
+    """Linux process start time in clock ticks (/proc/<pid>/stat field 22), or None."""
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return int(fh.read().rsplit(") ", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def is_alive(pid, proc_start=None):
+    if not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # exists, owned by another user
+    except OSError:
+        return False
+    if proc_start is not None:
+        # The registry's procStart is the /proc starttime tick count; a mismatch
+        # means the pid was recycled by an unrelated process after a crash.
+        ticks = proc_start_ticks(pid)
+        if ticks is not None and str(ticks) != str(proc_start):
+            return False
+    return True
+
+
+def abbrev_home(path):
+    home = str(Path.home())
+    if path == home:
+        return "~"
+    if path.startswith(home + os.sep):
+        return "~" + path[len(home):]
+    return path
+
+
+def load_records(registry):
+    """Yield parsed session records, warning once per malformed file."""
+    records = []
+    for path in sorted(registry.glob("*.json")):
+        try:
+            with path.open() as fh:
+                data = json.load(fh)
+        except FileNotFoundError:
+            continue  # registry is live; a session can exit mid-scan
+        except (OSError, ValueError) as exc:
+            print(f"claude-sessions: skipping {path.name}: {exc}", file=sys.stderr)
+            continue
+        if not isinstance(data, dict):
+            print(f"claude-sessions: skipping {path.name}: not a JSON object", file=sys.stderr)
+            continue
+        pid = data.get("pid")
+        if not isinstance(pid, int):
+            try:
+                pid = int(path.name.split(".")[0])
+            except ValueError:
+                print(f"claude-sessions: skipping {path.name}: no usable pid", file=sys.stderr)
+                continue
+        # Pass the record through verbatim so --json stays useful (entrypoint,
+        # messagingSocketPath, tmux, procStart); only pid and alive are computed.
+        data["pid"] = pid
+        data["alive"] = is_alive(pid, data.get("procStart"))
+        records.append(data)
+    return records
+
+
+def sort_key(rec):
+    rank = STATUS_RANK.get(rec.get("status"), DEFAULT_RANK) if rec["alive"] else DEFAULT_RANK + 1
+    updated = rec.get("statusUpdatedAt")
+    return (rank, -updated if isinstance(updated, (int, float)) else 0, str(rec.get("name") or ""))
+
+
+def render_table(records, now_ms):
+    rows = [("NAME", "STATUS", "AGE", "PID", "KIND", "CWD")]
+    for rec in records:
+        status = rec.get("status") or "-"
+        if not rec["alive"]:
+            status = f"{status} (stale)"
+        rows.append((
+            str(rec.get("name") or "-"),
+            status,
+            humanize(rec.get("statusUpdatedAt"), now_ms),
+            str(rec["pid"]),
+            str(rec.get("kind") or "-"),
+            abbrev_home(str(rec.get("cwd") or "-")),
+        ))
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    for row in rows:
+        cells = [cell.ljust(widths[i]) for i, cell in enumerate(row[:-1])]
+        print("  ".join(cells + [row[-1]]).rstrip())
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="claude-sessions",
+        description="List live Claude Code sessions from the session registry "
+        "($CLAUDE_CONFIG_DIR/sessions, default ~/.claude/sessions).",
+        epilog="A record is stale when its pid no longer exists; stale records are "
+        "hidden unless --all is given. Sorted busy-first, then most recently updated.",
+    )
+    parser.add_argument("--json", action="store_true", help="emit the raw registry record per session, plus a computed 'alive' bool")
+    parser.add_argument("--all", action="store_true", help="include stale records (dead pid), marked stale")
+    args = parser.parse_args()
+
+    if not REGISTRY.is_dir():
+        if args.json:
+            print("[]")
+        else:
+            print(f"No Claude session registry at {abbrev_home(str(REGISTRY))}")
+        return 0
+
+    records = load_records(REGISTRY)
+    if not records:
+        if args.json:
+            print("[]")
+        else:
+            print(f"No sessions registered in {abbrev_home(str(REGISTRY))}")
+        return 0
+
+    stale = sum(1 for r in records if not r["alive"])
+    shown = sorted(records if args.all else [r for r in records if r["alive"]], key=sort_key)
+
+    if args.json:
+        print(json.dumps(shown, indent=2))
+        return 0
+
+    if not shown:
+        print(f"No live Claude sessions ({stale} stale hidden; use --all to show them)")
+        return 0
+
+    render_table(shown, time.time() * 1000)
+    if stale and not args.all:
+        print(f"\n{stale} stale record(s) hidden; use --all to show them", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
