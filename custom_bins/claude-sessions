@@ -8,7 +8,8 @@ import sys
 import time
 from pathlib import Path
 
-REGISTRY = Path.home() / ".claude" / "sessions"
+CONFIG_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+REGISTRY = CONFIG_DIR / "sessions"
 
 # Claude Code writes one <pid>.json per session; status is validated against
 # ["busy", "shell", "idle", "waiting"] and may be absent before the first update.
@@ -30,7 +31,16 @@ def humanize(ms, now_ms):
     return f"{secs // 86400}d"
 
 
-def is_alive(pid):
+def proc_start_ticks(pid):
+    """Linux process start time in clock ticks (/proc/<pid>/stat field 22), or None."""
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return int(fh.read().rsplit(") ", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def is_alive(pid, proc_start=None):
     if not isinstance(pid, int):
         return False
     try:
@@ -38,9 +48,15 @@ def is_alive(pid):
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True  # exists, owned by another user
+        pass  # exists, owned by another user
     except OSError:
         return False
+    if proc_start is not None:
+        # The registry's procStart is the /proc starttime tick count; a mismatch
+        # means the pid was recycled by an unrelated process after a crash.
+        ticks = proc_start_ticks(pid)
+        if ticks is not None and str(ticks) != str(proc_start):
+            return False
     return True
 
 
@@ -78,7 +94,7 @@ def load_records(registry):
         # Pass the record through verbatim so --json stays useful (entrypoint,
         # messagingSocketPath, tmux, procStart); only pid and alive are computed.
         data["pid"] = pid
-        data["alive"] = is_alive(pid)
+        data["alive"] = is_alive(pid, data.get("procStart"))
         records.append(data)
     return records
 
@@ -112,7 +128,8 @@ def render_table(records, now_ms):
 def main():
     parser = argparse.ArgumentParser(
         prog="claude-sessions",
-        description="List live Claude Code sessions from ~/.claude/sessions.",
+        description="List live Claude Code sessions from the session registry "
+        "($CLAUDE_CONFIG_DIR/sessions, default ~/.claude/sessions).",
         epilog="A record is stale when its pid no longer exists; stale records are "
         "hidden unless --all is given. Sorted busy-first, then most recently updated.",
     )
@@ -121,12 +138,18 @@ def main():
     args = parser.parse_args()
 
     if not REGISTRY.is_dir():
-        print(f"No Claude session registry at {abbrev_home(str(REGISTRY))}")
+        if args.json:
+            print("[]")
+        else:
+            print(f"No Claude session registry at {abbrev_home(str(REGISTRY))}")
         return 0
 
     records = load_records(REGISTRY)
     if not records:
-        print(f"No sessions registered in {abbrev_home(str(REGISTRY))}")
+        if args.json:
+            print("[]")
+        else:
+            print(f"No sessions registered in {abbrev_home(str(REGISTRY))}")
         return 0
 
     stale = sum(1 for r in records if not r["alive"])
