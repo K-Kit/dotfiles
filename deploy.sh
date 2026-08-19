@@ -64,7 +64,7 @@ COMPONENTS:
     --vim             Deploy vimrc
     --editor          Deploy VSCode/Cursor settings
     --claude          Deploy Claude Code config (~/.claude symlink)
-    --codex           Deploy Codex CLI config (~/.codex symlink)
+    --codex           Deploy Codex CLI config (real ~/.codex dir, per-item symlinks)
     --serena          Deploy Serena MCP config (~/.serena symlink)
     --mouseless       Deploy Mouseless keyboard mouse control config (macOS only)
     --alfred          Repair Dropbox-synced Alfred prefs: de-quarantine, +x, hotkey (macOS only)
@@ -817,45 +817,38 @@ if [[ "$DEPLOY_CODEX" == "true" ]]; then
     log_section "DEPLOYING CODEX CLI CONFIGURATION"
 
     if [[ -d "$DOT_DIR/codex" ]]; then
-        # Runtime files to preserve (from .gitignore)
-        codex_runtime_files=(
-            "auth.json" "config.toml" "history.jsonl"
-            "tmp" "sessions" "log"
-            "models_cache" "models_cache.json"
-            "version" "version.json"
-        )
+        # ~/.codex MUST be a real directory, never a whole-dir symlink: the ChatGPT/Codex
+        # desktop app writes its Computer Use helper .app inside ~/.codex, and a symlinked
+        # state dir breaks the helper's AppleEvent identity (-600 procNotFound), causing a
+        # helper respawn storm and node OOM crash loop (root-caused 2026-08-19). Tracked
+        # config is wired with PER-ITEM symlinks instead; runtime state lives in ~/.codex.
 
         if [[ -L "$HOME/.codex" ]]; then
-            # Already a symlink - refresh it
+            # Legacy whole-dir symlink - remove the symlink only (target untouched)
             rm "$HOME/.codex"
-            log_info "Refreshed existing symlink"
-        elif [[ -d "$HOME/.codex" ]]; then
-            # Directory exists - smart merge
-            log_info "Smart merge: preserving runtime files from existing ~/.codex"
-            codex_backup_path="$HOME/.codex.backup.$(date -u +%Y-%m-%d_%H-%M-%S)"
-            mv "$HOME/.codex" "$codex_backup_path"
+            log_info "Removed legacy whole-dir ~/.codex symlink"
+        fi
+        mkdir -p "$HOME/.codex"
 
-            ln -sf "$DOT_DIR/codex" "$HOME/.codex"
-
-            # Restore runtime files
-            codex_restored=0
-            for file in "${codex_runtime_files[@]}"; do
-                if [[ -e "$codex_backup_path/$file" ]]; then
-                    # Pre-increment: ((n++)) returns 1 when n is 0, aborting under `set -e`
-                    cp -r "$codex_backup_path/$file" "$HOME/.codex/" 2>/dev/null && ((++codex_restored))
-                fi
-            done
-
-            if [[ $codex_restored -gt 0 ]]; then
-                log_success "Restored $codex_restored runtime file(s)"
-                log_info "Backup at: $codex_backup_path"
+        # Tracked config items (git ls-files codex/ top level). skills is handled
+        # below: the repo entry is a relative symlink to ../claude/skills, so the
+        # deployed link points at claude/skills directly to keep the chain one hop.
+        codex_config_items=(
+            ".gitignore" ".personality_migration" ".sandbox_migration"
+            "AGENTS.md" "config.toml" "rules" "transcription-history.jsonl"
+        )
+        for item in "${codex_config_items[@]}"; do
+            if [[ -e "$HOME/.codex/$item" && ! -L "$HOME/.codex/$item" ]]; then
+                mv "$HOME/.codex/$item" "$HOME/.codex/$item.pre-symlink.$(date -u +%Y%m%dT%H%M%SZ)"
+                log_info "Moved aside non-symlink ~/.codex/$item"
             fi
+            ln -sfn "$DOT_DIR/codex/$item" "$HOME/.codex/$item"
+        done
+        if [[ -e "$HOME/.codex/skills" && ! -L "$HOME/.codex/skills" ]]; then
+            mv "$HOME/.codex/skills" "$HOME/.codex/skills.pre-symlink.$(date -u +%Y%m%dT%H%M%SZ)"
+            log_info "Moved aside non-symlink ~/.codex/skills"
         fi
-
-        # Create symlink if it doesn't exist
-        if [[ ! -e "$HOME/.codex" ]]; then
-            ln -sf "$DOT_DIR/codex" "$HOME/.codex"
-        fi
+        ln -sfn "$DOT_DIR/claude/skills" "$HOME/.codex/skills"
 
         codex_sync_script="$DOT_DIR/scripts/sync_claude_to_codex.sh"
         codex_sync_script_display="${codex_sync_script/#$HOME/~}"
