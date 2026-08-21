@@ -1,0 +1,4 @@
+interface:
+  display_name: "Suno Console Script"
+  short_description: "Turn a song into a Suno form-filling script"
+  default_prompt: "Use $song-to-suno-script to turn this song into a safe Suno Create console script."

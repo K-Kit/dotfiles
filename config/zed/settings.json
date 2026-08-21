@@ -5,6 +5,27 @@
 //   zed: open default settings (from command palette)
 {
   // === Privacy & Security ===
+  "proxy": "",
+  "agent_servers": {
+    "opencode": {
+      "type": "registry"
+    },
+    "codex-acp": {
+      "default_config_options": {
+        "fast-mode": true,
+        "mode": "agent-full-access"
+      },
+      "type": "registry"
+    },
+    "claude-acp": {
+      "default_config_options": {
+        "fast": true,
+        "model": "opus",
+        "mode": "bypassPermissions"
+      },
+      "type": "registry"
+    }
+  },
   "cli_default_open_behavior": "existing_window",
   "context_servers": {
     "mcp-server-markitdown": {
@@ -94,7 +115,11 @@
 
   // === Edit Predictions (Zeta — Zed's native AI completion) ===
   "edit_predictions": {
-    "provider": "zed",
+    "open_ai_compatible_api": {
+      "model": "",
+      "api_url": ""
+    },
+    "provider": "copilot",
     "disabled_globs": [
       "**/.env*",
       "**/secrets*"
@@ -103,6 +128,9 @@
 
   // === AI / Agent ===
   "agent": {
+    "auto_compact": {
+      "threshold": "90%"
+    },
     "dock": "right",
     "default_model": {
       "provider": "anthropic",
@@ -118,6 +146,7 @@
 
   // === Terminal (non-default only) ===
   "terminal": {
+    "shell": "system",
     "option_as_meta": true,
     "font_family": "Menlo",
     "font_size": 14,
@@ -131,7 +160,7 @@
 
   // === Panels (non-default only) ===
   "outline_panel": {
-    "dock": "right"
+    "dock": "left"
   },
   "notification_panel": {
     "button": false
@@ -203,57 +232,6 @@
   // Machine-specific — added via Zed UI, not hardcoded.
   "ssh_connections": [
     {
-      "host": "hn",
-      "args": [],
-      "projects": [
-        {
-          "paths": [
-            "/home/yulong/code/bots/swordsmith/./"
-          ]
-        },
-        {
-          "paths": [
-            "/home/yulong/code/dotfiles"
-          ]
-        },
-        {
-          "paths": [
-            "/home/yulong/code/sandbagging-detection/dev"
-          ]
-        },
-        {
-          "paths": [
-            "/home/yulong/projects/nla-vs-cot"
-          ]
-        },
-        {
-          "paths": [
-            "/home/yulong/writing/papers/sandbagging-detection-paper/./"
-          ]
-        },
-        {
-          "paths": [
-            "/mnt/nw/home/y.lin/.ssh"
-          ]
-        },
-        {
-          "paths": [
-            "/root/code/dotfiles"
-          ]
-        },
-        {
-          "paths": [
-            "/workspace/code/dotfiles"
-          ]
-        },
-        {
-          "paths": [
-            "/workspace/projects/nla-vs-cot/./"
-          ]
-        }
-      ]
-    },
-    {
       "host": "mats",
       "args": [],
       "projects": []
@@ -285,6 +263,53 @@
         {
           "paths": [
             "/workspace/projects/nla-vs-cot/./"
+          ]
+        }
+      ]
+    },
+    {
+      "host": "devbox",
+      "args": [],
+      "projects": [
+        {
+          "paths": [
+            "/home/k-kit"
+          ]
+        }
+      ]
+    },
+    {
+      "host": "pop",
+      "args": [],
+      "projects": []
+    },
+    {
+      "host": "pop-os",
+      "args": [],
+      "projects": [
+        {
+          "paths": [
+            "/home/kit"
+          ]
+        },
+        {
+          "paths": [
+            "/home/kit/john-advocacy"
+          ]
+        },
+        {
+          "paths": [
+            "/home/kit/lit"
+          ]
+        },
+        {
+          "paths": [
+            "/home/kit/projects/./"
+          ]
+        },
+        {
+          "paths": [
+            "/home/kit/tools"
           ]
         }
       ]

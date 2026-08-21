@@ -6,7 +6,8 @@
 #
 #   1. Routes (CGNAT collision): when NordVPN assigns a CGNAT address
 #      (100.64.0.0/10, some servers/protocols), its /10 route swallows
-#      Tailscale traffic. Fix: inject more-specific routes for Tailscale.
+#      Tailscale traffic. Fix: route the /10 through Tailscale, then add /32
+#      exceptions for Meshnet peers listed in /etc/tailscale-route-fix.meshnet.
 #
 #   2. pf leak firewall: whenever connected, NordVPN's root helper replaces the
 #      main pf ruleset with default-deny leak protection (`block drop all`,
@@ -47,6 +48,7 @@ SYSTEM_SCRIPT="/usr/local/bin/tailscale-route-fix"
 PF_ANCHOR="main/tailscale"
 PF_SIG_FILE="/var/run/tailscale-route-fix.pfsig"
 WG_FALLBACK_PORT=41641
+MESHNET_ROUTES_FILE="/etc/tailscale-route-fix.meshnet"
 
 # ─── Interface Detection ─────────────────────────────────────────────────────
 # utun interfaces are dynamically numbered — detect by IP and netmask.
@@ -91,10 +93,47 @@ current_magicdns_route_if() {
   route -n get "$MAGICDNS" 2>/dev/null | awk '/interface:/ { print $2 }'
 }
 
+current_route_if() {
+  route -n get "$1" 2>/dev/null | awk '/interface:/ { print $2 }'
+}
+
+is_cgnat_ip() {
+  local ip="$1" a b c d
+  IFS=. read -r a b c d <<< "$ip"
+  [[ "$a" == "100" ]] || return 1
+  [[ "$b" =~ ^[0-9]+$ && "$c" =~ ^[0-9]+$ && "$d" =~ ^[0-9]+$ ]] || return 1
+  (( b >= 64 && b <= 127 && c <= 255 && d <= 255 ))
+}
+
+configured_meshnet_ips() {
+  [[ -f "$MESHNET_ROUTES_FILE" ]] || return 0
+
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] && continue
+    if is_cgnat_ip "$line"; then
+      printf '%s\n' "$line"
+    else
+      printf '%s invalid Meshnet peer IP in %s: %s\n' \
+        "$LOG_PREFIX" "$MESHNET_ROUTES_FILE" "$line" >&2
+    fi
+  done < "$MESHNET_ROUTES_FILE"
+}
+
 is_routing_correct() {
   local ts_if="$1"
   [[ "$(current_cgnat_route_if)" == "$ts_if" ]] && \
   [[ "$(current_magicdns_route_if)" == "$ts_if" ]]
+}
+
+meshnet_routes_correct() {
+  local nord_if="$1" ip
+  while IFS= read -r ip; do
+    [[ "$(current_route_if "$ip")" == "$nord_if" ]] || return 1
+  done < <(configured_meshnet_ips)
 }
 
 # ─── pf Firewall Helpers (NordVPN leak protection) ──────────────────────────
@@ -200,35 +239,51 @@ check_and_fix_routes() {
     return 0  # No NordVPN — no conflict
   fi
 
-  if is_routing_correct "$ts_if"; then
-    return 0  # Already correct
+  if ! is_routing_correct "$ts_if"; then
+    echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') Detected Tailscale=$ts_if, NordVPN=$nord_if — fixing routes"
+
+    # TOCTOU check: verify interface still exists before mutating routes
+    if ! ifconfig "$ts_if" &>/dev/null; then
+      echo "$LOG_PREFIX ERROR: $ts_if disappeared — aborting"
+      return 1
+    fi
+
+    # Delete NordVPN's /10 route, add Tailscale's (with rollback on failure)
+    route delete -net "$CGNAT_NET" 2>/dev/null || true
+    if ! route add -net "$CGNAT_NET" -interface "$ts_if" 2>/dev/null; then
+      echo "$LOG_PREFIX ERROR: Failed to add $CGNAT_NET route — restoring NordVPN route"
+      route add -net "$CGNAT_NET" -interface "$nord_if" 2>/dev/null || true
+      return 1
+    fi
+
+    # Explicit MagicDNS host route
+    route delete -host "$MAGICDNS" 2>/dev/null || true
+    route add -host "$MAGICDNS" -interface "$ts_if" 2>/dev/null || true
+
+    if is_routing_correct "$ts_if"; then
+      echo "$LOG_PREFIX Routes verified (CGNAT + MagicDNS → $ts_if)"
+    else
+      echo "$LOG_PREFIX WARNING: Routes applied but verification failed"
+    fi
   fi
 
-  echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') Detected Tailscale=$ts_if, NordVPN=$nord_if — fixing routes"
+  # Tailscale owns the broad /10, so Meshnet peers need more-specific routes.
+  local ip
+  while IFS= read -r ip; do
+    if [[ "$(current_route_if "$ip")" == "$nord_if" ]]; then
+      continue
+    fi
+    route delete -host "$ip" 2>/dev/null || true
+    if route add -host "$ip" -interface "$nord_if" 2>/dev/null; then
+      echo "$LOG_PREFIX Meshnet peer $ip routed via $nord_if"
+    else
+      echo "$LOG_PREFIX ERROR: failed to route Meshnet peer $ip via $nord_if"
+      return 1
+    fi
+  done < <(configured_meshnet_ips)
 
-  # TOCTOU check: verify interface still exists before mutating routes
-  if ! ifconfig "$ts_if" &>/dev/null; then
-    echo "$LOG_PREFIX ERROR: $ts_if disappeared — aborting"
-    return 1
-  fi
-
-  # Delete NordVPN's /10 route, add Tailscale's (with rollback on failure)
-  route delete -net "$CGNAT_NET" 2>/dev/null || true
-  if ! route add -net "$CGNAT_NET" -interface "$ts_if" 2>/dev/null; then
-    echo "$LOG_PREFIX ERROR: Failed to add $CGNAT_NET route — restoring NordVPN route"
-    route add -net "$CGNAT_NET" -interface "$nord_if" 2>/dev/null || true
-    return 1
-  fi
-
-  # Explicit MagicDNS host route
-  route delete -host "$MAGICDNS" 2>/dev/null || true
-  route add -host "$MAGICDNS" -interface "$ts_if" 2>/dev/null || true
-
-  # Post-apply verification
-  if is_routing_correct "$ts_if"; then
-    echo "$LOG_PREFIX Routes verified (CGNAT + MagicDNS → $ts_if)"
-  else
-    echo "$LOG_PREFIX WARNING: Routes applied but verification failed"
+  if ! meshnet_routes_correct "$nord_if"; then
+    echo "$LOG_PREFIX WARNING: Meshnet routes applied but verification failed"
   fi
 }
 
@@ -272,6 +327,17 @@ cmd_status() {
   fi
   echo ""
 
+  echo "=== Meshnet Peer Routes ==="
+  local meshnet_ip meshnet_count=0
+  while IFS= read -r meshnet_ip; do
+    meshnet_count=$((meshnet_count + 1))
+    echo "  $meshnet_ip via $(current_route_if "$meshnet_ip") (expected $nord_if)"
+  done < <(configured_meshnet_ips)
+  if [[ $meshnet_count -eq 0 ]]; then
+    echo "  No peers configured in $MESHNET_ROUTES_FILE"
+  fi
+  echo ""
+
   echo "=== NordVPN pf Leak Firewall ==="
   if [[ $EUID -ne 0 ]]; then
     echo "  (run with sudo to inspect pf state)"
@@ -295,7 +361,7 @@ cmd_status() {
     echo "  Tailscale not running — nothing to fix"
   elif [[ -z "$nord_if" ]] && ! { [[ $EUID -eq 0 ]] && nordvpn_pf_block_active; }; then
     echo "  NordVPN not running — no conflict"
-  elif is_routing_correct "$ts_if" || [[ -z "$nord_if" ]]; then
+  elif { is_routing_correct "$ts_if" && meshnet_routes_correct "$nord_if"; } || [[ -z "$nord_if" ]]; then
     echo "  Routes OK; check pf section above for firewall state"
   else
     echo "  CONFLICT: CGNAT traffic routes through $cgnat_if (should be $ts_if)"

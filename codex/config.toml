@@ -1,112 +1,216 @@
-personality = "pragmatic"
 model = "gpt-5.6-sol"
-service_tier = "priority"
-allow_login_shell = true
-sandbox_mode = "danger-full-access"
+model_reasoning_effort = "high"
+service_tier = "fast"
+approvals_reviewer = "user"
 approval_policy = "never"
-approvals_reviewer = "auto_review"
+sandbox_mode = "danger-full-access"
 network_access = "enabled"
-model_reasoning_effort = "medium"
-developer_instructions = "<omx version=\"1\">You have oh-my-codex installed through Codex plugin mode. AGENTS.md is the orchestration brain and main control surface. Follow AGENTS.md for skill/keyword routing and $name workflow invocation. When the native surface exposes `agent_type` role routing, set `agent_type` to an installed role and never omit it for OMX work. When it reports `role_routing_unavailable`, do not fabricate `agent_type`; before Ralplan planning, state, HUD, runtime, or delegation work, run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`. Never fake the role via a prompt label or infer authority from session/thread/pointer/transcript/cwd state. Registered Codex plugin marketplace surfaces supply OMX workflows and plugin-scoped companion resources when the plugin is installed; native agent roles are installed as setup-owned Codex agent TOML files in plugin mode so agent_type routing works. User-installed skills may still live under ~/.codex/skills. Use outcome-first, concise progress updates: state the target result, constraints, validation evidence, and stop condition before adding process detail.</omx>"
+notify = [
+    "/Users/kit/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient",
+    "turn-ended",
+]
+personality = "pragmatic"
 
-[projects."/home/kit"]
+[projects."/Users/kit/dotfiles"]
 trust_level = "trusted"
 
-[projects."/home/kit/mutagen-ui"]
-trust_level = "trusted"
-
-[projects."/home/kit/mrmd"]
-trust_level = "trusted"
-
-[projects."/home/kit/t3code"]
-trust_level = "trusted"
-
-[projects."/home/kit/lit"]
-trust_level = "trusted"
-
-[projects."/home/kit/oh-my-mastra"]
-trust_level = "trusted"
-
-[projects."/home/kit/.agents"]
-trust_level = "trusted"
-
-[projects."/home/kit/plugins/agent-development-orchestrator"]
-trust_level = "trusted"
-
-[projects."/home/kit/.codex"]
-trust_level = "trusted"
-
-[projects."/home/kit/codex-resource-monitor-mcp"]
-trust_level = "trusted"
-
-[projects."/home/kit/plugins"]
-trust_level = "trusted"
-
-[projects."/home/kit/plugins/advocacy-practice-marketplace"]
-trust_level = "trusted"
-
-[projects."/home/kit/oh-my-codex"]
-trust_level = "trusted"
-
-[projects."/home/kit/aicli"]
-trust_level = "trusted"
-
-[projects."/home/kit/diagnostic-dashboard"]
+[projects."/home/k-kit"]
 trust_level = "trusted"
 
 [projects."/home"]
 trust_level = "trusted"
 
-[projects."/home/kit/advocacy"]
+[projects."/Users/kit/Documents/Codex/2026-08-10/revie-and-write-a-siimpler-response"]
 trust_level = "trusted"
 
-[projects."/home/kit/registry"]
+[projects."/Users/kit/Documents/ChatGPT/lit"]
 trust_level = "trusted"
 
-[projects."/home/kit/advocacy/whole-story"]
+[projects."/Users/kit/Documents/Codex/2026-08-10/revie-and-write-a-siimpler-response-2"]
 trust_level = "trusted"
 
-[projects."/home/kit/Documents/Codex/2026-07-25/what-should-i-charge-for-a"]
+[projects."/Users/kit/Documents/Codex/2026-08-10/revie-and-write-a-siimpler-response-3"]
 trust_level = "trusted"
 
-[projects."/home/kit/dotfiles"]
+[projects."/Users/kit/lit"]
 trust_level = "trusted"
 
-[projects."/home/kit/chronicpainla"]
+[projects."/Users/kit/Documents/Codex/2026-08-11/website-investment-guide-sites-project-appgprj"]
 trust_level = "trusted"
 
-[projects."/home/kit/Open-Generative-AI"]
+[projects."/Users/kit"]
 trust_level = "trusted"
 
-[projects."/home/kit/pain-signal"]
+[projects."/Users/kit/Documents/Codex/2026-08-15/new-chat"]
 trust_level = "trusted"
 
-[projects."/home/kit/john-advocacy"]
+[projects."/Users/kit/Documents/Codex/2026-08-15/new-chat-2"]
 trust_level = "trusted"
 
-[sandbox_workspace_write]
-network_access = true
+[projects."/Users/kit/Documents/Codex/2026-08-15/new-chat-3"]
+trust_level = "trusted"
 
-[plugins."vercel-plugin@plugins-cli"]
-enabled = true
+[projects."/Users/kit/Documents/Codex/2026-08-15/new-chat-4"]
+trust_level = "trusted"
 
-[plugins."context-mode@context-mode"]
-enabled = true
+[projects."/Users/kit/code/dotfiles"]
+trust_level = "trusted"
 
-[plugins."warp@codex-warp"]
-enabled = false
+[projects."/Users/kit/.ssh"]
+trust_level = "trusted"
 
-[plugins."codex-resource-monitor-mcp@personal"]
-enabled = true
+[projects."/Users/kit/REBECYY"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-18/the-templates-kind-of-suck-to"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-18/new-chat"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-18/new-chat-2"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-18/new-chat-3"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-18/new-chat-4"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-18/new-chat-5"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-19/how-to-reset-default-applications"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/lyric-ideas-i-loved-helping-you"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/new-chat"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/claud"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/claud-2"]
+trust_level = "trusted"
+
+[projects."/Users/kit/rap"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/ChatGPT/bt2"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/files-pasted-by-the-user-nobody"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/reply-to-maya-s-message-on"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/reply-to-maya-s-message-on-2"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/reply-to-maya-s-message-on-3"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/reply-to-maya-s-message-on-4"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/g"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/new-chat-2"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/files-pasted-by-the-user-nobody-2"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/wr"]
+trust_level = "trusted"
+
+[projects."/Users/kit/Documents/Codex/2026-08-20/new-chat-3"]
+trust_level = "trusted"
+
+[tui.model_availability_nux]
+"gpt-5.6-sol" = 1
+
+[desktop]
+followUpQueueMode = "queue"
+dock-icon-preference = "app-default"
+external-agent-import-sync-enabled = true
+conversationDetailMode = "STEPS_COMMANDS"
+open-link-in-target-preference = "external-browser"
+open-local-url-in-target-preference = "external-browser"
+show-context-window-usage = true
+notifications-turn-mode = "off"
+git-branch-prefix = "kit/"
+
+[desktop.open-in-target-preferences]
+global = "cursor"
+
+[desktop.open-in-target-preferences.perPath]
+"/home/kit/mrmd" = "cursor"
+"/home/kit/john-advocacy" = "zed"
+"/Users/kit/Documents/ChatGPT/bt2" = "cursor"
+
+[marketplaces.openai-bundled]
+last_updated = "2026-08-21T09:00:05Z"
+source_type = "local"
+source = "/Users/kit/.codex/.tmp/bundled-marketplaces/openai-bundled"
+
+[marketplaces.openai-primary-runtime]
+last_updated = "2026-08-19T23:50:22Z"
+source_type = "local"
+source = "/Users/kit/.cache/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime"
+
+[marketplaces.codex-warp]
+last_updated = "2026-08-18T04:35:18Z"
+last_revision = "31ce59d9011cfb1d78f265649a228dac5de58d76"
+source_type = "git"
+source = "https://github.com/warpdotdev/codex-warp.git"
+
+[marketplaces.sisyphuslabs]
+last_updated = "2026-08-17T02:18:35Z"
+source_type = "local"
+source = "/Users/kit/.codex/plugins/cache/sisyphuslabs"
+
+[marketplaces.claude-cowork]
+last_updated = "2026-08-21T09:00:04Z"
+source_type = "local"
+source = "/Users/kit/.codex/plugins/cache/claude-cowork"
 
 [plugins."sites@openai-bundled"]
+enabled = true
+
+[plugins."browser@openai-bundled"]
+enabled = true
+
+[plugins."chrome@openai-bundled"]
 enabled = true
 
 [plugins."visualize@openai-bundled"]
 enabled = true
 
-[plugins."omo@sisyphuslabs"]
+[plugins."documents@openai-primary-runtime"]
 enabled = true
+
+[plugins."pdf@openai-primary-runtime"]
+enabled = true
+
+[plugins."spreadsheets@openai-primary-runtime"]
+enabled = true
+
+[plugins."presentations@openai-primary-runtime"]
+enabled = true
+
+[plugins."template-creator@openai-primary-runtime"]
+enabled = true
+
+[plugins."warp@codex-warp"]
+enabled = true
+
+[plugins."omo@sisyphuslabs"]
+enabled = false
 
 [plugins."omo@sisyphuslabs".mcp_servers.context7]
 enabled = true
@@ -117,69 +221,132 @@ enabled = true
 [plugins."omo@sisyphuslabs".mcp_servers.git_bash]
 enabled = false
 
+[plugins."codex-app-tools@openai-bundled"]
+enabled = true
+
+[plugins."computer-use@openai-bundled"]
+enabled = true
+
+[plugins."anthropic-skills@claude-cowork"]
+enabled = true
+
+[plugins."brand-studio@claude-cowork"]
+enabled = true
+
+[plugins."brand-voice@claude-cowork"]
+enabled = true
+
+[plugins."cowork-plugin-management@claude-cowork"]
+enabled = true
+
+[plugins."data@claude-cowork"]
+enabled = true
+
+[plugins."design@claude-cowork"]
+enabled = true
+
+[plugins."engineering@claude-cowork"]
+enabled = true
+
+[plugins."finance@claude-cowork"]
+enabled = true
+
+[plugins."legal@claude-cowork"]
+enabled = true
+
+[plugins."marketing@claude-cowork"]
+enabled = true
+
+[plugins."operations@claude-cowork"]
+enabled = true
+
+[plugins."pdf-viewer@claude-cowork"]
+enabled = true
+
+[plugins."printful-dtg-designer@claude-cowork"]
+enabled = true
+
+[plugins."product-management@claude-cowork"]
+enabled = true
+
+[plugins."productivity@claude-cowork"]
+enabled = true
+
+[plugins."sales@claude-cowork"]
+enabled = true
+
+[plugins."sanity@claude-cowork"]
+enabled = true
+
+[plugins."small-business@claude-cowork"]
+enabled = true
+
+[plugins."astro-sanity-cloner@claude-cowork"]
+enabled = true
+
+[plugins."blog-writer@claude-cowork"]
+enabled = true
+
+[plugins."freelance-pro@claude-cowork"]
+enabled = true
+
+[plugins."job-auto-apply@claude-cowork"]
+enabled = true
+
+[plugins."personal-finance-budget@claude-cowork"]
+enabled = true
+
+[plugins."project-planner@claude-cowork"]
+enabled = true
+
+[plugins."resume-cover-letter@claude-cowork"]
+enabled = true
+
+[plugins."site-cloner-cms@claude-cowork"]
+enabled = true
+
 [features]
+goals = true
 unified_exec = true
-multi_agent = true
 plugin_hooks = true
 plugins = true
-memories = false
-code_mode = true
-browser_use = true
-web_search = true
 hooks = true
-goals = true
+js_repl = false
+multi_agent = true
+prevent_idle_sleep = true
+memories = true
+chronicle = false
 
-# Managed by LazyCodex: multi_agent_v2 is re-disabled on every Codex session start
-# because enabling it fails every turn with HTTP 400 (openai/codex#26753).
-# Opt out: LAZYCODEX_CONFIG_MIGRATION_DISABLED=1 (or OMO_CODEX_CONFIG_MIGRATION_DISABLED=1).
 [features.multi_agent_v2]
-enabled = false
 max_concurrent_threads_per_session = 16
 
-[memories]
-generate_memories = false
-use_memories = false
+[shell_environment_policy]
+inherit = "core"
 
-[hooks.state."vercel-plugin@plugins-cli:hooks/hooks.json:session_start:0:0"]
-trusted_hash = "sha256:146eedfa10f48cfcb6d2cfb2c8fc36e8d8bb8751d2167ba205fa0b967c8a7f6e"
-enabled = false
+[shell_environment_policy.set]
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "9230e2bd8b24b7ac7a0ba6774c64bf0d78ecdabbdd91d0ed627b02a587bae2df"
+BASH_MAX_OUTPUT_LENGTH = "100000"
+CLAUDE_CODE_ATTRIBUTION_HEADER = "0"
+CLAUDE_CODE_AUTO_COMPACT_WINDOW = "300000"
+CLAUDE_CODE_COORDINATOR_MODE = "1"
+CLAUDE_CODE_DISABLE_1M_CONTEXT = "1"
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1"
+CLAUDE_CODE_NO_FLICKER = "1"
+CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = "5"
+ENABLE_TOOL_SEARCH = "1"
+TMPDIR = "/tmp/claude"
 
-[hooks.state."vercel-plugin@plugins-cli:hooks/hooks.json:session_start:0:1"]
-trusted_hash = "sha256:1b7bf88920f9d93c5bd508088299ba969739865da51a3043b931819328abf7d5"
-enabled = false
+[hooks.state."/Users/kit/.codex/hooks.json:permission_request:0:0"]
+trusted_hash = "sha256:fcec2a18f441c5694bc9469cf13d7014e823c57ab420e02d63a8bf7ebdfcc72b"
 
-[hooks.state."vercel-plugin@plugins-cli:hooks/hooks.json:session_start:0:2"]
-trusted_hash = "sha256:7c0c78b3d111a81aed993357e32d997f3996cf32bbf4ab475efe9ce08772673a"
-enabled = false
+[hooks.state."/Users/kit/.codex/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:32c80cd33fbfcfc4ae4f2feca77149fe3334b1113c6598676f753fd942500de2"
 
-[hooks.state."agent-development-orchestrator@plugins-cli:hooks/hooks.json:session_start:0:0"]
-trusted_hash = "sha256:ab130c74722ec315e29b61f8d75ca175ba362091ed3a1e0a75a4ea8e8b1b8296"
-enabled = false
+[hooks.state."/Users/kit/.codex/hooks.json:user_prompt_submit:0:0"]
+trusted_hash = "sha256:78297874884298bf02ef5d48433f2bb34166de580ee027e9e85d564cdf23fe63"
 
-[hooks.state."agent-development-orchestrator@plugins-cli:hooks/hooks.json:subagent_start:0:0"]
-trusted_hash = "sha256:b70ee553926f74d7922131f5cd80680fd8aa55fdddb7af9308e1c8c2a9f679cb"
-
-[hooks.state."/home/kit/.codex/hooks.json:session_start:0:0"]
-trusted_hash = "sha256:a22ac61920610195cdab3e0bba5574e5834030d36b1b59c4678968572dd24fe9"
-enabled = false
-
-[hooks.state."context-mode@context-mode:.codex-plugin/hooks.json:pre_tool_use:0:0"]
-trusted_hash = "sha256:56da0c4249dc7af048f42ae458fb83931926a8af41ec6fab5ae819ff3a8c83ae"
-
-[hooks.state."context-mode@context-mode:.codex-plugin/hooks.json:post_tool_use:0:0"]
-trusted_hash = "sha256:0d237345f8d46110d36cd0ef08e79b55fa151a07691dee36d492aa6f64bc0efd"
-
-[hooks.state."context-mode@context-mode:.codex-plugin/hooks.json:pre_compact:0:0"]
-trusted_hash = "sha256:ac1f9e5eb71ca262492150381d8f078b897056fc691f9973fc56d7b1b402e648"
-
-[hooks.state."context-mode@context-mode:.codex-plugin/hooks.json:session_start:0:0"]
-trusted_hash = "sha256:a6cc6a322d0931bdd68a5969e523cd71e6eedccab4850e8996c8948311173618"
-
-[hooks.state."context-mode@context-mode:.codex-plugin/hooks.json:user_prompt_submit:0:0"]
-trusted_hash = "sha256:114549c484c131b94782d3424527dd1042d48bc3a8616a11299acdf60b112572"
-
-[hooks.state."context-mode@context-mode:.codex-plugin/hooks.json:stop:0:0"]
-trusted_hash = "sha256:9205c1763e40c0256ab334e2e96c037c1cdf5b8bfaddba31ed19d93d3388586a"
+[hooks.state."/Users/kit/.codex/hooks.json:stop:0:0"]
+trusted_hash = "sha256:a0550731637177c048527d803117304a1b3d0f9e4f2580a9fba31d53bfe4cb8f"
 
 [hooks.state."warp@codex-warp:hooks/hooks.json:permission_request:0:0"]
 trusted_hash = "sha256:a5f8b0ebc36bb459328ffeb5f62ff146dfb74e3d88d4c369cf0280f7b354e388"
@@ -197,115 +364,110 @@ trusted_hash = "sha256:2480a7db650a36e05d8005aabca58b9d106f3b7a46f7094d7747d0d77
 trusted_hash = "sha256:6a3b3af655efa426e920425de93a830fe25b8b5a62ef7b9a699e7ff40d9ef351"
 
 [hooks.state."omo@sisyphuslabs:hooks/session-start-loading-project-rules.json:session_start:0:0"]
-trusted_hash = "sha256:36fb8d9f8087f594c173a1ead28a3e1183863e4a01643149aade5d3dc0c8dd25"
+trusted_hash = "sha256:50d93095c3681e6955af868e136c00caa4fce6364fa7a7685abcf9c5ad097021"
 
 [hooks.state."omo@sisyphuslabs:hooks/session-start-recording-session-telemetry.json:session_start:0:0"]
-trusted_hash = "sha256:02a5c12a44e58708a2d9ff05f8a7783975f0346f45d28249d3c0a81e4240f55f"
+trusted_hash = "sha256:7bf8bcf84c2703d738c780e7cb0ef37be20981bc8ccc6f28dd1c649e7464bfd4"
 
 [hooks.state."omo@sisyphuslabs:hooks/session-start-checking-auto-update.json:session_start:0:0"]
-trusted_hash = "sha256:b2862f38575792407216d7508a4942d5d66fbc48b129b1c6c4d0c1f1985a2b3b"
+trusted_hash = "sha256:2e9d3ad67c04b87e167664a7a09f5bd89208a760e6dc07e47b9bc098fd4cda75"
 
 [hooks.state."omo@sisyphuslabs:hooks/session-start-checking-bootstrap-provisioning.json:session_start:0:0"]
-trusted_hash = "sha256:81014eddcc21efff45a7f450a67a960c39d8d4be4714ff042c315a160b8c4d7c"
+trusted_hash = "sha256:254a7d9a3e111c776e71801048bfe04385b0b3e14bda38b689b69014afa5d2d7"
 
 [hooks.state."omo@sisyphuslabs:hooks/session-start-checking-codegraph-bootstrap.json:session_start:0:0"]
-trusted_hash = "sha256:8f6127878cd1fafd309892e72343ab1b953ab49a9f89ee9cf0e7b433738a93d7"
+trusted_hash = "sha256:5918d5c423c082250053e3e7c3e031e49ac758f81089481e57efaebdf3d4bc9f"
 
 [hooks.state."omo@sisyphuslabs:hooks/user-prompt-submit-loading-project-rules.json:user_prompt_submit:0:0"]
-trusted_hash = "sha256:41459ff8d76e7ab865da3d4b8f15768c961b1432f8d2e95edf7971084d765ffe"
+trusted_hash = "sha256:f4d50a5c61e0302e1bdd8b3f43e392109c14fa7712649e6c1148c99fb8cfebcb"
 
 [hooks.state."omo@sisyphuslabs:hooks/user-prompt-submit-checking-ultrawork-trigger.json:user_prompt_submit:0:0"]
-trusted_hash = "sha256:1c80b46d9f5ab38271c41c1b1d11154a355a091a467320c481556178c0cb2cfc"
+trusted_hash = "sha256:906af106197d1faf1ab5a287f4a1913544f5846598f635478197417e5a205dca"
 
 [hooks.state."omo@sisyphuslabs:hooks/user-prompt-submit-checking-ulw-loop-steering.json:user_prompt_submit:0:0"]
-trusted_hash = "sha256:cfab3fe500361f7363dade63ad449cefdfe9bbd33d614d3ab8fb7a032b82d325"
+trusted_hash = "sha256:215a0c30743b427299006a90fcf35b28f7f2f8f99f16c68e4346ef3b7431e22c"
 
 [hooks.state."omo@sisyphuslabs:hooks/pre-tool-use-enforcing-unlimited-goal-budget.json:pre_tool_use:0:0"]
-trusted_hash = "sha256:43cba07e4c190d16d14f749cae70e2d767f09a8c84d5d446f780ed1f8026e94f"
+trusted_hash = "sha256:c8889f6b627e94feeee8c678775fb3ce2c34538be61068ebf368e70210bfcf2f"
 
 [hooks.state."omo@sisyphuslabs:hooks/pre-tool-use-guarding-ulw-loop-spawns.json:pre_tool_use:0:0"]
-trusted_hash = "sha256:afba108f47f93ccb25d28c36f18f5d8b7c4ec1f5370aa88aeb0703e524b3eb95"
+trusted_hash = "sha256:c85e85d489ae17b04afea32384ed22e7fc8b5a763c4e5dcdf5513e3baa52171f"
 
 [hooks.state."omo@sisyphuslabs:hooks/post-tool-use-checking-comments.json:post_tool_use:0:0"]
-trusted_hash = "sha256:a9a785e7e5d541a26c440778ceb8f5945ea7bda700b1bf5ac46c06cbadbd6376"
+trusted_hash = "sha256:2ecc122ced106723c62b6e4151bc5f66e069a4a7840c27e7371f176df3d8d062"
 
 [hooks.state."omo@sisyphuslabs:hooks/post-tool-use-checking-lsp-diagnostics.json:post_tool_use:0:0"]
-trusted_hash = "sha256:3a84bdc60b5697a779e6af5e4761f0ed5d06199a1ebcd069018b6938fb47b0a8"
+trusted_hash = "sha256:f3462c9dec652de05de885ae43ae3192a5de621a8b8ec12877afdbba088d4ddd"
 
 [hooks.state."omo@sisyphuslabs:hooks/post-tool-use-checking-codegraph-init-guidance.json:post_tool_use:0:0"]
-trusted_hash = "sha256:8110fba2553bc8745f51388fc4dc1cf102d5cef551a19fde5a3328f6cf79864b"
+trusted_hash = "sha256:532ad411098f832f1d399bbc6373c0de4b3a5d5d1f4b347d31c18df71f71ea41"
 
 [hooks.state."omo@sisyphuslabs:hooks/post-tool-use-matching-project-rules.json:post_tool_use:0:0"]
-trusted_hash = "sha256:b9896e3fa4e0b061500c68457314b64f2038e741a165393db1fc59d2b707880c"
+trusted_hash = "sha256:9ad5202ad220446a5c1dadc320bc9f918f7e681fd011d4235f242532464d8305"
 
 [hooks.state."omo@sisyphuslabs:hooks/post-tool-use-checking-thread-title-hygiene.json:post_tool_use:0:0"]
-trusted_hash = "sha256:8b83f3b238850c5b44719bc075e122087ef9abd3eb8ad7a3affb9ae89b58e623"
+trusted_hash = "sha256:7d943c0852045c4ae3f046c48afd4d23618f719bb7dadf8a72d66d6eb9e33b82"
 
 [hooks.state."omo@sisyphuslabs:hooks/post-compact-resetting-project-rule-cache.json:post_compact:0:0"]
-trusted_hash = "sha256:0155eb9815b9162965338c94fd9eecee1ea6dedabcecee817405bffaa2c9d933"
+trusted_hash = "sha256:15aa208e44fbadb24ea2643c454fa68a0ff2804794c24745c98a99e31dd495b8"
 
 [hooks.state."omo@sisyphuslabs:hooks/post-compact-resetting-lsp-diagnostics-cache.json:post_compact:0:0"]
-trusted_hash = "sha256:0dbf51b86cf2b8f9c426b2f52bfef7818963e0d66caf8d8be81f3536ff783494"
+trusted_hash = "sha256:87026b62af64329f4aebacd9636f5fa35ce027c231865f92f72f1b692f691ec6"
 
 [hooks.state."omo@sisyphuslabs:hooks/stop-checking-start-work-continuation.json:stop:0:0"]
-trusted_hash = "sha256:60b3f544d95fd10f5387e04b5c9a5a0c663f9146b7c2fb4a1d16c23baf6cfb09"
+trusted_hash = "sha256:c2ddf1c498f48c46f88c2efa4615743dc196891962660e19e671d744748591fa"
 
 [hooks.state."omo@sisyphuslabs:hooks/stop-checking-ulw-loop-resume.json:stop:0:0"]
-trusted_hash = "sha256:964c8e2a5e8a28683a718eb358febc1cb628c11c071d009268c751c96826f7f5"
+trusted_hash = "sha256:41943069bd15ed89613ffe83b116bfae8ff5d69003f6c11210d264b18db47af7"
 
 [hooks.state."omo@sisyphuslabs:hooks/subagent-stop-checking-start-work-continuation.json:subagent_stop:0:0"]
-trusted_hash = "sha256:9c4d33c011f01346bf513ffe9eae05d28e732b78e62b936a6dcf1753e00801fb"
+trusted_hash = "sha256:6bf936e4fa6a2bd0c075a595ee83098c722dadcbfa80609e9e410880d8b0eab5"
 
 [hooks.state."omo@sisyphuslabs:hooks/subagent-stop-verifying-lazycodex-executor-evidence.json:subagent_stop:0:0"]
-trusted_hash = "sha256:7d322a3b421ef7e9db0bfee72e051cd32df642e0b3c946bfd5c576afea2bc17b"
+trusted_hash = "sha256:a58a9181c4994814d01ca3a925aa0a04826effb7ee4ca12298a93671e208565e"
 
-[hooks.state."oh-my-codex@oh-my-codex-local:hooks/hooks.json:pre_tool_use:0:0"]
-trusted_hash = "sha256:0beadaffc3fbe7daf525b5f470271fd9652bbb6a681827f62ae519aa585114fa"
+[apps.asdk_app_69c18c28f1188191bf5b8445c4ab0a2e.tools."notion.notion-create-attachment"]
+approval_mode = "approve"
 
-[hooks.state."oh-my-codex@oh-my-codex-local:hooks/hooks.json:post_tool_use:0:0"]
-trusted_hash = "sha256:8ec4518162bac57963c9c3f8d3b6f65537a132387cafbbad1bf4c8fc3591209b"
+[apps.asdk_app_69c18c28f1188191bf5b8445c4ab0a2e.tools."notion.notion-update-page"]
+approval_mode = "approve"
 
-[hooks.state."oh-my-codex@oh-my-codex-local:hooks/hooks.json:pre_compact:0:0"]
-trusted_hash = "sha256:0e2a59e8120f92417338b44563e5eded7dd0f7b4343c5cb5b93f730fae42e7be"
-
-[hooks.state."oh-my-codex@oh-my-codex-local:hooks/hooks.json:post_compact:0:0"]
-trusted_hash = "sha256:3af8aa800d97defd1fcadbd4fca784153ebbe2471f37dbaa76f8a66ab565204b"
-
-[hooks.state."oh-my-codex@oh-my-codex-local:hooks/hooks.json:session_start:0:0"]
-trusted_hash = "sha256:c70df1f988a6965eb9d0fbdbfeaf84a609c98a9e24567dd1eb140cd6bf8e49f9"
-
-[hooks.state."oh-my-codex@oh-my-codex-local:hooks/hooks.json:user_prompt_submit:0:0"]
-trusted_hash = "sha256:dbfc3e0626a9cf6bbe579a69e22409384ed0598fba08df794b355e1e7ced9e53"
-
-[hooks.state."oh-my-codex@oh-my-codex-local:hooks/hooks.json:stop:0:0"]
-trusted_hash = "sha256:216a53a71d5c9819f0fdbbbbf869c4f8d9455e742dad9e0f1d91f3d67dbba2ff"
-
-[hooks.state."vercel-plugin@plugins-cli:hooks/hooks.json:session_end:0:0"]
-trusted_hash = "sha256:9414154878f7ed6af2691aa2d61f3c57d866fb27b65aa638e7ddd635a2cc75a5"
+[mcp_servers.computer-use]
+command = "./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
+args = ["mcp"]
+cwd = "."
 enabled = false
 
-[marketplaces.codex-warp]
-last_updated = "2026-08-12T21:30:41Z"
-last_revision = "f11334dc715d48f07d133db6046895cb45f4accb"
-source_type = "git"
-source = "https://github.com/warpdotdev/codex-warp.git"
+[mcp_servers.zotero.env]
+ZOTERO_API_KEY = "${ZOTERO_API_KEY}"
+ZOTERO_LIBRARY_ID = "${ZOTERO_LIBRARY_ID}"
+ZOTERO_LIBRARY_TYPE = "${ZOTERO_LIBRARY_TYPE:-user}"
+ZOTERO_LOCAL = "true"
 
-[marketplaces.sisyphuslabs]
-last_updated = "2026-08-05T00:40:24Z"
-source_type = "local"
-source = "/home/kit/.codex/plugins/cache/sisyphuslabs"
+[mcp_servers.node_repl]
+args = []
+command = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl"
+startup_timeout_sec = 120
 
-[marketplaces.oh-my-codex-local]
-source_type = "local"
-source = "/home/kit/.nvm/versions/node/v24.18.0/lib/node_modules/oh-my-codex"
+[mcp_servers.node_repl.env]
+NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
+NODE_REPL_NODE_MODULE_DIRS = "/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
+NODE_REPL_NODE_PATH = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
+NODE_REPL_TRUSTED_CODE_PATHS = "/Users/kit/.codex:/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
+CODEX_HOME = "/Users/kit/.codex"
+BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
+BROWSER_USE_TINYSKY_ENABLED = "0"
+NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
+NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
+NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
+BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
+BROWSER_USE_CODEX_APP_VERSION = "26.818.22352"
+NODE_REPL_TRUSTED_SERVICES = '{"browser":"/Users/kit/.codex/plugins/cache/openai-bundled/browser/26.818.22352/scripts/browser-service.mjs","sky":"@oai/sky/service"}'
+SKY_CUA_SERVICE_PATH = "/Users/kit/.codex/computer-use/Codex Computer Use.app"
+CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex"
 
-[marketplaces.openai-bundled]
-last_updated = "2026-08-12T16:11:07Z"
-source_type = "local"
-source = "/home/kit/.codex/.tmp/bundled-marketplaces/openai-bundled"
-
-[tui.model_availability_nux]
-"gpt-5.6-sol" = 4
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
 
 [notice]
 hide_world_writable_warning = true
@@ -347,12 +509,9 @@ config_file = "./agents/momus.toml"
 [agents.plan]
 config_file = "./agents/plan.toml"
 
-[mcp_servers.Sanity]
-type = "http"
-url = "https://mcp.sanity.io"
-
-[agents]
-max_threads = 1000
+[memories]
+generate_memories = true
+use_memories = true
 
 # BEGIN SHARED MCP SERVERS
 # Auto-generated by scripts/helpers/sync_mcp_servers.py

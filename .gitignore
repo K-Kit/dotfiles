@@ -579,3 +579,8 @@ pytest-of-*/
 codex/thread-writer-locks/.coordination.lock
 codex/plugins/
 codex/thread-writer-locks/
+scripts/vpn/tailscale_route_fix.sh
+
+# Claude Code local caches (session-generated, machine-specific)
+claude/.ccassist/
+claude/.search-index/
